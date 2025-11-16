@@ -29,6 +29,11 @@ export default function CustomersPage() {
   // Store subscriber_id once we’ve looked it up
   const [subscriberId, setSubscriberId] = useState(null);
 
+  // Search + pagination state
+  const [searchTerm, setSearchTerm] = useState("");
+  const [currentPage, setCurrentPage] = useState(0);
+  const PAGE_SIZE = 10;
+
   useEffect(() => {
     async function loadData() {
       setChecking(true);
@@ -116,34 +121,40 @@ export default function CustomersPage() {
 
     setSaving(true);
 
-    const { data, error } = await supabase.from("customers").insert([
-      {
-        subscriber_id: subscriberId,
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
-        company_name: companyName.trim() || null,
-        email: email.trim(),
-        phone: phone.trim(),
-        address_line1: addressLine1.trim(),
-        address_line2: addressLine2.trim() || null,
-        address_line3: addressLine3.trim() || null,
-        postcode: postcode.trim().toUpperCase(),
-        is_credit_account: creditAccount === "yes",
-      },
-    ]).select(`
-      id,
-      first_name,
-      last_name,
-      company_name,
-      email,
-      phone,
-      address_line1,
-      address_line2,
-      address_line3,
-      postcode,
-      is_credit_account,
-      created_at
-    `).single();
+    const { data, error } = await supabase
+      .from("customers")
+      .insert([
+        {
+          subscriber_id: subscriberId,
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+          company_name: companyName.trim() || null,
+          email: email.trim(),
+          phone: phone.trim(),
+          address_line1: addressLine1.trim(),
+          address_line2: addressLine2.trim() || null,
+          address_line3: addressLine3.trim() || null,
+          postcode: postcode.trim().toUpperCase(),
+          is_credit_account: creditAccount === "yes",
+        },
+      ])
+      .select(
+        `
+        id,
+        first_name,
+        last_name,
+        company_name,
+        email,
+        phone,
+        address_line1,
+        address_line2,
+        address_line3,
+        postcode,
+        is_credit_account,
+        created_at
+      `
+      )
+      .single();
 
     if (error) {
       console.error(error);
@@ -170,12 +181,42 @@ export default function CustomersPage() {
     setSaving(false);
   }
 
+  // Filter + paginate customers
+  const filteredCustomers = customers.filter((c) => {
+    const haystack = `${c.first_name || ""} ${c.last_name || ""} ${
+      c.company_name || ""
+    } ${c.email || ""} ${c.postcode || ""}`
+      .toLowerCase()
+      .trim();
+
+    if (!searchTerm.trim()) return true;
+    return haystack.includes(searchTerm.toLowerCase().trim());
+  });
+
+  const totalFiltered = filteredCustomers.length;
+  const pageCount = Math.max(1, Math.ceil(totalFiltered / PAGE_SIZE));
+  const safePage = Math.min(currentPage, pageCount - 1);
+  const startIndex = safePage * PAGE_SIZE;
+  const pageCustomers = filteredCustomers.slice(
+    startIndex,
+    startIndex + PAGE_SIZE
+  );
+
+  const showingFrom = totalFiltered === 0 ? 0 : startIndex + 1;
+  const showingTo = startIndex + pageCustomers.length;
+
+  function formatAddress(c) {
+    return [c.address_line1, c.address_line2, c.address_line3]
+      .filter(Boolean)
+      .join(", ");
+  }
+
   if (checking) {
     return <p className="p-4">Checking session...</p>;
   }
 
   return (
-    <main className="p-4 max-w-5xl mx-auto">
+    <main className="p-4 max-w-6xl mx-auto font-sans">
       <header className="mb-4">
         <h1 className="text-2xl font-semibold mb-1">Customers</h1>
         {userEmail && (
@@ -226,7 +267,8 @@ export default function CustomersPage() {
 
             <div>
               <label className="block text-sm mb-1">
-                Company Name <span className="text-gray-400 text-xs">(optional)</span>
+                Company Name{" "}
+                <span className="text-gray-400 text-xs">(optional)</span>
               </label>
               <input
                 type="text"
@@ -328,51 +370,112 @@ export default function CustomersPage() {
         </form>
       </section>
 
-      {/* Customers table */}
+      {/* Customers search + table */}
       <section>
-        <h2 className="text-lg font-semibold mb-3">Existing customers</h2>
-
-        {customers.length === 0 ? (
-          <p className="text-sm text-gray-600">No customers found yet.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm border">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="border px-2 py-1 text-left">Name</th>
-                  <th className="border px-2 py-1 text-left">Company</th>
-                  <th className="border px-2 py-1 text-left">Email</th>
-                  <th className="border px-2 py-1 text-left">Phone</th>
-                  <th className="border px-2 py-1 text-left">Address</th>
-                  <th className="border px-2 py-1 text-left">Postcode</th>
-                  <th className="border px-2 py-1 text-left">Credit Account</th>
-                </tr>
-              </thead>
-              <tbody>
-                {customers.map((c) => (
-                  <tr key={c.id}>
-                    <td className="border px-2 py-1">
-                      {c.first_name} {c.last_name}
-                    </td>
-                    <td className="border px-2 py-1">
-                      {c.company_name || <span className="text-gray-400">—</span>}
-                    </td>
-                    <td className="border px-2 py-1">{c.email}</td>
-                    <td className="border px-2 py-1">{c.phone}</td>
-                    <td className="border px-2 py-1">
-                      {[c.address_line1, c.address_line2, c.address_line3]
-                        .filter(Boolean)
-                        .join(", ")}
-                    </td>
-                    <td className="border px-2 py-1">{c.postcode}</td>
-                    <td className="border px-2 py-1">
-                      {c.is_credit_account ? "Yes" : "No"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-3 gap-2">
+          <h2 className="text-lg font-semibold">Existing customers</h2>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Search name, company, email, postcode…"
+              className="border rounded px-2 py-1 text-sm w-64"
+              value={searchTerm}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setCurrentPage(0);
+              }}
+            />
           </div>
+        </div>
+
+        {filteredCustomers.length === 0 ? (
+          <p className="text-sm text-gray-600">No customers found.</p>
+        ) : (
+          <>
+            <p className="text-xs text-gray-500 mb-2">
+              Showing {showingFrom}–{showingTo} of {totalFiltered} customer
+              {totalFiltered === 1 ? "" : "s"}.
+            </p>
+            <div className="overflow-x-auto border rounded">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="border px-2 py-1 text-left">Name</th>
+                    <th className="border px-2 py-1 text-left">Company</th>
+                    <th className="border px-2 py-1 text-left">Email</th>
+                    <th className="border px-2 py-1 text-left">Phone</th>
+                    <th className="border px-2 py-1 text-left">Address</th>
+                    <th className="border px-2 py-1 text-left">Postcode</th>
+                    <th className="border px-2 py-1 text-left">Credit Account</th>
+                    <th className="border px-2 py-1 text-left">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageCustomers.map((c) => (
+                    <tr key={c.id}>
+                      <td className="border px-2 py-1">
+                        {c.first_name} {c.last_name}
+                      </td>
+                      <td className="border px-2 py-1">
+                        {c.company_name || (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="border px-2 py-1">{c.email}</td>
+                      <td className="border px-2 py-1">{c.phone}</td>
+                      <td className="border px-2 py-1">{formatAddress(c)}</td>
+                      <td className="border px-2 py-1">{c.postcode}</td>
+                      <td className="border px-2 py-1">
+                        {c.is_credit_account ? "Yes" : "No"}
+                      </td>
+                      <td className="border px-2 py-1">
+                        <button
+                          type="button"
+                          className="text-blue-600 underline text-xs"
+                          onClick={() => router.push(`/app/customers/${c.id}`)}
+                        >
+                          View / Edit
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination controls */}
+            {pageCount > 1 && (
+              <div className="flex items-center justify-between mt-3 text-xs">
+                <div>
+                  Page {safePage + 1} of {pageCount}
+                </div>
+                <div className="space-x-2">
+                  <button
+                    type="button"
+                    className="px-2 py-1 border rounded disabled:opacity-50"
+                    disabled={safePage === 0}
+                    onClick={() =>
+                      setCurrentPage((prev) => Math.max(0, prev - 1))
+                    }
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="px-2 py-1 border rounded disabled:opacity-50"
+                    disabled={safePage >= pageCount - 1}
+                    onClick={() =>
+                      setCurrentPage((prev) =>
+                        Math.min(pageCount - 1, prev + 1)
+                      )
+                    }
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </section>
     </main>
