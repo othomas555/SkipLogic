@@ -108,11 +108,16 @@ export default function AppDashboard() {
       )}
 
       <section>
-        <p>This is your Phase 1 placeholder dashboard.</p>
-        <p>
-          Next steps will be: show customers, jobs, and basic multi-tenant data
-          here.
-        </p>
+      <p>This is your Phase 1 placeholder dashboard.</p>
+  <p>
+    Next steps will be: show customers, jobs, and basic multi-tenant data here.
+  </p>
+  <p style={{ marginTop: 16 }}>
+    <a href="/app/customers" style={{ marginRight: 16 }}>
+      Go to Customers →
+    </a>
+    <a href="/app/jobs">Go to Jobs →</a>
+  </p>
       </section>
     </main>
   );
