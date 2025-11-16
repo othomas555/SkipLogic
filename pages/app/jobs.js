@@ -292,7 +292,7 @@ export default function JobsPage() {
               fontWeight: 500,
             }}
           >
-            {saving ? "Saving…" : "Add job"}
+            {saving ? "Saving…" : "Book A Standard Skip"}
           </button>
         </form>
       </section>
