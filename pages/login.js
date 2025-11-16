@@ -29,7 +29,7 @@ export default function LoginPage() {
     }
 
     // Logged in successfully
-    router.push("/app"); // we'll make /app (dashboard) in a later step
+    router.replace("/app"); // we'll make /app (dashboard) in a later step
   }
 
   return (
