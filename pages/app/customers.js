@@ -1,12 +1,11 @@
 // pages/app/customers.js
 import { useEffect, useState } from "react";
-import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
+import { useAuthProfile } from "../../lib/useAuthProfile";
 
 export default function CustomersPage() {
-  const router = useRouter();
-  const [checking, setChecking] = useState(true);
-  const [userEmail, setUserEmail] = useState(null);
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
+
   const [customers, setCustomers] = useState([]);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -17,40 +16,31 @@ export default function CustomersPage() {
   const [phone, setPhone] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Load customers once we know who the subscriber is
   useEffect(() => {
+    if (checking) return;
+    if (!subscriberId) return; // useAuthProfile will handle redirect if not signed in
+
     async function loadData() {
-      // 1) Check auth
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      setErrorMsg("");
 
-      if (userError || !user) {
-        router.replace("/login");
-        return;
-      }
-
-      setUserEmail(user.email ?? null);
-
-      // 2) Load customers (RLS should limit this to your subscriber)
       const { data, error } = await supabase
         .from("customers")
         .select("id, name, contact_name, email, phone")
+        .eq("subscriber_id", subscriberId)
         .order("created_at", { ascending: false });
 
       if (error) {
         console.error("Customers error:", error);
         setErrorMsg("Could not load customers.");
-        setChecking(false);
         return;
       }
 
       setCustomers(data || []);
-      setChecking(false);
     }
 
     loadData();
-  }, [router]);
+  }, [checking, subscriberId]);
 
   async function handleAddCustomer(e) {
     e.preventDefault();
@@ -61,35 +51,15 @@ export default function CustomersPage() {
       return;
     }
 
+    if (!subscriberId) {
+      setErrorMsg("Could not find your subscriber when adding customer.");
+      return;
+    }
+
     setSaving(true);
 
     try {
-      // Get user + profile so we know the subscriber_id
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-
-      if (userError || !user) {
-        router.replace("/login");
-        return;
-      }
-
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("subscriber_id")
-        .single();
-
-      if (profileError || !profile) {
-        console.error("Profile error:", profileError);
-        setErrorMsg("Could not find your subscriber when adding customer.");
-        setSaving(false);
-        return;
-      }
-
-      const subscriberId = profile.subscriber_id;
-
-      // Insert new customer
+      // Insert new customer for this subscriber
       const { data: inserted, error: insertError } = await supabase
         .from("customers")
         .insert([
@@ -153,9 +123,9 @@ export default function CustomersPage() {
     >
       <header style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, marginBottom: 8 }}>Customers</h1>
-        {userEmail && (
+        {user?.email && (
           <p style={{ fontSize: 14, color: "#555" }}>
-            Signed in as {userEmail}
+            Signed in as {user.email}
           </p>
         )}
         <p style={{ marginTop: 8 }}>
@@ -165,8 +135,10 @@ export default function CustomersPage() {
         </p>
       </header>
 
-      {errorMsg && (
-        <p style={{ color: "red", marginBottom: 16 }}>{errorMsg}</p>
+      {(authError || errorMsg) && (
+        <p style={{ color: "red", marginBottom: 16 }}>
+          {authError || errorMsg}
+        </p>
       )}
 
       {/* Add Customer Form */}
