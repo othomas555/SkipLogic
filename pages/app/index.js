@@ -64,6 +64,12 @@ export default function AppDashboard() {
   <p style={{ marginTop: 16 }}>
     <a href="/app/customers">Go to Customers →</a>
   </p>
+      <p>
+  <a href="/app/jobs">Go to jobs</a>
+</p>
+<p>
+  <a href="/app/skip-types">Manage skip types</a>
+</p>  
       </section>
     </main>
   );
