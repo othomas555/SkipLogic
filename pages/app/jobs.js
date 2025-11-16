@@ -10,11 +10,15 @@ export default function JobsPage() {
 
   const [customers, setCustomers] = useState([]);
   const [jobs, setJobs] = useState([]);
+
+  // NEW: skip types state
+  const [skipTypes, setSkipTypes] = useState([]);
+  const [selectedSkipTypeId, setSelectedSkipTypeId] = useState("");
+
   const [errorMsg, setErrorMsg] = useState("");
 
   // Form state
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
-  const [description, setDescription] = useState("");
   const [status, setStatus] = useState("open");
   const [saving, setSaving] = useState(false);
 
@@ -49,8 +53,6 @@ export default function JobsPage() {
       setCustomers(customerData || []);
 
       // 3) Load jobs (for list)
-      // Assumes jobs has: id, description, status, customer_id
-      // and a foreign key to customers.
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
@@ -73,6 +75,21 @@ export default function JobsPage() {
       }
 
       setJobs(jobData || []);
+
+      // 4) Load skip types (for Book A Standard Skip dropdown)
+      const { data: skipTypesData, error: skipTypesError } = await supabase
+        .from("skip_types")
+        .select("id, name, quantity_owned")
+        .order("name", { ascending: true });
+
+      if (skipTypesError) {
+        console.error("Skip types error:", skipTypesError);
+        // don't hard fail the page, just show message
+        setErrorMsg("Could not load skip types.");
+      } else {
+        setSkipTypes(skipTypesData || []);
+      }
+
       setChecking(false);
     }
 
@@ -87,8 +104,9 @@ export default function JobsPage() {
       setErrorMsg("Please select a customer.");
       return;
     }
-    if (!description.trim()) {
-      setErrorMsg("Description is required.");
+
+    if (!selectedSkipTypeId) {
+      setErrorMsg("Please select a skip type.");
       return;
     }
 
@@ -120,14 +138,25 @@ export default function JobsPage() {
 
       const subscriberId = profile.subscriber_id;
 
-      // Insert job
+      // Find the selected skip type
+      const selectedSkip = skipTypes.find(
+        (s) => s.id === selectedSkipTypeId
+      );
+
+      if (!selectedSkip) {
+        setErrorMsg("Selected skip type not found.");
+        setSaving(false);
+        return;
+      }
+
+      // Insert job - store skip type name in description
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([
           {
             subscriber_id: subscriberId,
             customer_id: selectedCustomerId,
-            description: description.trim(),
+            description: selectedSkip.name,
             status,
           },
         ])
@@ -155,7 +184,7 @@ export default function JobsPage() {
 
       // Reset form
       setSelectedCustomerId("");
-      setDescription("");
+      setSelectedSkipTypeId("");
       setStatus("open");
       setSaving(false);
     } catch (err) {
@@ -207,7 +236,7 @@ export default function JobsPage() {
         <p style={{ color: "red", marginBottom: 16 }}>{errorMsg}</p>
       )}
 
-      {/* Add Job Form */}
+      {/* Book A Standard Skip Form */}
       <section
         style={{
           marginBottom: 32,
@@ -217,7 +246,9 @@ export default function JobsPage() {
           maxWidth: 600,
         }}
       >
-        <h2 style={{ fontSize: 18, marginBottom: 12 }}>Book A Standard Skip</h2>
+        <h2 style={{ fontSize: 18, marginBottom: 12 }}>
+          Book A Standard Skip
+        </h2>
         <form onSubmit={handleAddJob}>
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>
@@ -244,21 +275,25 @@ export default function JobsPage() {
 
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>
-              Description *
+              Skip type *
             </label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
+            <select
+              value={selectedSkipTypeId}
+              onChange={(e) => setSelectedSkipTypeId(e.target.value)}
               style={{
                 width: "100%",
                 padding: 8,
                 borderRadius: 4,
                 border: "1px solid #ccc",
-                resize: "vertical",
               }}
-              placeholder="e.g. 8yd builders skip to CF83 3AA, driveway placement"
-            />
+            >
+              <option value="">Select a skip type…</option>
+              {skipTypes.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.quantity_owned} owned)
+                </option>
+              ))}
+            </select>
           </div>
 
           <div style={{ marginBottom: 16 }}>
@@ -327,7 +362,7 @@ export default function JobsPage() {
                     padding: "8px",
                   }}
                 >
-                  Description
+                  Description (skip type)
                 </th>
                 <th
                   style={{
