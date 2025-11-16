@@ -1,17 +1,15 @@
 // pages/app/jobs.js
 import { useEffect, useState } from "react";
-import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
+import { useAuthProfile } from "../../lib/useAuthProfile";
 
 export default function JobsPage() {
-  const router = useRouter();
-  const [checking, setChecking] = useState(true);
-  const [userEmail, setUserEmail] = useState(null);
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
   const [customers, setCustomers] = useState([]);
   const [jobs, setJobs] = useState([]);
 
-  // NEW: skip types state
+  // Skip types state
   const [skipTypes, setSkipTypes] = useState([]);
   const [selectedSkipTypeId, setSelectedSkipTypeId] = useState("");
 
@@ -23,36 +21,28 @@ export default function JobsPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (checking) return;
+    if (!subscriberId) return; // useAuthProfile handles redirect if not signed in
+
     async function loadData() {
-      // 1) Check auth
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      setErrorMsg("");
 
-      if (userError || !user) {
-        router.replace("/login");
-        return;
-      }
-
-      setUserEmail(user.email ?? null);
-
-      // 2) Load customers (for dropdown)
+      // 1) Load customers for this subscriber
       const { data: customerData, error: customersError } = await supabase
         .from("customers")
         .select("id, name")
+        .eq("subscriber_id", subscriberId)
         .order("name", { ascending: true });
 
       if (customersError) {
         console.error("Customers error:", customersError);
         setErrorMsg("Could not load customers.");
-        setChecking(false);
         return;
       }
 
       setCustomers(customerData || []);
 
-      // 3) Load jobs (for list)
+      // 2) Load jobs for this subscriber
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
@@ -65,36 +55,35 @@ export default function JobsPage() {
           )
         `
         )
+        .eq("subscriber_id", subscriberId)
         .order("created_at", { ascending: false });
 
       if (jobsError) {
         console.error("Jobs error:", jobsError);
         setErrorMsg("Could not load jobs.");
-        setChecking(false);
         return;
       }
 
       setJobs(jobData || []);
 
-      // 4) Load skip types (for Book A Standard Skip dropdown)
+      // 3) Load skip types for this subscriber
       const { data: skipTypesData, error: skipTypesError } = await supabase
         .from("skip_types")
         .select("id, name, quantity_owned")
+        .eq("subscriber_id", subscriberId)
         .order("name", { ascending: true });
 
       if (skipTypesError) {
         console.error("Skip types error:", skipTypesError);
-        // don't hard fail the page, just show message
+        // don’t hard fail the page, just show message
         setErrorMsg("Could not load skip types.");
       } else {
         setSkipTypes(skipTypesData || []);
       }
-
-      setChecking(false);
     }
 
     loadData();
-  }, [router]);
+  }, [checking, subscriberId]);
 
   async function handleAddJob(e) {
     e.preventDefault();
@@ -110,38 +99,16 @@ export default function JobsPage() {
       return;
     }
 
+    if (!subscriberId) {
+      setErrorMsg("Could not find your subscriber when adding job.");
+      return;
+    }
+
     setSaving(true);
 
     try {
-      // Get profile so we know subscriber_id
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-
-      if (userError || !user) {
-        router.replace("/login");
-        return;
-      }
-
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("subscriber_id")
-        .single();
-
-      if (profileError || !profile) {
-        console.error("Profile error:", profileError);
-        setErrorMsg("Could not find your subscriber when adding job.");
-        setSaving(false);
-        return;
-      }
-
-      const subscriberId = profile.subscriber_id;
-
       // Find the selected skip type
-      const selectedSkip = skipTypes.find(
-        (s) => s.id === selectedSkipTypeId
-      );
+      const selectedSkip = skipTypes.find((s) => s.id === selectedSkipTypeId);
 
       if (!selectedSkip) {
         setErrorMsg("Selected skip type not found.");
@@ -220,9 +187,9 @@ export default function JobsPage() {
     >
       <header style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, marginBottom: 8 }}>Jobs</h1>
-        {userEmail && (
+        {user?.email && (
           <p style={{ fontSize: 14, color: "#555" }}>
-            Signed in as {userEmail}
+            Signed in as {user.email}
           </p>
         )}
         <p style={{ marginTop: 8 }}>
@@ -232,8 +199,10 @@ export default function JobsPage() {
         </p>
       </header>
 
-      {errorMsg && (
-        <p style={{ color: "red", marginBottom: 16 }}>{errorMsg}</p>
+      {(authError || errorMsg) && (
+        <p style={{ color: "red", marginBottom: 16 }}>
+          {authError || errorMsg}
+        </p>
       )}
 
       {/* Book A Standard Skip Form */}
