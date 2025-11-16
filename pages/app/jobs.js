@@ -217,7 +217,7 @@ export default function JobsPage() {
           maxWidth: 600,
         }}
       >
-        <h2 style={{ fontSize: 18, marginBottom: 12 }}>Add a job</h2>
+        <h2 style={{ fontSize: 18, marginBottom: 12 }}>Book A Standard Skip</h2>
         <form onSubmit={handleAddJob}>
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>
