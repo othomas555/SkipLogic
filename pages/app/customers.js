@@ -1,335 +1,378 @@
 // pages/app/customers.js
 import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
-import { useAuthProfile } from "../../lib/useAuthProfile";
 
 export default function CustomersPage() {
-  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
+  const router = useRouter();
+
+  const [checking, setChecking] = useState(true);
+  const [userEmail, setUserEmail] = useState(null);
 
   const [customers, setCustomers] = useState([]);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // For new customer form
-  const [name, setName] = useState("");
-  const [contactName, setContactName] = useState("");
+  // Form state
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [companyName, setCompanyName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [addressLine1, setAddressLine1] = useState("");
+  const [addressLine2, setAddressLine2] = useState("");
+  const [addressLine3, setAddressLine3] = useState("");
+  const [postcode, setPostcode] = useState("");
+  const [creditAccount, setCreditAccount] = useState("no"); // "yes" | "no"
+
   const [saving, setSaving] = useState(false);
 
-  // Load customers once we know who the subscriber is
-  useEffect(() => {
-    if (checking) return;
-    if (!subscriberId) return; // useAuthProfile will handle redirect if not signed in
+  // Store subscriber_id once we’ve looked it up
+  const [subscriberId, setSubscriberId] = useState(null);
 
+  useEffect(() => {
     async function loadData() {
+      setChecking(true);
       setErrorMsg("");
 
-      const { data, error } = await supabase
-        .from("customers")
-        .select("id, name, contact_name, email, phone")
-        .eq("subscriber_id", subscriberId)
-        .order("created_at", { ascending: false });
+      // 1) Check auth
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
 
-      if (error) {
-        console.error("Customers error:", error);
-        setErrorMsg("Could not load customers.");
+      if (userError || !user) {
+        router.push("/login");
         return;
       }
 
-      setCustomers(data || []);
+      setUserEmail(user.email);
+
+      // 2) Get profile → subscriber_id
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("subscriber_id")
+        .eq("id", user.id)
+        .single();
+
+      if (profileError) {
+        console.error(profileError);
+        setErrorMsg("Could not load profile / subscriber.");
+        setChecking(false);
+        return;
+      }
+
+      const subId = profile.subscriber_id;
+      setSubscriberId(subId);
+
+      // 3) Load customers for this subscriber
+      const { data: customerRows, error: customersError } = await supabase
+        .from("customers")
+        .select(
+          `
+          id,
+          first_name,
+          last_name,
+          company_name,
+          email,
+          phone,
+          address_line1,
+          address_line2,
+          address_line3,
+          postcode,
+          is_credit_account,
+          created_at
+        `
+        )
+        .eq("subscriber_id", subId)
+        .order("created_at", { ascending: false });
+
+      if (customersError) {
+        console.error(customersError);
+        setErrorMsg("Could not load customers.");
+      } else {
+        setCustomers(customerRows || []);
+      }
+
+      setChecking(false);
     }
 
     loadData();
-  }, [checking, subscriberId]);
+  }, [router]);
 
   async function handleAddCustomer(e) {
     e.preventDefault();
     setErrorMsg("");
 
-    if (!name.trim()) {
-      setErrorMsg("Customer name is required.");
+    if (!subscriberId) {
+      setErrorMsg("Missing subscriber. Please refresh and try again.");
       return;
     }
 
-    if (!subscriberId) {
-      setErrorMsg("Could not find your subscriber when adding customer.");
+    // Basic required field check
+    if (!firstName || !lastName || !email || !phone || !addressLine1 || !postcode) {
+      setErrorMsg("Please fill in all required fields.");
       return;
     }
 
     setSaving(true);
 
-    try {
-      // Insert new customer for this subscriber
-      const { data: inserted, error: insertError } = await supabase
-        .from("customers")
-        .insert([
-          {
-            subscriber_id: subscriberId,
-            name: name.trim(),
-            contact_name: contactName.trim() || null,
-            email: email.trim() || null,
-            phone: phone.trim() || null,
-          },
-        ])
-        .select("id, name, contact_name, email, phone")
-        .single();
+    const { data, error } = await supabase.from("customers").insert([
+      {
+        subscriber_id: subscriberId,
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        company_name: companyName.trim() || null,
+        email: email.trim(),
+        phone: phone.trim(),
+        address_line1: addressLine1.trim(),
+        address_line2: addressLine2.trim() || null,
+        address_line3: addressLine3.trim() || null,
+        postcode: postcode.trim().toUpperCase(),
+        is_credit_account: creditAccount === "yes",
+      },
+    ]).select(`
+      id,
+      first_name,
+      last_name,
+      company_name,
+      email,
+      phone,
+      address_line1,
+      address_line2,
+      address_line3,
+      postcode,
+      is_credit_account,
+      created_at
+    `).single();
 
-      if (insertError) {
-        console.error("Insert customer error:", insertError);
-        setErrorMsg("Could not save customer.");
-        setSaving(false);
-        return;
-      }
-
-      // Prepend to list so it appears at the top
-      setCustomers((prev) => [inserted, ...prev]);
-
-      // Clear form
-      setName("");
-      setContactName("");
-      setEmail("");
-      setPhone("");
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not save customer.");
       setSaving(false);
-    } catch (err) {
-      console.error("Unexpected error adding customer:", err);
-      setErrorMsg("Something went wrong while adding the customer.");
-      setSaving(false);
+      return;
     }
+
+    // Prepend new customer to list
+    setCustomers((prev) => [data, ...prev]);
+
+    // Reset form
+    setFirstName("");
+    setLastName("");
+    setCompanyName("");
+    setEmail("");
+    setPhone("");
+    setAddressLine1("");
+    setAddressLine2("");
+    setAddressLine3("");
+    setPostcode("");
+    setCreditAccount("no");
+
+    setSaving(false);
   }
 
   if (checking) {
-    return (
-      <main
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
-        <p>Loading your customers…</p>
-      </main>
-    );
+    return <p className="p-4">Checking session...</p>;
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        padding: 24,
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      <header style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, marginBottom: 8 }}>Customers</h1>
-        {user?.email && (
-          <p style={{ fontSize: 14, color: "#555" }}>
-            Signed in as {user.email}
-          </p>
+    <main className="p-4 max-w-5xl mx-auto">
+      <header className="mb-4">
+        <h1 className="text-2xl font-semibold mb-1">Customers</h1>
+        {userEmail && (
+          <p className="text-sm text-gray-600">Signed in as {userEmail}</p>
         )}
-        <p style={{ marginTop: 8 }}>
-          <a href="/app" style={{ fontSize: 14 }}>
-            ← Back to dashboard
-          </a>
-        </p>
+        <button
+          type="button"
+          className="mt-2 text-blue-600 underline text-sm"
+          onClick={() => router.push("/app")}
+        >
+          ← Back to dashboard
+        </button>
       </header>
 
-      {(authError || errorMsg) && (
-        <p style={{ color: "red", marginBottom: 16 }}>
-          {authError || errorMsg}
-        </p>
+      {errorMsg && (
+        <div className="mb-4 p-3 border border-red-400 bg-red-50 text-red-700 text-sm rounded">
+          {errorMsg}
+        </div>
       )}
 
-      {/* Add Customer Form */}
-      <section
-        style={{
-          marginBottom: 32,
-          padding: 16,
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          maxWidth: 600,
-        }}
-      >
-        <h2 style={{ fontSize: 18, marginBottom: 12 }}>Add a customer</h2>
-        <form onSubmit={handleAddCustomer}>
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>
-              Customer name *
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-              placeholder="Cox Skip & Waste Management Ltd"
-            />
+      {/* Add customer form */}
+      <section className="mb-8 border rounded p-4">
+        <h2 className="text-lg font-semibold mb-3">Add customer</h2>
+
+        <form onSubmit={handleAddCustomer} className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm mb-1">First Name *</label>
+              <input
+                type="text"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">Last Name *</label>
+              <input
+                type="text"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">
+                Company Name <span className="text-gray-400 text-xs">(optional)</span>
+              </label>
+              <input
+                type="text"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">Customer Email *</label>
+              <input
+                type="email"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">Customer Phone *</label>
+              <input
+                type="tel"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">Address Line 1 *</label>
+              <input
+                type="text"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={addressLine1}
+                onChange={(e) => setAddressLine1(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">Address Line 2 *</label>
+              <input
+                type="text"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={addressLine2}
+                onChange={(e) => setAddressLine2(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">
+                Address Line 3{" "}
+                <span className="text-gray-400 text-xs">(optional)</span>
+              </label>
+              <input
+                type="text"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={addressLine3}
+                onChange={(e) => setAddressLine3(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">Postcode *</label>
+              <input
+                type="text"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={postcode}
+                onChange={(e) => setPostcode(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">Credit Account Customer *</label>
+              <select
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={creditAccount}
+                onChange={(e) => setCreditAccount(e.target.value)}
+              >
+                <option value="no">No</option>
+                <option value="yes">Yes</option>
+              </select>
+            </div>
           </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>
-              Contact name
-            </label>
-            <input
-              type="text"
-              value={contactName}
-              onChange={(e) => setContactName(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-              placeholder="Jane Smith"
-            />
+          <div>
+            <button
+              type="submit"
+              className="px-4 py-2 border rounded text-sm bg-black text-white disabled:opacity-60"
+              disabled={saving}
+            >
+              {saving ? "Saving..." : "Add customer"}
+            </button>
           </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-              placeholder="accounts@example.com"
-            />
-          </div>
-
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Phone</label>
-            <input
-              type="tel"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-              placeholder="01633 123456"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={saving}
-            style={{
-              padding: "8px 16px",
-              borderRadius: 4,
-              border: "none",
-              cursor: saving ? "default" : "pointer",
-              backgroundColor: saving ? "#999" : "#0070f3",
-              color: "#fff",
-              fontWeight: 500,
-            }}
-          >
-            {saving ? "Saving…" : "Add customer"}
-          </button>
         </form>
       </section>
 
-      {/* Customers List */}
+      {/* Customers table */}
       <section>
+        <h2 className="text-lg font-semibold mb-3">Existing customers</h2>
+
         {customers.length === 0 ? (
-          <p>No customers found yet.</p>
+          <p className="text-sm text-gray-600">No customers found yet.</p>
         ) : (
-          <table
-            style={{
-              borderCollapse: "collapse",
-              width: "100%",
-              maxWidth: 800,
-            }}
-          >
-            <thead>
-              <tr>
-                <th
-                  style={{
-                    textAlign: "left",
-                    borderBottom: "1px solid #ddd",
-                    padding: "8px",
-                  }}
-                >
-                  Name
-                </th>
-                <th
-                  style={{
-                    textAlign: "left",
-                    borderBottom: "1px solid #ddd",
-                    padding: "8px",
-                  }}
-                >
-                  Contact
-                </th>
-                <th
-                  style={{
-                    textAlign: "left",
-                    borderBottom: "1px solid #ddd",
-                    padding: "8px",
-                  }}
-                >
-                  Email
-                </th>
-                <th
-                  style={{
-                    textAlign: "left",
-                    borderBottom: "1px solid #ddd",
-                    padding: "8px",
-                  }}
-                >
-                  Phone
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {customers.map((c) => (
-                <tr key={c.id}>
-                  <td
-                    style={{
-                      borderBottom: "1px solid #eee",
-                      padding: "8px",
-                    }}
-                  >
-                    {c.name}
-                  </td>
-                  <td
-                    style={{
-                      borderBottom: "1px solid #eee",
-                      padding: "8px",
-                    }}
-                  >
-                    {c.contact_name}
-                  </td>
-                  <td
-                    style={{
-                      borderBottom: "1px solid #eee",
-                      padding: "8px",
-                    }}
-                  >
-                    {c.email}
-                  </td>
-                  <td
-                    style={{
-                      borderBottom: "1px solid #eee",
-                      padding: "8px",
-                    }}
-                  >
-                    {c.phone}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm border">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="border px-2 py-1 text-left">Name</th>
+                  <th className="border px-2 py-1 text-left">Company</th>
+                  <th className="border px-2 py-1 text-left">Email</th>
+                  <th className="border px-2 py-1 text-left">Phone</th>
+                  <th className="border px-2 py-1 text-left">Address</th>
+                  <th className="border px-2 py-1 text-left">Postcode</th>
+                  <th className="border px-2 py-1 text-left">Credit Account</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {customers.map((c) => (
+                  <tr key={c.id}>
+                    <td className="border px-2 py-1">
+                      {c.first_name} {c.last_name}
+                    </td>
+                    <td className="border px-2 py-1">
+                      {c.company_name || <span className="text-gray-400">—</span>}
+                    </td>
+                    <td className="border px-2 py-1">{c.email}</td>
+                    <td className="border px-2 py-1">{c.phone}</td>
+                    <td className="border px-2 py-1">
+                      {[c.address_line1, c.address_line2, c.address_line3]
+                        .filter(Boolean)
+                        .join(", ")}
+                    </td>
+                    <td className="border px-2 py-1">{c.postcode}</td>
+                    <td className="border px-2 py-1">
+                      {c.is_credit_account ? "Yes" : "No"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </main>
