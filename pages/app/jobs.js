@@ -30,9 +30,9 @@ export default function JobsPage() {
       // 1) Load customers for this subscriber
       const { data: customerData, error: customersError } = await supabase
         .from("customers")
-        .select("id, name")
+        .select("id, first_name, last_name, company_name")
         .eq("subscriber_id", subscriberId)
-        .order("name", { ascending: true });
+        .order("last_name", { ascending: true });
 
       if (customersError) {
         console.error("Customers error:", customersError);
@@ -42,7 +42,7 @@ export default function JobsPage() {
 
       setCustomers(customerData || []);
 
-      // 2) Load jobs for this subscriber
+      // 2) Load jobs for this subscriber (with related customer name fields)
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
@@ -51,7 +51,9 @@ export default function JobsPage() {
           description,
           status,
           customers (
-            name
+            first_name,
+            last_name,
+            company_name
           )
         `
         )
@@ -133,7 +135,9 @@ export default function JobsPage() {
           description,
           status,
           customers (
-            name
+            first_name,
+            last_name,
+            company_name
           )
         `
         )
@@ -159,6 +163,25 @@ export default function JobsPage() {
       setErrorMsg("Something went wrong while adding the job.");
       setSaving(false);
     }
+  }
+
+  function formatCustomerLabel(c) {
+    const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
+    if (c.company_name) {
+      // e.g. "Acme Ltd – John Smith"
+      return `${c.company_name} – ${baseName || "Unknown contact"}`;
+    }
+    return baseName || "Unknown customer";
+  }
+
+  function formatCustomerFromJob(j) {
+    const c = j.customers;
+    if (!c) return "Unknown customer";
+    const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
+    if (c.company_name) {
+      return `${c.company_name} – ${baseName || "Unknown contact"}`;
+    }
+    return baseName || "Unknown customer";
   }
 
   if (checking) {
@@ -236,7 +259,7 @@ export default function JobsPage() {
               <option value="">Select a customer…</option>
               {customers.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name}
+                  {formatCustomerLabel(c)}
                 </option>
               ))}
             </select>
@@ -353,7 +376,7 @@ export default function JobsPage() {
                       padding: "8px",
                     }}
                   >
-                    {j.customers?.name || "Unknown customer"}
+                    {formatCustomerFromJob(j)}
                   </td>
                   <td
                     style={{
