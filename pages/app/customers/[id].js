@@ -11,10 +11,17 @@ export default function CustomerDetailPage() {
 
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
+  // 🔊 DEBUG: does this component even render?
+  console.log("CustomerDetailPage render", {
+    checking,
+    subscriberId,
+    customerId,
+  });
+
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [saving, setSaving] = useState(false);
-  const [successMsg, setSuccessMsg] = useState(""); // ✅ one success state
+  const [successMsg, setSuccessMsg] = useState(""); // success state
 
   // Form state
   const [firstName, setFirstName] = useState("");
@@ -39,6 +46,11 @@ export default function CustomerDetailPage() {
       setLoading(true);
       setErrorMsg("");
       setSuccessMsg("");
+
+      console.log("Loading customer from Supabase…", {
+        subscriberId,
+        customerId,
+      });
 
       const { data, error } = await supabase
         .from("customers")
@@ -92,13 +104,23 @@ export default function CustomerDetailPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
+    console.log("handleSave called");
+
+    // TEMP: hard proof that this function is running
+    alert("DEBUG: handleSave fired");
+
     if (!subscriberId || !customerId) {
       setErrorMsg("Missing subscriber or customer ID.");
+      console.log("Missing subscriberId or customerId", {
+        subscriberId,
+        customerId,
+      });
       return;
     }
 
     if (!firstName || !lastName || !email || !phone || !addressLine1 || !postcode) {
       setErrorMsg("Please fill in all required fields.");
+      console.log("Validation failed");
       return;
     }
 
@@ -133,7 +155,6 @@ export default function CustomerDetailPage() {
     setSaving(false);
     setSuccessMsg("Contact updated");
 
-    // Auto-hide banner after 3 seconds (but keep the log)
     setTimeout(() => setSuccessMsg(""), 3000);
   }
 
@@ -309,7 +330,6 @@ export default function CustomerDetailPage() {
               {saving ? "Saving…" : "Save changes"}
             </button>
 
-            {/* ✅ Subtle inline “Saved ✓” next to button */}
             {successMsg && !saving && (
               <span className="text-xs text-green-700">Saved ✓</span>
             )}
