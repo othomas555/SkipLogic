@@ -86,54 +86,53 @@ export default function CustomerDetailPage() {
     loadCustomer();
   }, [checking, subscriberId, customerId]);
 
- async function handleSave(e) {
-  e.preventDefault();
-  setErrorMsg("");
-  setSuccessMsg("");
+  async function handleSave(e) {
+    e.preventDefault();
+    setErrorMsg("");
+    setSuccessMsg("");
 
-  if (!subscriberId || !customerId) {
-    setErrorMsg("Missing subscriber or customer ID.");
-    return;
-  }
+    if (!subscriberId || !customerId) {
+      setErrorMsg("Missing subscriber or customer ID.");
+      return;
+    }
 
-  if (!firstName || !lastName || !email || !phone || !addressLine1 || !postcode) {
-    setErrorMsg("Please fill in all required fields.");
-    return;
-  }
+    if (!firstName || !lastName || !email || !phone || !addressLine1 || !postcode) {
+      setErrorMsg("Please fill in all required fields.");
+      return;
+    }
 
-  setSaving(true);
+    setSaving(true);
 
-  const { error } = await supabase
-    .from("customers")
-    .update({
-      first_name: firstName.trim(),
-      last_name: lastName.trim(),
-      company_name: companyName.trim() || null,
-      email: email.trim(),
-      phone: phone.trim(),
-      address_line1: addressLine1.trim(),
-      address_line2: addressLine2.trim() || null,
-      address_line3: addressLine3.trim() || null,
-      postcode: postcode.trim().toUpperCase(),
-      is_credit_account: creditAccount === "yes",
-    })
-    .eq("subscriber_id", subscriberId)
-    .eq("id", customerId);
+    const { error } = await supabase
+      .from("customers")
+      .update({
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        company_name: companyName.trim() || null,
+        email: email.trim(),
+        phone: phone.trim(),
+        address_line1: addressLine1.trim(),
+        address_line2: addressLine2.trim() || null,
+        address_line3: addressLine3.trim() || null,
+        postcode: postcode.trim().toUpperCase(),
+        is_credit_account: creditAccount === "yes",
+      })
+      .eq("subscriber_id", subscriberId)
+      .eq("id", customerId);
 
-  if (error) {
-    console.error(error);
-    setErrorMsg("Could not save changes.");
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not save changes.");
+      setSaving(false);
+      return;
+    }
+
     setSaving(false);
-    return;
+    setSuccessMsg("Contact updated");
+
+    // Auto-hide success after 3 seconds
+    setTimeout(() => setSuccessMsg(""), 3000);
   }
-
-  setSaving(false);
-  setSuccessMsg("Contact updated");
-
-  // Auto-hide success after 3 seconds
-  setTimeout(() => setSuccessMsg(""), 3000);
-}
-
 
   if (checking || loading) {
     return (
@@ -169,8 +168,12 @@ export default function CustomerDetailPage() {
       {(authError || errorMsg) && (
         <div className="mb-4 p-3 border border-red-400 bg-red-50 text-red-700 text-sm rounded">
           {authError || errorMsg}
-  <div className="mb-4 p-3 border border-green-400 bg-green-50 text-green-700 text-sm rounded">
-    {successMsg}
+        </div>
+      )}
+
+      {successMsg && (
+        <div className="mb-4 p-3 border border-green-400 bg-green-50 text-green-700 text-sm rounded">
+          {successMsg}
         </div>
       )}
 
