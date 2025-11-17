@@ -4,24 +4,66 @@ import { useEffect, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
+// Helper: generate a human-friendly account code like COX-001, COX-002...
+async function generateAccountCode(rawName) {
+  let base = (rawName || "").trim();
+
+  if (!base) {
+    base = "Customer";
+  }
+
+  // Remove non-alphanumeric, take first 3 chars, uppercase
+  const cleaned = base.replace(/[^a-zA-Z0-9]/g, "");
+  const prefix =
+    cleaned.substring(0, 3).toUpperCase() || "CUS";
+
+  // Find existing codes with this prefix
+  const { data, error } = await supabase
+    .from("customers")
+    .select("account_code")
+    .ilike("account_code", `${prefix}-%`);
+
+  if (error) {
+    console.error("Error checking existing account codes:", error);
+    // Fall back to 001 if something goes wrong
+    return `${prefix}-001`;
+  }
+
+  // Determine the next number by looking at existing suffixes
+  let maxNumber = 0;
+
+  (data || []).forEach((row) => {
+    if (!row.account_code) return;
+    const code = row.account_code;
+    const parts = code.split("-");
+    if (parts.length !== 2) return;
+
+    const num = parseInt(parts[1], 10);
+    if (!isNaN(num) && num > maxNumber) {
+      maxNumber = num;
+    }
+  });
+
+  const nextNumber = maxNumber + 1;
+  const padded = String(nextNumber).padStart(3, "0");
+  return `${prefix}-${padded}`;
+}
+
 export default function CustomerDetailPage() {
   const router = useRouter();
   const { id } = router.query;
   const customerId = Array.isArray(id) ? id[0] : id;
 
-  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
-
-  // 🔊 DEBUG: does this component even render?
-  console.log("CustomerDetailPage render", {
+  const {
     checking,
+    user,
     subscriberId,
-    customerId,
-  });
+    errorMsg: authError,
+  } = useAuthProfile();
 
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [successMsg, setSuccessMsg] = useState(""); // success state
+  const [successMsg, setSuccessMsg] = useState("");
 
   // Form state
   const [firstName, setFirstName] = useState("");
@@ -34,29 +76,28 @@ export default function CustomerDetailPage() {
   const [addressLine3, setAddressLine3] = useState("");
   const [postcode, setPostcode] = useState("");
   const [creditAccount, setCreditAccount] = useState("no"); // "yes" | "no"
+  const [accountCode, setAccountCode] = useState("");
 
-  const [createdAt, setCreatedAt] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  // Track original credit/account_code so we know when it changes
+  const [originalIsCredit, setOriginalIsCredit] = useState(false);
+  const [originalAccountCode, setOriginalAccountCode] = useState(null);
 
   useEffect(() => {
-    if (checking) return;
-    if (!subscriberId) return;
-    if (!customerId) return;
-
     async function loadCustomer() {
+      if (!customerId || !subscriberId) return;
+
       setLoading(true);
       setErrorMsg("");
       setSuccessMsg("");
-
-      console.log("Loading customer from Supabase…", {
-        subscriberId,
-        customerId,
-      });
 
       const { data, error } = await supabase
         .from("customers")
         .select(
           `
           id,
+          subscriber_id,
           first_name,
           last_name,
           company_name,
@@ -67,15 +108,16 @@ export default function CustomerDetailPage() {
           address_line3,
           postcode,
           is_credit_account,
+          account_code,
           created_at
         `
         )
-        .eq("subscriber_id", subscriberId)
         .eq("id", customerId)
+        .eq("subscriber_id", subscriberId)
         .single();
 
       if (error) {
-        console.error("Load customer error:", error);
+        console.error(error);
         setErrorMsg("Could not load customer.");
         setLoading(false);
         return;
@@ -91,12 +133,17 @@ export default function CustomerDetailPage() {
       setAddressLine3(data.address_line3 || "");
       setPostcode(data.postcode || "");
       setCreditAccount(data.is_credit_account ? "yes" : "no");
-      setCreatedAt(data.created_at || null);
+      setAccountCode(data.account_code || "");
+
+      setOriginalIsCredit(!!data.is_credit_account);
+      setOriginalAccountCode(data.account_code || null);
 
       setLoading(false);
     }
 
-    loadCustomer();
+    if (!checking && subscriberId && customerId) {
+      loadCustomer();
+    }
   }, [checking, subscriberId, customerId]);
 
   async function handleSave(e) {
@@ -104,27 +151,38 @@ export default function CustomerDetailPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
-    console.log("handleSave called");
-
     if (!subscriberId || !customerId) {
       setErrorMsg("Missing subscriber or customer ID.");
-      console.log("Missing subscriberId or customerId", {
-        subscriberId,
-        customerId,
-      });
       return;
     }
 
-    if (!firstName || !lastName || !email || !phone || !addressLine1 || !postcode) {
+    // basic required check
+    if (
+      !firstName ||
+      !lastName ||
+      !email ||
+      !phone ||
+      !addressLine1 ||
+      !postcode
+    ) {
       setErrorMsg("Please fill in all required fields.");
-      console.log("Validation failed");
       return;
     }
 
     setSaving(true);
-    console.log("Saving customer changes…");
 
-    const { error } = await supabase
+    const isCredit = creditAccount === "yes";
+    let accountCodeToSave = accountCode || null;
+
+    // If they were NOT credit before, and are now, and don't have a code, generate one
+    if (!originalIsCredit && isCredit && !accountCodeToSave) {
+      const nameForCode =
+        companyName.trim() ||
+        `${firstName.trim()} ${lastName.trim()}`;
+      accountCodeToSave = await generateAccountCode(nameForCode);
+    }
+
+    const { data, error } = await supabase
       .from("customers")
       .update({
         first_name: firstName.trim(),
@@ -136,59 +194,92 @@ export default function CustomerDetailPage() {
         address_line2: addressLine2.trim() || null,
         address_line3: addressLine3.trim() || null,
         postcode: postcode.trim().toUpperCase(),
-        is_credit_account: creditAccount === "yes",
+        is_credit_account: isCredit,
+        account_code: accountCodeToSave,
       })
+      .eq("id", customerId)
       .eq("subscriber_id", subscriberId)
-      .eq("id", customerId);
+      .select(
+        `
+        id,
+        first_name,
+        last_name,
+        company_name,
+        email,
+        phone,
+        address_line1,
+        address_line2,
+        address_line3,
+        postcode,
+        is_credit_account,
+        account_code,
+        created_at
+      `
+      )
+      .single();
 
     if (error) {
-      console.error("Update customer error:", error);
-      setErrorMsg("Could not save changes.");
+      console.error(error);
+      setErrorMsg("Could not save customer.");
       setSaving(false);
       return;
     }
 
-    console.log("Customer updated OK");
+    // Update local + original state with latest data
+    setFirstName(data.first_name || "");
+    setLastName(data.last_name || "");
+    setCompanyName(data.company_name || "");
+    setEmail(data.email || "");
+    setPhone(data.phone || "");
+    setAddressLine1(data.address_line1 || "");
+    setAddressLine2(data.address_line2 || "");
+    setAddressLine3(data.address_line3 || "");
+    setPostcode(data.postcode || "");
+    setCreditAccount(data.is_credit_account ? "yes" : "no");
+    setAccountCode(data.account_code || "");
+
+    setOriginalIsCredit(!!data.is_credit_account);
+    setOriginalAccountCode(data.account_code || null);
+
     setSaving(false);
-    setSuccessMsg("Customer edited");
+    setSuccessMsg("Customer Edited");
 
     setTimeout(() => setSuccessMsg(""), 3000);
   }
 
-  if (checking || loading) {
-    return (
-      <main className="p-4">
-        <p>Loading customer…</p>
-      </main>
-    );
+  if (checking || loading || !customerId) {
+    return <p className="p-4">Loading customer...</p>;
   }
 
   return (
     <main className="p-4 max-w-3xl mx-auto font-sans">
       <header className="mb-4">
-        <h1 className="text-2xl font-semibold mb-1">Customer details</h1>
+        <h1 className="text-2xl font-semibold mb-1">
+          Customer Details
+        </h1>
         {user?.email && (
-          <p className="text-sm text-gray-600">Signed in as {user.email}</p>
-        )}
-        <div className="mt-2 flex items-center gap-2">
-          <button
-            type="button"
-            className="text-blue-600 underline text-sm"
-            onClick={() => router.push("/app/customers")}
-          >
-            ← Back to customers
-          </button>
-        </div>
-        {createdAt && (
-          <p className="mt-1 text-xs text-gray-500">
-            Created: {new Date(createdAt).toLocaleString()}
+          <p className="text-sm text-gray-600">
+            Signed in as {user.email}
           </p>
         )}
+        <button
+          type="button"
+          className="mt-2 text-blue-600 underline text-sm"
+          onClick={() => router.push("/app/customers")}
+        >
+          ← Back to customers
+        </button>
       </header>
 
-      {(authError || errorMsg) && (
+      {authError && (
         <div className="mb-4 p-3 border border-red-400 bg-red-50 text-red-700 text-sm rounded">
-          {authError || errorMsg}
+          {authError}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="mb-4 p-3 border border-red-400 bg-red-50 text-red-700 text-sm rounded">
+          {errorMsg}
         </div>
       )}
 
@@ -199,6 +290,8 @@ export default function CustomerDetailPage() {
       )}
 
       <section className="border rounded p-4">
+        <h2 className="text-lg font-semibold mb-3">Edit customer</h2>
+
         <form onSubmit={handleSave} className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
@@ -226,7 +319,9 @@ export default function CustomerDetailPage() {
             <div>
               <label className="block text-sm mb-1">
                 Company Name{" "}
-                <span className="text-gray-400 text-xs">(optional)</span>
+                <span className="text-gray-400 text-xs">
+                  (optional)
+                </span>
               </label>
               <input
                 type="text"
@@ -282,7 +377,9 @@ export default function CustomerDetailPage() {
             <div>
               <label className="block text-sm mb-1">
                 Address Line 3{" "}
-                <span className="text-gray-400 text-xs">(optional)</span>
+                <span className="text-gray-400 text-xs">
+                  (optional)
+                </span>
               </label>
               <input
                 type="text"
@@ -316,28 +413,40 @@ export default function CustomerDetailPage() {
                 <option value="yes">Yes</option>
               </select>
             </div>
+
+            <div>
+              <label className="block text-sm mb-1">
+                Account Code{" "}
+                <span className="text-gray-400 text-xs">
+                  (auto for credit customers)
+                </span>
+              </label>
+              <input
+                type="text"
+                className="w-full border rounded px-2 py-1 text-sm bg-gray-50"
+                value={accountCode}
+                onChange={(e) => setAccountCode(e.target.value)}
+                placeholder="Will be generated when set as credit account"
+              />
+              {/* 
+                NOTE: Currently editable – if you want it read-only,
+                change to readOnly and remove onChange.
+              */}
+            </div>
           </div>
 
-          <div className="flex items-center gap-3 mt-2">
+          <div className="flex items-center gap-2 mt-2">
             <button
               type="submit"
               className="px-4 py-2 border rounded text-sm bg-black text-white disabled:opacity-60"
               disabled={saving}
             >
-              {saving ? "Saving…" : "Save changes"}
+              {saving ? "Saving..." : "Save changes"}
             </button>
 
             {successMsg && !saving && (
               <span className="text-xs text-green-700">Saved ✓</span>
             )}
-
-            <button
-              type="button"
-              className="px-3 py-2 border rounded text-xs"
-              onClick={() => router.push("/app/customers")}
-            >
-              Cancel
-            </button>
           </div>
         </form>
       </section>
