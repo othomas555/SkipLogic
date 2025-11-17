@@ -14,8 +14,7 @@ async function generateAccountCode(rawName) {
 
   // Remove non-alphanumeric, take first 3 chars, uppercase
   const cleaned = base.replace(/[^a-zA-Z0-9]/g, "");
-  const prefix =
-    cleaned.substring(0, 3).toUpperCase() || "CUS";
+  const prefix = cleaned.substring(0, 3).toUpperCase() || "CUS";
 
   // Find existing codes with this prefix
   const { data, error } = await supabase
@@ -77,6 +76,7 @@ export default function CustomerDetailPage() {
   const [postcode, setPostcode] = useState("");
   const [creditAccount, setCreditAccount] = useState("no"); // "yes" | "no"
   const [accountCode, setAccountCode] = useState("");
+  const [creditLimit, setCreditLimit] = useState(""); // £ credit limit
 
   const [saving, setSaving] = useState(false);
 
@@ -109,6 +109,7 @@ export default function CustomerDetailPage() {
           postcode,
           is_credit_account,
           account_code,
+          credit_limit,
           created_at
         `
         )
@@ -134,6 +135,11 @@ export default function CustomerDetailPage() {
       setPostcode(data.postcode || "");
       setCreditAccount(data.is_credit_account ? "yes" : "no");
       setAccountCode(data.account_code || "");
+      setCreditLimit(
+        data.credit_limit !== null && data.credit_limit !== undefined
+          ? String(data.credit_limit)
+          : ""
+      );
 
       setOriginalIsCredit(!!data.is_credit_account);
       setOriginalAccountCode(data.account_code || null);
@@ -196,6 +202,10 @@ export default function CustomerDetailPage() {
         postcode: postcode.trim().toUpperCase(),
         is_credit_account: isCredit,
         account_code: accountCodeToSave,
+        credit_limit:
+          creditLimit.trim() === ""
+            ? null
+            : Number(creditLimit.trim()),
       })
       .eq("id", customerId)
       .eq("subscriber_id", subscriberId)
@@ -213,6 +223,7 @@ export default function CustomerDetailPage() {
         postcode,
         is_credit_account,
         account_code,
+        credit_limit,
         created_at
       `
       )
@@ -237,6 +248,11 @@ export default function CustomerDetailPage() {
     setPostcode(data.postcode || "");
     setCreditAccount(data.is_credit_account ? "yes" : "no");
     setAccountCode(data.account_code || "");
+    setCreditLimit(
+      data.credit_limit !== null && data.credit_limit !== undefined
+        ? String(data.credit_limit)
+        : ""
+    );
 
     setOriginalIsCredit(!!data.is_credit_account);
     setOriginalAccountCode(data.account_code || null);
@@ -269,14 +285,17 @@ export default function CustomerDetailPage() {
         >
           ← Back to customers
         </button>
-            <button
-  type="button"
-  className="mt-2 text-blue-600 underline text-sm"
-  onClick={() => router.push(`/app/customers/${customerId}/credit-application`)}
->
-  View Credit Application (PDF)
-</button>
-
+        <button
+          type="button"
+          className="mt-2 ml-2 text-blue-600 underline text-sm"
+          onClick={() =>
+            router.push(
+              `/app/customers/${customerId}/credit-application`
+            )
+          }
+        >
+          View Credit Application (PDF)
+        </button>
       </header>
 
       {authError && (
@@ -303,7 +322,9 @@ export default function CustomerDetailPage() {
         <form onSubmit={handleSave} className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm mb-1">First Name *</label>
+              <label className="block text-sm mb-1">
+                First Name *
+              </label>
               <input
                 type="text"
                 className="w-full border rounded px-2 py-1 text-sm"
@@ -314,7 +335,9 @@ export default function CustomerDetailPage() {
             </div>
 
             <div>
-              <label className="block text-sm mb-1">Last Name *</label>
+              <label className="block text-sm mb-1">
+                Last Name *
+              </label>
               <input
                 type="text"
                 className="w-full border rounded px-2 py-1 text-sm"
@@ -340,7 +363,9 @@ export default function CustomerDetailPage() {
             </div>
 
             <div>
-              <label className="block text-sm mb-1">Customer Email *</label>
+              <label className="block text-sm mb-1">
+                Customer Email *
+              </label>
               <input
                 type="email"
                 className="w-full border rounded px-2 py-1 text-sm"
@@ -351,7 +376,9 @@ export default function CustomerDetailPage() {
             </div>
 
             <div>
-              <label className="block text-sm mb-1">Customer Phone *</label>
+              <label className="block text-sm mb-1">
+                Customer Phone *
+              </label>
               <input
                 type="tel"
                 className="w-full border rounded px-2 py-1 text-sm"
@@ -362,7 +389,9 @@ export default function CustomerDetailPage() {
             </div>
 
             <div>
-              <label className="block text-sm mb-1">Address Line 1 *</label>
+              <label className="block text-sm mb-1">
+                Address Line 1 *
+              </label>
               <input
                 type="text"
                 className="w-full border rounded px-2 py-1 text-sm"
@@ -373,7 +402,9 @@ export default function CustomerDetailPage() {
             </div>
 
             <div>
-              <label className="block text-sm mb-1">Address Line 2 *</label>
+              <label className="block text-sm mb-1">
+                Address Line 2 *
+              </label>
               <input
                 type="text"
                 className="w-full border rounded px-2 py-1 text-sm"
@@ -398,7 +429,9 @@ export default function CustomerDetailPage() {
             </div>
 
             <div>
-              <label className="block text-sm mb-1">Postcode *</label>
+              <label className="block text-sm mb-1">
+                Postcode *
+              </label>
               <input
                 type="text"
                 className="w-full border rounded px-2 py-1 text-sm"
@@ -440,6 +473,24 @@ export default function CustomerDetailPage() {
                 NOTE: Currently editable – if you want it read-only,
                 change to readOnly and remove onChange.
               */}
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1">
+                Credit Limit (£){" "}
+                <span className="text-gray-400 text-xs">
+                  (optional)
+                </span>
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                className="w-full border rounded px-2 py-1 text-sm"
+                value={creditLimit}
+                onChange={(e) => setCreditLimit(e.target.value)}
+                placeholder="e.g. 1000.00"
+              />
             </div>
           </div>
 
