@@ -3,6 +3,52 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
 
+// Helper: generate a human-friendly account code like COX-001, COX-002...
+async function generateAccountCode(rawName) {
+  let base = (rawName || "").trim();
+
+  if (!base) {
+    base = "Customer";
+  }
+
+  // Remove non-alphanumeric, take first 3 chars, uppercase
+  const cleaned = base.replace(/[^a-zA-Z0-9]/g, "");
+  const prefix =
+    cleaned.substring(0, 3).toUpperCase() || "CUS";
+
+  // Find existing codes with this prefix
+  const { data, error } = await supabase
+    .from("customers")
+    .select("account_code")
+    .ilike("account_code", `${prefix}-%`);
+
+  if (error) {
+    console.error("Error checking existing account codes:", error);
+    // Fall back to 001 if something goes wrong
+    return `${prefix}-001`;
+  }
+
+  // Determine the next number by looking at existing suffixes
+  let maxNumber = 0;
+
+  (data || []).forEach((row) => {
+    if (!row.account_code) return;
+    const code = row.account_code;
+    // Expecting PREFIX-XXX, so split on "-"
+    const parts = code.split("-");
+    if (parts.length !== 2) return;
+
+    const num = parseInt(parts[1], 10);
+    if (!isNaN(num) && num > maxNumber) {
+      maxNumber = num;
+    }
+  });
+
+  const nextNumber = maxNumber + 1;
+  const padded = String(nextNumber).padStart(3, "0");
+  return `${prefix}-${padded}`;
+}
+
 export default function CustomersPage() {
   const router = useRouter();
 
@@ -86,6 +132,7 @@ export default function CustomersPage() {
           address_line3,
           postcode,
           is_credit_account,
+          account_code,
           created_at
         `
         )
@@ -116,12 +163,28 @@ export default function CustomersPage() {
     }
 
     // Basic required field check
-    if (!firstName || !lastName || !email || !phone || !addressLine1 || !postcode) {
+    if (
+      !firstName ||
+      !lastName ||
+      !email ||
+      !phone ||
+      !addressLine1 ||
+      !postcode
+    ) {
       setErrorMsg("Please fill in all required fields.");
       return;
     }
 
     setSaving(true);
+
+    // Only generate an account code if this is a credit account customer
+    let accountCode = null;
+    if (creditAccount === "yes") {
+      const nameForCode =
+        companyName.trim() ||
+        `${firstName.trim()} ${lastName.trim()}`;
+      accountCode = await generateAccountCode(nameForCode);
+    }
 
     const { data, error } = await supabase
       .from("customers")
@@ -138,6 +201,7 @@ export default function CustomersPage() {
           address_line3: addressLine3.trim() || null,
           postcode: postcode.trim().toUpperCase(),
           is_credit_account: creditAccount === "yes",
+          account_code: accountCode, // may be null for non-credit customers
         },
       ])
       .select(
@@ -153,6 +217,7 @@ export default function CustomersPage() {
         address_line3,
         postcode,
         is_credit_account,
+        account_code,
         created_at
       `
       )
@@ -183,7 +248,8 @@ export default function CustomersPage() {
     setSaving(false);
     setSuccessMsg("Customer Added");
 
-    setTimeout(() => setSuccessmsg(""), 3000);
+    // ✅ Fix: correct state setter name
+    setTimeout(() => setSuccessMsg(""), 3000);
   }
 
   // Filter + paginate customers
@@ -241,12 +307,12 @@ export default function CustomersPage() {
           {errorMsg}
         </div>
       )}
-  
-{successMsg && (
-  <div className="mb-4 p-3 border border-green-400 bg-green-50 text-green-700 text-sm rounded">
-    {successMsg}
-  </div>
-)}
+
+      {successMsg && (
+        <div className="mb-4 p-3 border border-green-400 bg-green-50 text-green-700 text-sm rounded">
+          {successMsg}
+        </div>
+      )}
 
       {/* Add customer form */}
       <section className="mb-8 border rounded p-4">
@@ -357,7 +423,9 @@ export default function CustomersPage() {
             </div>
 
             <div>
-              <label className="block text-sm mb-1">Credit Account Customer *</label>
+              <label className="block text-sm mb-1">
+                Credit Account Customer *
+              </label>
               <select
                 className="w-full border rounded px-2 py-1 text-sm"
                 value={creditAccount}
@@ -378,9 +446,9 @@ export default function CustomersPage() {
               {saving ? "Saving..." : "Add customer"}
             </button>
 
-              {successMsg && !saving && (
-    <span className="text-xs text-green-700">Saved ✓</span>
-  )}
+            {successMsg && !saving && (
+              <span className="text-xs text-green-700">Saved ✓</span>
+            )}
           </div>
         </form>
       </section>
@@ -415,19 +483,29 @@ export default function CustomersPage() {
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-100">
                   <tr>
+                    <th className="border px-2 py-1 text-left">
+                      Account Code
+                    </th>
                     <th className="border px-2 py-1 text-left">Name</th>
                     <th className="border px-2 py-1 text-left">Company</th>
                     <th className="border px-2 py-1 text-left">Email</th>
                     <th className="border px-2 py-1 text-left">Phone</th>
                     <th className="border px-2 py-1 text-left">Address</th>
                     <th className="border px-2 py-1 text-left">Postcode</th>
-                    <th className="border px-2 py-1 text-left">Credit Account</th>
+                    <th className="border px-2 py-1 text-left">
+                      Credit Account
+                    </th>
                     <th className="border px-2 py-1 text-left">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {pageCustomers.map((c) => (
                     <tr key={c.id}>
+                      <td className="border px-2 py-1">
+                        {c.account_code || (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
                       <td className="border px-2 py-1">
                         {c.first_name} {c.last_name}
                       </td>
@@ -438,7 +516,9 @@ export default function CustomersPage() {
                       </td>
                       <td className="border px-2 py-1">{c.email}</td>
                       <td className="border px-2 py-1">{c.phone}</td>
-                      <td className="border px-2 py-1">{formatAddress(c)}</td>
+                      <td className="border px-2 py-1">
+                        {formatAddress(c)}
+                      </td>
                       <td className="border px-2 py-1">{c.postcode}</td>
                       <td className="border px-2 py-1">
                         {c.is_credit_account ? "Yes" : "No"}
@@ -447,7 +527,9 @@ export default function CustomersPage() {
                         <button
                           type="button"
                           className="text-blue-600 underline text-xs"
-                          onClick={() => router.push(`/app/customers/${c.id}`)}
+                          onClick={() =>
+                            router.push(`/app/customers/${c.id}`)
+                          }
                         >
                           View / Edit
                         </button>
