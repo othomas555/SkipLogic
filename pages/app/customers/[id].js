@@ -269,6 +269,14 @@ export default function CustomerDetailPage() {
         >
           ← Back to customers
         </button>
+            <button
+  type="button"
+  className="mt-2 text-blue-600 underline text-sm"
+  onClick={() => router.push(`/app/customers/${customerId}/credit-application`)}
+>
+  View Credit Application (PDF)
+</button>
+
       </header>
 
       {authError && (
