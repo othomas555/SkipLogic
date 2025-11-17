@@ -11,6 +11,7 @@ export default function CustomersPage() {
 
   const [customers, setCustomers] = useState([]);
   const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
 
   // Form state
   const [firstName, setFirstName] = useState("");
@@ -107,6 +108,7 @@ export default function CustomersPage() {
   async function handleAddCustomer(e) {
     e.preventDefault();
     setErrorMsg("");
+    setSuccessMsg("");
 
     if (!subscriberId) {
       setErrorMsg("Missing subscriber. Please refresh and try again.");
@@ -179,6 +181,9 @@ export default function CustomersPage() {
     setCreditAccount("no");
 
     setSaving(false);
+    setSuccessMsg("Customer Added");
+
+    setTimeout(() => setSuccessmsg(""), 3000);
   }
 
   // Filter + paginate customers
@@ -236,6 +241,12 @@ export default function CustomersPage() {
           {errorMsg}
         </div>
       )}
+  
+{successMsg && (
+  <div className="mb-4 p-3 border border-green-400 bg-green-50 text-green-700 text-sm rounded">
+    {successMsg}
+  </div>
+)}
 
       {/* Add customer form */}
       <section className="mb-8 border rounded p-4">
@@ -358,7 +369,7 @@ export default function CustomersPage() {
             </div>
           </div>
 
-          <div>
+          <div className="flex items-center gap-2">
             <button
               type="submit"
               className="px-4 py-2 border rounded text-sm bg-black text-white disabled:opacity-60"
@@ -366,6 +377,10 @@ export default function CustomersPage() {
             >
               {saving ? "Saving..." : "Add customer"}
             </button>
+
+              {successMsg && !saving && (
+    <span className="text-xs text-green-700">Saved ✓</span>
+  )}
           </div>
         </form>
       </section>
