@@ -1,8 +1,8 @@
 // pages/app/customers/[id]/credit-application.js
 import { useRouter } from "next/router";
 import { useEffect, useState } from "react";
-import { supabase } from "../../../lib/supabaseClient";
-import { useAuthProfile } from "../../../lib/useAuthProfile";
+import { supabase } from "../../../../lib/supabaseClient";
+import { useAuthProfile } from "../../../../lib/useAuthProfile";
 
 export default function CreditApplicationPage() {
   const router = useRouter();
