@@ -106,9 +106,6 @@ export default function CustomerDetailPage() {
 
     console.log("handleSave called");
 
-    // TEMP: hard proof that this function is running
-    alert("DEBUG: handleSave fired");
-
     if (!subscriberId || !customerId) {
       setErrorMsg("Missing subscriber or customer ID.");
       console.log("Missing subscriberId or customerId", {
@@ -153,7 +150,7 @@ export default function CustomerDetailPage() {
 
     console.log("Customer updated OK");
     setSaving(false);
-    setSuccessMsg("Contact updated");
+    setSuccessMsg("Customer edited");
 
     setTimeout(() => setSuccessMsg(""), 3000);
   }
