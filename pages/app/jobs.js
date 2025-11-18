@@ -17,7 +17,6 @@ export default function JobsPage() {
 
   // Form state
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
-  const [status, setStatus] = useState("open");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -42,19 +41,18 @@ export default function JobsPage() {
 
       setCustomers(customerData || []);
 
-      // 2) Load jobs for this subscriber (with related customer name fields)
+      // 2) Load jobs for this subscriber
+      //    NOTE: we now just select flat fields from jobs
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
           `
           id,
-          description,
-          status,
-          customers (
-            first_name,
-            last_name,
-            company_name
-          )
+          customer_id,
+          skip_type_id,
+          job_status,
+          scheduled_date,
+          notes
         `
         )
         .eq("subscriber_id", subscriberId)
@@ -109,7 +107,7 @@ export default function JobsPage() {
     setSaving(true);
 
     try {
-      // Find the selected skip type
+      // Find the selected skip type (for notes / sanity)
       const selectedSkip = skipTypes.find((s) => s.id === selectedSkipTypeId);
 
       if (!selectedSkip) {
@@ -118,27 +116,28 @@ export default function JobsPage() {
         return;
       }
 
-      // Insert job - store skip type name in description
+      // Insert job - now aligned to the new jobs table shape
+      // job_status defaults to 'booked' in the DB, so we can omit it if you like
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([
           {
             subscriber_id: subscriberId,
             customer_id: selectedCustomerId,
-            description: selectedSkip.name,
-            status,
+            skip_type_id: selectedSkipTypeId,
+            // optional: store something in notes for now
+            notes: `Standard skip: ${selectedSkip.name}`,
+            // scheduled_date: null for now - can wire in a date picker later
           },
         ])
         .select(
           `
           id,
-          description,
-          status,
-          customers (
-            first_name,
-            last_name,
-            company_name
-          )
+          customer_id,
+          skip_type_id,
+          job_status,
+          scheduled_date,
+          notes
         `
         )
         .single();
@@ -150,14 +149,14 @@ export default function JobsPage() {
         return;
       }
 
-      // 🔹 NEW: create initial DELIVER event for this job
+      // Create initial DELIVER event for this job
       const { data: event, error: eventError } = await supabase.rpc(
         "create_job_event",
         {
           _subscriber_id: subscriberId,
           _job_id: inserted.id,
           _event_type: "DELIVER",
-          _scheduled_at: null, // you can swap this for a scheduled date later
+          _scheduled_at: inserted.scheduled_date ?? null,
           _completed_at: null,
           _notes: "Initial delivery booked",
         }
@@ -165,6 +164,7 @@ export default function JobsPage() {
 
       if (eventError) {
         console.error("Create job event error:", eventError);
+        // We don't rollback the job here, just warn
         setErrorMsg("Job was created but the delivery event failed.");
         setSaving(false);
         return;
@@ -176,7 +176,6 @@ export default function JobsPage() {
       // Reset form
       setSelectedCustomerId("");
       setSelectedSkipTypeId("");
-      setStatus("open");
       setSaving(false);
     } catch (err) {
       console.error("Unexpected error adding job:", err);
@@ -194,14 +193,20 @@ export default function JobsPage() {
     return baseName || "Unknown customer";
   }
 
-  function formatCustomerFromJob(j) {
-    const c = j.customers;
+  function findCustomerNameById(customerId) {
+    const c = customers.find((cust) => cust.id === customerId);
     if (!c) return "Unknown customer";
     const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
     if (c.company_name) {
       return `${c.company_name} – ${baseName || "Unknown contact"}`;
     }
     return baseName || "Unknown customer";
+  }
+
+  function findSkipTypeNameById(skipTypeId) {
+    const s = skipTypes.find((st) => st.id === skipTypeId);
+    if (!s) return "Unknown skip type";
+    return `${s.name} (${s.quantity_owned} owned)`;
   }
 
   if (checking) {
@@ -308,24 +313,6 @@ export default function JobsPage() {
             </select>
           </div>
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Status</label>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            >
-              <option value="open">Open</option>
-              <option value="booked">Booked</option>
-              <option value="completed">Completed</option>
-            </select>
-          </div>
-
           <button
             type="submit"
             disabled={saving}
@@ -374,7 +361,7 @@ export default function JobsPage() {
                     padding: "8px",
                   }}
                 >
-                  Description (skip type)
+                  Skip type
                 </th>
                 <th
                   style={{
@@ -383,7 +370,7 @@ export default function JobsPage() {
                     padding: "8px",
                   }}
                 >
-                  Status
+                  Job status
                 </th>
               </tr>
             </thead>
@@ -396,7 +383,7 @@ export default function JobsPage() {
                       padding: "8px",
                     }}
                   >
-                    {formatCustomerFromJob(j)}
+                    {findCustomerNameById(j.customer_id)}
                   </td>
                   <td
                     style={{
@@ -404,7 +391,7 @@ export default function JobsPage() {
                       padding: "8px",
                     }}
                   >
-                    {j.description}
+                    {findSkipTypeNameById(j.skip_type_id)}
                   </td>
                   <td
                     style={{
@@ -412,7 +399,7 @@ export default function JobsPage() {
                       padding: "8px",
                     }}
                   >
-                    {j.status}
+                    {j.job_status || "unknown"}
                   </td>
                 </tr>
               ))}
