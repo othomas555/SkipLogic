@@ -150,6 +150,26 @@ export default function JobsPage() {
         return;
       }
 
+      // 🔹 NEW: create initial DELIVER event for this job
+      const { data: event, error: eventError } = await supabase.rpc(
+        "create_job_event",
+        {
+          _subscriber_id: subscriberId,
+          _job_id: inserted.id,
+          _event_type: "DELIVER",
+          _scheduled_at: null, // you can swap this for a scheduled date later
+          _completed_at: null,
+          _notes: "Initial delivery booked",
+        }
+      );
+
+      if (eventError) {
+        console.error("Create job event error:", eventError);
+        setErrorMsg("Job was created but the delivery event failed.");
+        setSaving(false);
+        return;
+      }
+
       // Prepend new job to list
       setJobs((prev) => [inserted, ...prev]);
 
