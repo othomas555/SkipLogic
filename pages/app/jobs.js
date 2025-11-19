@@ -180,7 +180,6 @@ export default function JobsPage() {
           _subscriber_id: subscriberId,
           _job_id: inserted.id,
           _event_type: "DELIVER",
-          // To avoid any type grumbles, keep scheduled_at null for now.
           _scheduled_at: null,
           _completed_at: null,
           _notes: "Initial delivery booked",
@@ -617,7 +616,7 @@ export default function JobsPage() {
                   </td>
                   <td
                     style={{
-                      borderBottom: "1px solid "#eee",
+                      borderBottom: "1px solid #eee",
                       padding: "8px",
                     }}
                   >
