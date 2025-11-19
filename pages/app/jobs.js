@@ -57,6 +57,7 @@ export default function JobsPage() {
         .select(
           `
           id,
+          job_number,
           customer_id,
           skip_type_id,
           job_status,
@@ -152,6 +153,7 @@ export default function JobsPage() {
         .select(
           `
           id,
+          job_number,
           customer_id,
           skip_type_id,
           job_status,
@@ -396,7 +398,7 @@ export default function JobsPage() {
                 width: "100%",
                 padding: 8,
                 borderRadius: 4,
-                border: "1px solid #ccc",
+                border: "1px solid "#ccc",
               }}
             />
           </div>
@@ -536,6 +538,15 @@ export default function JobsPage() {
                     padding: "8px",
                   }}
                 >
+                  Job #
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px",
+                  }}
+                >
                   Customer
                 </th>
                 <th
@@ -588,6 +599,14 @@ export default function JobsPage() {
             <tbody>
               {jobs.map((j) => (
                 <tr key={j.id}>
+                  <td
+                    style={{
+                      borderBottom: "1px solid #eee",
+                      padding: "8px",
+                    }}
+                  >
+                    {j.job_number || j.id}
+                  </td>
                   <td
                     style={{
                       borderBottom: "1px solid #eee",
