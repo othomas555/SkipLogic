@@ -19,6 +19,16 @@ export default function JobsPage() {
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // New form fields
+  const [siteName, setSiteName] = useState("");
+  const [siteAddress1, setSiteAddress1] = useState("");
+  const [siteAddress2, setSiteAddress2] = useState("");
+  const [siteTown, setSiteTown] = useState("");
+  const [sitePostcode, setSitePostcode] = useState("");
+  const [scheduledDate, setScheduledDate] = useState(""); // yyyy-mm-dd string
+  const [notes, setNotes] = useState("");
+  const [paymentType, setPaymentType] = useState("card"); // card | cash | account etc.
+
   useEffect(() => {
     if (checking) return;
     if (!subscriberId) return; // useAuthProfile handles redirect if not signed in
@@ -42,7 +52,6 @@ export default function JobsPage() {
       setCustomers(customerData || []);
 
       // 2) Load jobs for this subscriber
-      //    NOTE: we now just select flat fields from jobs
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
@@ -52,7 +61,12 @@ export default function JobsPage() {
           skip_type_id,
           job_status,
           scheduled_date,
-          notes
+          notes,
+          site_name,
+          site_address_line1,
+          site_town,
+          site_postcode,
+          payment_type
         `
         )
         .eq("subscriber_id", subscriberId)
@@ -107,7 +121,7 @@ export default function JobsPage() {
     setSaving(true);
 
     try {
-      // Find the selected skip type (for notes / sanity)
+      // Find the selected skip type
       const selectedSkip = skipTypes.find((s) => s.id === selectedSkipTypeId);
 
       if (!selectedSkip) {
@@ -116,8 +130,7 @@ export default function JobsPage() {
         return;
       }
 
-      // Insert job - now aligned to the new jobs table shape
-      // job_status defaults to 'booked' in the DB, so we can omit it if you like
+      // Insert job - aligned with jobs table shape
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([
@@ -125,9 +138,15 @@ export default function JobsPage() {
             subscriber_id: subscriberId,
             customer_id: selectedCustomerId,
             skip_type_id: selectedSkipTypeId,
-            // optional: store something in notes for now
-            notes: `Standard skip: ${selectedSkip.name}`,
-            // scheduled_date: null for now - can wire in a date picker later
+            site_name: siteName || null,
+            site_address_line1: siteAddress1 || null,
+            site_address_line2: siteAddress2 || null,
+            site_town: siteTown || null,
+            site_postcode: sitePostcode || null,
+            scheduled_date: scheduledDate || null,
+            notes: notes || `Standard skip: ${selectedSkip.name}`,
+            payment_type: paymentType || null,
+            // job_status will default to 'booked'
           },
         ])
         .select(
@@ -137,7 +156,12 @@ export default function JobsPage() {
           skip_type_id,
           job_status,
           scheduled_date,
-          notes
+          notes,
+          site_name,
+          site_address_line1,
+          site_town,
+          site_postcode,
+          payment_type
         `
         )
         .single();
@@ -156,7 +180,8 @@ export default function JobsPage() {
           _subscriber_id: subscriberId,
           _job_id: inserted.id,
           _event_type: "DELIVER",
-          _scheduled_at: inserted.scheduled_date ?? null,
+          // To avoid any type grumbles, keep scheduled_at null for now.
+          _scheduled_at: null,
           _completed_at: null,
           _notes: "Initial delivery booked",
         }
@@ -164,8 +189,9 @@ export default function JobsPage() {
 
       if (eventError) {
         console.error("Create job event error:", eventError);
-        // We don't rollback the job here, just warn
-        setErrorMsg("Job was created but the delivery event failed.");
+        setErrorMsg(
+          `Job was created but the delivery event failed: ${eventError.message}`
+        );
         setSaving(false);
         return;
       }
@@ -176,6 +202,14 @@ export default function JobsPage() {
       // Reset form
       setSelectedCustomerId("");
       setSelectedSkipTypeId("");
+      setSiteName("");
+      setSiteAddress1("");
+      setSiteAddress2("");
+      setSiteTown("");
+      setSitePostcode("");
+      setScheduledDate("");
+      setNotes("");
+      setPaymentType("card");
       setSaving(false);
     } catch (err) {
       console.error("Unexpected error adding job:", err);
@@ -260,13 +294,14 @@ export default function JobsPage() {
           padding: 16,
           border: "1px solid #ddd",
           borderRadius: 8,
-          maxWidth: 600,
+          maxWidth: 700,
         }}
       >
         <h2 style={{ fontSize: 18, marginBottom: 12 }}>
           Book A Standard Skip
         </h2>
         <form onSubmit={handleAddJob}>
+          {/* Customer */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>
               Customer *
@@ -290,6 +325,7 @@ export default function JobsPage() {
             </select>
           </div>
 
+          {/* Skip type */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>
               Skip type *
@@ -311,6 +347,155 @@ export default function JobsPage() {
                 </option>
               ))}
             </select>
+          </div>
+
+          {/* Delivery site */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", marginBottom: 4 }}>
+              Site name / description (optional)
+            </label>
+            <input
+              type="text"
+              value={siteName}
+              onChange={(e) => setSiteName(e.target.value)}
+              placeholder="e.g. Front drive, Unit 3, Rear yard"
+              style={{
+                width: "100%",
+                padding: 8,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", marginBottom: 4 }}>
+              Site address line 1
+            </label>
+            <input
+              type="text"
+              value={siteAddress1}
+              onChange={(e) => setSiteAddress1(e.target.value)}
+              style={{
+                width: "100%",
+                padding: 8,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", marginBottom: 4 }}>
+              Site address line 2 (optional)
+            </label>
+            <input
+              type="text"
+              value={siteAddress2}
+              onChange={(e) => setSiteAddress2(e.target.value)}
+              style={{
+                width: "100%",
+                padding: 8,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              marginBottom: 12,
+              display: "flex",
+              gap: 8,
+            }}
+          >
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", marginBottom: 4 }}>Town</label>
+              <input
+                type="text"
+                value={siteTown}
+                onChange={(e) => setSiteTown(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+            <div style={{ width: 160 }}>
+              <label style={{ display: "block", marginBottom: 4 }}>
+                Postcode
+              </label>
+              <input
+                type="text"
+                value={sitePostcode}
+                onChange={(e) => setSitePostcode(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Delivery date */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", marginBottom: 4 }}>
+              Delivery date
+            </label>
+            <input
+              type="date"
+              value={scheduledDate}
+              onChange={(e) => setScheduledDate(e.target.value)}
+              style={{
+                padding: 8,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          {/* Payment type */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", marginBottom: 4 }}>
+              Payment type
+            </label>
+            <select
+              value={paymentType}
+              onChange={(e) => setPaymentType(e.target.value)}
+              style={{
+                width: "100%",
+                padding: 8,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            >
+              <option value="card">Card</option>
+              <option value="cash">Cash</option>
+              <option value="account">Account</option>
+            </select>
+          </div>
+
+          {/* Notes */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", marginBottom: 4 }}>
+              Notes (optional)
+            </label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              style={{
+                width: "100%",
+                padding: 8,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+                resize: "vertical",
+              }}
+            />
           </div>
 
           <button
@@ -340,7 +525,7 @@ export default function JobsPage() {
             style={{
               borderCollapse: "collapse",
               width: "100%",
-              maxWidth: 900,
+              maxWidth: 1000,
             }}
           >
             <thead>
@@ -362,6 +547,33 @@ export default function JobsPage() {
                   }}
                 >
                   Skip type
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px",
+                  }}
+                >
+                  Site / Postcode
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px",
+                  }}
+                >
+                  Delivery date
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px",
+                  }}
+                >
+                  Payment
                 </th>
                 <th
                   style={{
@@ -392,6 +604,32 @@ export default function JobsPage() {
                     }}
                   >
                     {findSkipTypeNameById(j.skip_type_id)}
+                  </td>
+                  <td
+                    style={{
+                      borderBottom: "1px solid #eee",
+                      padding: "8px",
+                    }}
+                  >
+                    {j.site_name
+                      ? `${j.site_name}, ${j.site_postcode || ""}`
+                      : j.site_postcode || ""}
+                  </td>
+                  <td
+                    style={{
+                      borderBottom: "1px solid "#eee",
+                      padding: "8px",
+                    }}
+                  >
+                    {j.scheduled_date || ""}
+                  </td>
+                  <td
+                    style={{
+                      borderBottom: "1px solid #eee",
+                      padding: "8px",
+                    }}
+                  >
+                    {j.payment_type || ""}
                   </td>
                   <td
                     style={{
