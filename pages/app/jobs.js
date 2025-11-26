@@ -183,6 +183,13 @@ export default function JobsPage() {
       return;
     }
 
+    // ✅ STEP 2 — Validate job price
+    const numericPrice = parseFloat(jobPrice);
+    if (Number.isNaN(numericPrice) || numericPrice <= 0) {
+      setErrorMsg("Price must be a positive number.");
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -195,15 +202,7 @@ export default function JobsPage() {
         return;
       }
 
-      // (Optional) validate jobPrice once you're ready to store it in DB
-      // const numericPrice = parseFloat(jobPrice);
-      // if (Number.isNaN(numericPrice) || numericPrice <= 0) {
-      //   setErrorMsg("Price must be a positive number.");
-      //   setSaving(false);
-      //   return;
-      // }
-
-      // Insert job - aligned with jobs table shape
+      // ✅ STEP 3 — Insert job with price_inc_vat
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([
@@ -219,9 +218,7 @@ export default function JobsPage() {
             scheduled_date: scheduledDate || null,
             notes: notes || `Standard skip: ${selectedSkip.name}`,
             payment_type: paymentType || null,
-            // TODO: once you add columns, you can wire these in:
-            // price_inc_vat: numericPrice,
-            // custom_price_used: <true/false>,
+            price_inc_vat: numericPrice, // ← NEW: store the actual price
             // job_status will default to 'booked'
           },
         ])
@@ -490,7 +487,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               >
                 <option value="">
@@ -852,7 +849,7 @@ export default function JobsPage() {
                   </td>
                   <td
                     style={{
-                      borderBottom: "1px solid #eee",
+                      borderBottom: "1px solid "#eee",
                       padding: "8px",
                     }}
                   >
@@ -860,7 +857,7 @@ export default function JobsPage() {
                   </td>
                   <td
                     style={{
-                      borderBottom: "1px solid #eee",
+                      borderBottom: "1px solid "#eee",
                       padding: "8px",
                     }}
                   >
