@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useAuthProfile } from "../../lib/useAuthProfile";
-import { getSkipPricesForPostcode } from "../../lib/getSkipPricesForPostcode"; // ✅ NEW
+import { getSkipPricesForPostcode } from "../../lib/getSkipPricesForPostcode";
 
 export default function JobsPage() {
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
@@ -30,11 +30,14 @@ export default function JobsPage() {
   const [notes, setNotes] = useState("");
   const [paymentType, setPaymentType] = useState("card"); // card | cash | account etc.
 
-  // ✅ NEW: postcode → available skips + price
+  // Postcode → available skips + price
   const [postcodeSkips, setPostcodeSkips] = useState([]); // [{skip_type_id, skip_type_name, price_inc_vat}]
   const [postcodeMsg, setPostcodeMsg] = useState("");
   const [jobPrice, setJobPrice] = useState(""); // price for this job
   const [lookingUpPostcode, setLookingUpPostcode] = useState(false);
+
+  // ✅ NEW: whether we should create a Xero invoice
+  const [createInvoice, setCreateInvoice] = useState(false);
 
   useEffect(() => {
     if (checking) return;
@@ -107,7 +110,7 @@ export default function JobsPage() {
     loadData();
   }, [checking, subscriberId]);
 
-  // ✅ NEW: lookup all skips + prices for a postcode
+  // Lookup all skips + prices for a postcode
   async function handleLookupPostcode() {
     setPostcodeMsg("");
     setErrorMsg("");
@@ -192,7 +195,7 @@ export default function JobsPage() {
         return;
       }
 
-      // You can validate jobPrice if/when you wire it into the DB
+      // (Optional) validate jobPrice once you're ready to store it in DB
       // const numericPrice = parseFloat(jobPrice);
       // if (Number.isNaN(numericPrice) || numericPrice <= 0) {
       //   setErrorMsg("Price must be a positive number.");
@@ -269,6 +272,32 @@ export default function JobsPage() {
         return;
       }
 
+      // ✅ NEW: optionally create / update invoice in Xero
+      if (createInvoice) {
+        try {
+          const { data: invoiceResult, error: invoiceError } =
+            await supabase.functions.invoke("xero_create_invoice", {
+              body: {
+                job_id: inserted.id,
+              },
+            });
+
+          if (invoiceError) {
+            console.error("Xero invoice error:", invoiceError);
+            // Don't block the job – just show a warning
+            setErrorMsg(
+              "Job created but Xero invoice failed: " +
+                (invoiceError.message || "Unknown error")
+            );
+          }
+        } catch (invErr) {
+          console.error("Unexpected error invoking xero_create_invoice:", invErr);
+          setErrorMsg(
+            "Job created but there was an error contacting Xero. Check Xero connection."
+          );
+        }
+      }
+
       // Prepend new job to list
       setJobs((prev) => [inserted, ...prev]);
 
@@ -286,6 +315,7 @@ export default function JobsPage() {
       setPostcodeSkips([]);
       setPostcodeMsg("");
       setJobPrice("");
+      setCreateInvoice(false); // ✅ reset checkbox
       setSaving(false);
     } catch (err) {
       console.error("Unexpected error adding job:", err);
@@ -377,7 +407,7 @@ export default function JobsPage() {
           Book A Standard Skip
         </h2>
         <form onSubmit={handleAddJob}>
-          {/* ✅ NEW: Step 1 – Postcode & Skip */}
+          {/* Step 1 – Postcode & Skip */}
           <div
             style={{
               marginBottom: 16,
@@ -387,7 +417,9 @@ export default function JobsPage() {
               backgroundColor: "#f9f9f9",
             }}
           >
-            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Step 1: Postcode & Skip</h3>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>
+              Step 1: Postcode & Skip
+            </h3>
 
             {/* Postcode input */}
             <div style={{ marginBottom: 8 }}>
@@ -631,13 +663,30 @@ export default function JobsPage() {
                 width: "100%",
                 padding: 8,
                 borderRadius: 4,
-                border: "1px solid #ccc",
+                border: "1px solid "#ccc",
               }}
             >
               <option value="card">Card</option>
               <option value="cash">Cash</option>
               <option value="account">Account</option>
             </select>
+          </div>
+
+          {/* ✅ NEW: Create invoice checkbox */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "inline-flex", alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={createInvoice}
+                onChange={(e) => setCreateInvoice(e.target.checked)}
+                style={{ marginRight: 8 }}
+              />
+              Create invoice in Xero
+            </label>
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              If checked: behaviour depends on payment type (Card = paid, Cash =
+              unpaid, Account = added to monthly account invoice).
+            </div>
           </div>
 
           {/* Notes */}
