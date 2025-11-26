@@ -849,7 +849,7 @@ export default function JobsPage() {
                   </td>
                   <td
                     style={{
-                      borderBottom: "1px solid "#eee",
+                      borderBottom: "1px solid #eee",
                       padding: "8px",
                     }}
                   >
