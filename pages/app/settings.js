@@ -1,6 +1,8 @@
 import { useAuthProfile } from "../../lib/useAuthProfile";
+import { useRouter } from "next/router"; // ✅ ADD THIS
 
 export default function SettingsPage() {
+  const router = useRouter(); // ✅ ADD THIS
   const { checking, user, subscriberId } = useAuthProfile();
 
   if (checking) return <p>Loading…</p>;
@@ -13,6 +15,13 @@ export default function SettingsPage() {
     <main style={{ padding: 20 }}>
       <h1>Settings</h1>
       <p>Signed in as: {user?.email}</p>
+
+      {/* ✅ SUCCESS MESSAGE */}
+      {router.query.xero === "connected" && (
+        <p style={{ color: "green", marginTop: 12, fontWeight: "bold" }}>
+          ✓ Xero connected successfully!
+        </p>
+      )}
 
       <h2 style={{ marginTop: 40 }}>Xero Integration</h2>
 
