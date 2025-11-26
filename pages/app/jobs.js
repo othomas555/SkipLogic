@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useAuthProfile } from "../../lib/useAuthProfile";
+import { getSkipPricesForPostcode } from "../../lib/getSkipPricesForPostcode"; // ✅ NEW
 
 export default function JobsPage() {
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
@@ -28,6 +29,12 @@ export default function JobsPage() {
   const [scheduledDate, setScheduledDate] = useState(""); // yyyy-mm-dd string
   const [notes, setNotes] = useState("");
   const [paymentType, setPaymentType] = useState("card"); // card | cash | account etc.
+
+  // ✅ NEW: postcode → available skips + price
+  const [postcodeSkips, setPostcodeSkips] = useState([]); // [{skip_type_id, skip_type_name, price_inc_vat}]
+  const [postcodeMsg, setPostcodeMsg] = useState("");
+  const [jobPrice, setJobPrice] = useState(""); // price for this job
+  const [lookingUpPostcode, setLookingUpPostcode] = useState(false);
 
   useEffect(() => {
     if (checking) return;
@@ -100,17 +107,71 @@ export default function JobsPage() {
     loadData();
   }, [checking, subscriberId]);
 
+  // ✅ NEW: lookup all skips + prices for a postcode
+  async function handleLookupPostcode() {
+    setPostcodeMsg("");
+    setErrorMsg("");
+
+    const trimmed = (sitePostcode || "").trim();
+    if (!trimmed) {
+      setPostcodeMsg("Enter a postcode first.");
+      return;
+    }
+
+    if (!subscriberId) {
+      setPostcodeMsg("No subscriber found.");
+      return;
+    }
+
+    try {
+      setLookingUpPostcode(true);
+      const results = await getSkipPricesForPostcode(subscriberId, trimmed);
+
+      if (!results || results.length === 0) {
+        setPostcodeSkips([]);
+        setPostcodeMsg("We don't serve this postcode or no prices are set.");
+        // Clear skip + price if postcode not served
+        setSelectedSkipTypeId("");
+        setJobPrice("");
+        return;
+      }
+
+      setPostcodeSkips(results);
+      setPostcodeMsg(`Found ${results.length} skip type(s) for this postcode.`);
+
+      // If the currently selected skip isn't in this postcode, clear it
+      if (
+        selectedSkipTypeId &&
+        !results.some((r) => r.skip_type_id === selectedSkipTypeId)
+      ) {
+        setSelectedSkipTypeId("");
+        setJobPrice("");
+      }
+    } catch (err) {
+      console.error("handleLookupPostcode error:", err);
+      setPostcodeMsg("Error looking up skips for this postcode.");
+    } finally {
+      setLookingUpPostcode(false);
+    }
+  }
+
   async function handleAddJob(e) {
     e.preventDefault();
     setErrorMsg("");
 
-    if (!selectedCustomerId) {
-      setErrorMsg("Please select a customer.");
+    // Basic checks
+    if (!sitePostcode) {
+      setErrorMsg("Please enter a site postcode and look up available skips.");
       return;
     }
 
     if (!selectedSkipTypeId) {
-      setErrorMsg("Please select a skip type.");
+      setErrorMsg("Please select a skip type for this postcode.");
+      return;
+    }
+
+    if (!selectedCustomerId) {
+      setErrorMsg("Please select a customer.");
       return;
     }
 
@@ -131,6 +192,14 @@ export default function JobsPage() {
         return;
       }
 
+      // You can validate jobPrice if/when you wire it into the DB
+      // const numericPrice = parseFloat(jobPrice);
+      // if (Number.isNaN(numericPrice) || numericPrice <= 0) {
+      //   setErrorMsg("Price must be a positive number.");
+      //   setSaving(false);
+      //   return;
+      // }
+
       // Insert job - aligned with jobs table shape
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
@@ -147,6 +216,9 @@ export default function JobsPage() {
             scheduled_date: scheduledDate || null,
             notes: notes || `Standard skip: ${selectedSkip.name}`,
             payment_type: paymentType || null,
+            // TODO: once you add columns, you can wire these in:
+            // price_inc_vat: numericPrice,
+            // custom_price_used: <true/false>,
             // job_status will default to 'booked'
           },
         ])
@@ -211,6 +283,9 @@ export default function JobsPage() {
       setScheduledDate("");
       setNotes("");
       setPaymentType("card");
+      setPostcodeSkips([]);
+      setPostcodeMsg("");
+      setJobPrice("");
       setSaving(false);
     } catch (err) {
       console.error("Unexpected error adding job:", err);
@@ -302,6 +377,131 @@ export default function JobsPage() {
           Book A Standard Skip
         </h2>
         <form onSubmit={handleAddJob}>
+          {/* ✅ NEW: Step 1 – Postcode & Skip */}
+          <div
+            style={{
+              marginBottom: 16,
+              padding: 12,
+              borderRadius: 6,
+              border: "1px solid #eee",
+              backgroundColor: "#f9f9f9",
+            }}
+          >
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Step 1: Postcode & Skip</h3>
+
+            {/* Postcode input */}
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ display: "block", marginBottom: 4 }}>
+                Site postcode *
+              </label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  type="text"
+                  value={sitePostcode}
+                  onChange={(e) => setSitePostcode(e.target.value)}
+                  placeholder="CF32 7AB"
+                  style={{
+                    flex: 1,
+                    padding: 8,
+                    borderRadius: 4,
+                    border: "1px solid #ccc",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleLookupPostcode}
+                  disabled={lookingUpPostcode}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 4,
+                    border: "1px solid #0070f3",
+                    backgroundColor: lookingUpPostcode ? "#e0e0e0" : "#0070f3",
+                    color: "#fff",
+                    cursor: lookingUpPostcode ? "default" : "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {lookingUpPostcode ? "Looking up…" : "Find skips"}
+                </button>
+              </div>
+              {postcodeMsg && (
+                <div style={{ marginTop: 4, fontSize: 12 }}>{postcodeMsg}</div>
+              )}
+            </div>
+
+            {/* Available skips dropdown */}
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ display: "block", marginBottom: 4 }}>
+                Available skips for this postcode *
+              </label>
+              <select
+                value={selectedSkipTypeId}
+                onChange={(e) => {
+                  const newId = e.target.value;
+                  setSelectedSkipTypeId(newId);
+
+                  const chosen = postcodeSkips.find(
+                    (s) => s.skip_type_id === newId
+                  );
+                  if (chosen) {
+                    setJobPrice(
+                      chosen.price_inc_vat != null
+                        ? chosen.price_inc_vat.toString()
+                        : ""
+                    );
+                  } else {
+                    setJobPrice("");
+                  }
+                }}
+                disabled={postcodeSkips.length === 0}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              >
+                <option value="">
+                  {postcodeSkips.length === 0
+                    ? "No skips found yet"
+                    : "Select skip type"}
+                </option>
+                {postcodeSkips.map((s) => (
+                  <option key={s.skip_type_id} value={s.skip_type_id}>
+                    {s.skip_type_name} – £
+                    {s.price_inc_vat != null
+                      ? Number(s.price_inc_vat).toFixed(2)
+                      : "N/A"}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Job price field */}
+            <div>
+              <label style={{ display: "block", marginBottom: 4 }}>
+                Price for this job (£)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={jobPrice}
+                onChange={(e) => setJobPrice(e.target.value)}
+                style={{
+                  width: 160,
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                  textAlign: "right",
+                }}
+              />
+              <div style={{ marginTop: 4, fontSize: 12 }}>
+                Auto-filled from postcode table. You can override if needed
+                (we&apos;ll flag as custom later).
+              </div>
+            </div>
+          </div>
+
           {/* Customer */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>
@@ -321,30 +521,6 @@ export default function JobsPage() {
               {customers.map((c) => (
                 <option key={c.id} value={c.id}>
                   {formatCustomerLabel(c)}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Skip type */}
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>
-              Skip type *
-            </label>
-            <select
-              value={selectedSkipTypeId}
-              onChange={(e) => setSelectedSkipTypeId(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            >
-              <option value="">Select a skip type…</option>
-              {skipTypes.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.quantity_owned} owned)
                 </option>
               ))}
             </select>
@@ -381,7 +557,7 @@ export default function JobsPage() {
                 width: "100%",
                 padding: 8,
                 borderRadius: 4,
-                border: "1px solid #ccc",
+                border: "1px solid "#ccc",
               }}
             />
           </div>
@@ -398,7 +574,7 @@ export default function JobsPage() {
                 width: "100%",
                 padding: 8,
                 borderRadius: 4,
-                border: "1px solid #ccc", // 🔧 fixed line
+                border: "1px solid "#ccc",
               }}
             />
           </div>
@@ -420,23 +596,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
-                }}
-              />
-            </div>
-            <div style={{ width: 160 }}>
-              <label style={{ display: "block", marginBottom: 4 }}>
-                Postcode
-              </label>
-              <input
-                type="text"
-                value={sitePostcode}
-                onChange={(e) => setSitePostcode(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: 8,
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -454,7 +614,7 @@ export default function JobsPage() {
               style={{
                 padding: 8,
                 borderRadius: 4,
-                border: "1px solid #ccc",
+                border: "1px solid "#ccc",
               }}
             />
           </div>
@@ -471,7 +631,7 @@ export default function JobsPage() {
                 width: "100%",
                 padding: 8,
                 borderRadius: 4,
-                border: "1px solid #ccc",
+                border: "1px solid "#ccc",
               }}
             >
               <option value="card">Card</option>
@@ -493,7 +653,7 @@ export default function JobsPage() {
                 width: "100%",
                 padding: 8,
                 borderRadius: 4,
-                border: "1px solid #ccc",
+                border: "1px solid "#ccc",
                 resize: "vertical",
               }}
             />
