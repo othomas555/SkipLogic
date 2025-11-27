@@ -272,6 +272,8 @@ export default function JobsPage() {
     // ✅ NEW: optionally create / update invoice in Xero via Next.js API route
 if (createInvoice) {
   try {
+console.log("Calling Xero API for job_id:", inserted.id);
+    
     const response = await fetch("/api/xero/xero_create_invoice", {
       method: "POST",
       headers: {
