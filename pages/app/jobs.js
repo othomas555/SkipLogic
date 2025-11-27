@@ -269,31 +269,36 @@ export default function JobsPage() {
         return;
       }
 
-      // ✅ NEW: optionally create / update invoice in Xero
-      if (createInvoice) {
-        try {
-          const { data: invoiceResult, error: invoiceError } =
-            await supabase.functions.invoke("xero_create_invoice", {
-              body: {
-                job_id: inserted.id,
-              },
-            });
+     // ✅ NEW: optionally create / update invoice in Xero via Next.js API route
+if (createInvoice) {
+  try {
+    const response = await fetch("/api/xero_create_invoice", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ job_id: inserted.id }),
+    });
 
-          if (invoiceError) {
-            console.error("Xero invoice error:", invoiceError);
-            // Don't block the job – just show a warning
-            setErrorMsg(
-              "Job created but Xero invoice failed: " +
-                (invoiceError.message || "Unknown error")
-            );
-          }
-        } catch (invErr) {
-          console.error("Unexpected error invoking xero_create_invoice:", invErr);
-          setErrorMsg(
-            "Job created but there was an error contacting Xero. Check Xero connection."
-          );
-        }
-      }
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      console.error("Xero invoice error:", result);
+      setErrorMsg(
+        "Job created but Xero invoice failed: " +
+          (result.error || "Unknown error")
+      );
+    } else {
+      console.log("Xero invoice created:", result);
+      // optional: later we can write result.invoiceNumber back to the job
+    }
+  } catch (invErr) {
+    console.error("Unexpected error calling /api/xero_create_invoice:", invErr);
+    setErrorMsg(
+      "Job created but there was an error contacting Xero. Check Xero connection."
+    );
+  }
+}
 
       // Prepend new job to list
       setJobs((prev) => [inserted, ...prev]);
