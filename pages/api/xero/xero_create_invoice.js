@@ -269,28 +269,35 @@ export default async function handler(req, res) {
 
     // 1) Load job (including price_inc_vat and payment_type)
     const { data: job, error: jobError } = await supabaseAdmin
-      .from("jobs")
-      .select(
-        `
-        id,
-        job_number,
-        subscriber_id,
-        customer_id,
-        payment_type,
-        price_inc_vat,
-        notes,
-        scheduled_date,
-        site_postcode
-      `
-      )
-      .eq("id", job_id)
-      .single();
+  .from("jobs")
+  .select(`
+    id,
+    job_number,
+    subscriber_id,
+    customer_id,
+    payment_type,
+    price_inc_vat,
+    notes,
+    scheduled_date,
+    site_postcode
+  `)
+  .eq("id", job_id)
+  .single();
 
-    if (jobError || !job) {
-      console.error("Job fetch error:", jobError);
-      return res.status(404).json({ error: "Job not found" });
-    }
+if (jobError) {
+  console.error("Supabase jobError:", jobError);
+  return res.status(500).json({
+    error: "Supabase error when loading job",
+    details: jobError.message || jobError,
+  });
+}
 
+if (!job) {
+  return res.status(404).json({
+    error: "Job not found with that id",
+    id: job_id,
+  });
+}
     if (!job.price_inc_vat || job.price_inc_vat <= 0) {
       return res.status(400).json({
         error:
