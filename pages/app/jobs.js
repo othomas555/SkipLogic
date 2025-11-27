@@ -269,7 +269,7 @@ export default function JobsPage() {
         return;
       }
 
-     // ✅ NEW: optionally create / update invoice in Xero via Next.js API route
+    // ✅ NEW: optionally create / update invoice in Xero via Next.js API route
 if (createInvoice) {
   try {
     const response = await fetch("/api/xero_create_invoice", {
@@ -280,7 +280,19 @@ if (createInvoice) {
       body: JSON.stringify({ job_id: inserted.id }),
     });
 
-    const result = await response.json();
+    const rawText = await response.text();
+    console.log("Xero API raw response:", rawText);
+
+    let result;
+    try {
+      result = rawText ? JSON.parse(rawText) : {};
+    } catch (parseErr) {
+      console.error("Failed to parse Xero response as JSON:", parseErr);
+      setErrorMsg(
+        "Job created but Xero replied with something unexpected: " + rawText
+      );
+      return;
+    }
 
     if (!response.ok || !result.success) {
       console.error("Xero invoice error:", result);
@@ -290,12 +302,13 @@ if (createInvoice) {
       );
     } else {
       console.log("Xero invoice created:", result);
-      // optional: later we can write result.invoiceNumber back to the job
+      // later we can store result.invoiceNumber on the job
     }
   } catch (invErr) {
     console.error("Unexpected error calling /api/xero_create_invoice:", invErr);
     setErrorMsg(
-      "Job created but there was an error contacting Xero. Check Xero connection."
+      "Job created but there was an error contacting Xero: " +
+        (invErr?.message || String(invErr))
     );
   }
 }
