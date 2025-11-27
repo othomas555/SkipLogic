@@ -62,48 +62,52 @@ export default function XeroConnectPage() {
   }
 
   async function exchangeCodeForTokens() {
-    if (!code) {
-      setErrorMsg("No ?code= in URL. Start Xero login first.");
-      return;
-    }
+  if (!code) {
+    setErrorMsg("No ?code= in URL. Start Xero login first.");
+    return;
+  }
 
-    if (!XERO_CLIENT_ID || !XERO_CLIENT_SECRET) {
+  try {
+    setErrorMsg("");
+
+    const res = await fetch("/api/xero_token_exchange", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        code,
+        redirectUri: REDIRECT_URI,
+      }),
+    });
+
+    const json = await res.json();
+    setRawResponse(json);
+
+    if (!res.ok) {
+      console.error("Token exchange failed via API:", json);
       setErrorMsg(
-        "Missing NEXT_PUBLIC_XERO_CLIENT_ID or NEXT_PUBLIC_XERO_CLIENT_SECRET env vars."
+        `Token exchange failed: ${
+          json.error || res.statusText
+        }. Check raw response below.`
       );
       return;
     }
 
-    try {
-      const basicAuth = btoa(`${XERO_CLIENT_ID}:${XERO_CLIENT_SECRET}`);
+    setAccessToken(json.access_token || null);
+    setRefreshToken(json.refresh_token || null);
 
-      const body = new URLSearchParams();
-      body.append("grant_type", "authorization_code");
-      body.append("code", code);
-      body.append("redirect_uri", REDIRECT_URI);
+    if (Array.isArray(json.tenants) && json.tenants.length > 0) {
+      setTenantId(json.tenants[0].tenantId || json.tenants[0].id || null);
+    } else {
+      setTenantId(null);
+    }
+  } catch (err) {
+    console.error("Unexpected error:", err);
+    setErrorMsg(`Unexpected error: ${String(err)}`);
+  }
+}
 
-      const res = await fetch(XERO_TOKEN_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${basicAuth}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: body.toString(),
-      });
-
-      const json = await res.json();
-      setRawResponse(json);
-
-      if (!res.ok) {
-        console.error("Token exchange failed:", json);
-        setErrorMsg(
-          `Token exchange failed: ${json.error || res.statusText}. Check console.`
-        );
-        return;
-      }
-
-      setAccessToken(json.access_token || null);
-      setRefreshToken(json.refresh_token || null);
 
       // Xero returns tenants in a separate call usually, but some toolkits
       // include tenants here. If not present, we’ll instruct you to call /connections in Postman next.
