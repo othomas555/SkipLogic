@@ -2,14 +2,13 @@
 //
 // Tiny helper page to get a Xero access_token + tenantId using your browser.
 // You visit /xero-connect, click "Connect to Xero", log in,
-// and it will show you the access_token and tenantId on screen.
+// then click "Exchange code for tokens" which calls /api/xero_token_exchange.
 //
 // IMPORTANT: Only you should ever visit this page. Don't link it publicly.
 
 import { useEffect, useState } from "react";
 
-const XERO_CLIENT_ID = process.env.NEXT_PUBLIC_XERO_CLIENT_ID;
-const XERO_CLIENT_SECRET = process.env.NEXT_PUBLIC_XERO_CLIENT_SECRET;
+const XERO_CLIENT_ID = process.env.NEXT_PUBLIC_XERO_CLIENT_ID || "";
 
 // Make sure this matches exactly what you set in the Xero app redirect URL.
 const REDIRECT_URI =
@@ -18,7 +17,6 @@ const REDIRECT_URI =
     : "";
 
 const XERO_AUTHORIZE_URL = "https://login.xero.com/identity/connect/authorize";
-const XERO_TOKEN_URL = "https://identity.xero.com/connect/token";
 
 export default function XeroConnectPage() {
   const [code, setCode] = useState(null);
@@ -27,6 +25,14 @@ export default function XeroConnectPage() {
   const [tenantId, setTenantId] = useState(null);
   const [rawResponse, setRawResponse] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
+
+  // DEBUG: see what the page thinks the config is
+  useEffect(() => {
+    console.log("Xero helper config:", {
+      XERO_CLIENT_ID,
+      REDIRECT_URI,
+    });
+  }, []);
 
   // Read ?code=... from URL after redirect
   useEffect(() => {
@@ -62,60 +68,44 @@ export default function XeroConnectPage() {
   }
 
   async function exchangeCodeForTokens() {
-  if (!code) {
-    setErrorMsg("No ?code= in URL. Start Xero login first.");
-    return;
-  }
-
-  try {
-    setErrorMsg("");
-
-    const res = await fetch("/api/xero_token_exchange", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        code,
-        redirectUri: REDIRECT_URI,
-      }),
-    });
-
-    const json = await res.json();
-    setRawResponse(json);
-
-    if (!res.ok) {
-      console.error("Token exchange failed via API:", json);
-      setErrorMsg(
-        `Token exchange failed: ${
-          json.error || res.statusText
-        }. Check raw response below.`
-      );
+    if (!code) {
+      setErrorMsg("No ?code= in URL. Start Xero login first.");
       return;
     }
 
-    setAccessToken(json.access_token || null);
-    setRefreshToken(json.refresh_token || null);
+    try {
+      setErrorMsg("");
 
-    if (Array.isArray(json.tenants) && json.tenants.length > 0) {
-      setTenantId(json.tenants[0].tenantId || json.tenants[0].id || null);
-    } else {
-      setTenantId(null);
-    }
-  } catch (err) {
-    console.error("Unexpected error:", err);
-    setErrorMsg(`Unexpected error: ${String(err)}`);
-  }
-}
+      const res = await fetch("/api/xero_token_exchange", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          code,
+          redirectUri: REDIRECT_URI,
+        }),
+      });
 
+      const json = await res.json();
+      setRawResponse(json);
 
-      // Xero returns tenants in a separate call usually, but some toolkits
-      // include tenants here. If not present, we’ll instruct you to call /connections in Postman next.
+      if (!res.ok) {
+        console.error("Token exchange failed via API:", json);
+        setErrorMsg(
+          `Token exchange failed: ${
+            json.error || res.statusText
+          }. Check raw response below.`
+        );
+        return;
+      }
+
+      setAccessToken(json.access_token || null);
+      setRefreshToken(json.refresh_token || null);
+
       if (Array.isArray(json.tenants) && json.tenants.length > 0) {
         setTenantId(json.tenants[0].tenantId || json.tenants[0].id || null);
       } else {
-        // In many cases, you need to call /connections with the access token
-        // We just note that here for now.
         setTenantId(null);
       }
     } catch (err) {
@@ -152,9 +142,12 @@ export default function XeroConnectPage() {
           border: "1px solid #ddd",
         }}
       >
-        <h2 style={{ fontSize: 18, marginBottom: 8 }}>Step 1: Start Xero login</h2>
+        <h2 style={{ fontSize: 18, marginBottom: 8 }}>
+          Step 1: Start Xero login
+        </h2>
         <p style={{ marginBottom: 8 }}>
-          Click this to go to Xero, choose your organisation, and approve access.
+          Click this to go to Xero, choose your organisation, and approve
+          access.
         </p>
         <button
           type="button"
@@ -184,8 +177,8 @@ export default function XeroConnectPage() {
           Step 2: Exchange code for tokens
         </h2>
         <p style={{ marginBottom: 8 }}>
-          After Xero redirects back here, you&apos;ll see <code>?code=...</code>{" "}
-          in the URL. Then click this:
+          After Xero redirects back here, you&apos;ll see{" "}
+          <code>?code=...</code> in the URL. Then click this:
         </p>
         <button
           type="button"
