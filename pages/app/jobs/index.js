@@ -144,23 +144,38 @@ export default function JobsListPage() {
             ← Back to dashboard
           </a>
         </p>
-        <p style={{ marginTop: 12 }}>
-          <a
-            href="/app/jobs/book"
-            style={{
-              display: "inline-block",
-              padding: "8px 12px",
-              borderRadius: 4,
-              border: "1px solid #0070f3",
-              background: "#0070f3",
-              color: "#fff",
-              fontSize: 14,
-              textDecoration: "none",
-            }}
-          >
-            + Book new job
-          </a>
-        </p>
+       <p style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+  <a
+    href="/app/jobs/book"
+    style={{
+      display: "inline-block",
+      padding: "8px 12px",
+      borderRadius: 4,
+      border: "1px solid #0070f3",
+      background: "#0070f3",
+      color: "#fff",
+      fontSize: 14,
+      textDecoration: "none",
+    }}
+  >
+    + Book new job
+  </a>
+  <a
+    href="/app/jobs/day-planner"
+    style={{
+      display: "inline-block",
+      padding: "8px 12px",
+      borderRadius: 4,
+      border: "1px solid #555",
+      background: "#fff",
+      color: "#555",
+      fontSize: 14,
+      textDecoration: "none",
+    }}
+  >
+    Day planner
+  </a>
+</p>
       </header>
 
       {(authError || errorMsg) && (
