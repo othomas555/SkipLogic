@@ -39,18 +39,25 @@ export default function JobsPage() {
   // ✅ NEW: whether we should create a Xero invoice (currently parked)
   const [createInvoice, setCreateInvoice] = useState(false);
 
-  // ✅ NEW: "Add customer" modal state
+  // ✅ NEW: "Add customer" modal state (full details)
   const [showNewCustomerModal, setShowNewCustomerModal] = useState(false);
-  const [newCustomerName, setNewCustomerName] = useState("");
-  const [newCustomerContactName, setNewCustomerContactName] = useState("");
+  const [newCustomerFirstName, setNewCustomerFirstName] = useState("");
+  const [newCustomerLastName, setNewCustomerLastName] = useState("");
+  const [newCustomerCompanyName, setNewCustomerCompanyName] = useState("");
   const [newCustomerEmail, setNewCustomerEmail] = useState("");
   const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [newCustomerAddress1, setNewCustomerAddress1] = useState("");
+  const [newCustomerAddress2, setNewCustomerAddress2] = useState("");
+  const [newCustomerAddress3, setNewCustomerAddress3] = useState("");
+  const [newCustomerPostcode, setNewCustomerPostcode] = useState("");
+  const [newCustomerCreditAccount, setNewCustomerCreditAccount] =
+    useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [newCustomerError, setNewCustomerError] = useState("");
 
   useEffect(() => {
     if (checking) return;
-    if (!subscriberId) return; // useAuthProfile s redirect if not signed in
+    if (!subscriberId) return; // useAuthProfile handles redirect if not signed in
 
     async function loadData() {
       setErrorMsg("");
@@ -120,7 +127,7 @@ export default function JobsPage() {
   }, [checking, subscriberId]);
 
   // Lookup all skips + prices for a postcode
-  async function LookupPostcode() {
+  const handleLookupPostcode = async () => {
     setPostcodeMsg("");
     setErrorMsg("");
 
@@ -160,101 +167,103 @@ export default function JobsPage() {
         setJobPrice("");
       }
     } catch (err) {
-      console.error("LookupPostcode error:", err);
+      console.error("handleLookupPostcode error:", err);
       setPostcodeMsg("Error looking up skips for this postcode.");
     } finally {
       setLookingUpPostcode(false);
     }
-  }
+  };
 
- // ✅ NEW: create a customer directly from the Jobs page modal (full details)
-async function handleCreateCustomerFromModal() {
-  try {
-    setNewCustomerError("");
+  // ✅ NEW: create a customer directly from the Jobs page modal (full details)
+  async function handleCreateCustomerFromModal() {
+    try {
+      setNewCustomerError("");
 
-    if (!newCustomerFirstName.trim()) {
-      setNewCustomerError("First name is required");
-      return;
-    }
-    if (!newCustomerLastName.trim()) {
-      setNewCustomerError("Last name is required");
-      return;
-    }
-    if (!newCustomerEmail.trim()) {
-      setNewCustomerError("Customer email is required");
-      return;
-    }
-    if (!newCustomerPhone.trim()) {
-      setNewCustomerError("Customer phone is required");
-      return;
-    }
-    if (!newCustomerAddress1.trim()) {
-      setNewCustomerError("Address Line 1 is required");
-      return;
-    }
-    if (!newCustomerPostcode.trim()) {
-      setNewCustomerError("Postcode is required");
-      return;
-    }
-    if (!subscriberId) {
-      setNewCustomerError("Missing subscriberId – please refresh and try again.");
-      return;
-    }
+      if (!newCustomerFirstName.trim()) {
+        setNewCustomerError("First name is required");
+        return;
+      }
+      if (!newCustomerLastName.trim()) {
+        setNewCustomerError("Last name is required");
+        return;
+      }
+      if (!newCustomerEmail.trim()) {
+        setNewCustomerError("Customer email is required");
+        return;
+      }
+      if (!newCustomerPhone.trim()) {
+        setNewCustomerError("Customer phone is required");
+        return;
+      }
+      if (!newCustomerAddress1.trim()) {
+        setNewCustomerError("Address Line 1 is required");
+        return;
+      }
+      if (!newCustomerPostcode.trim()) {
+        setNewCustomerError("Postcode is required");
+        return;
+      }
+      if (!subscriberId) {
+        setNewCustomerError(
+          "Missing subscriberId – please refresh and try again."
+        );
+        return;
+      }
 
-    setCreatingCustomer(true);
+      setCreatingCustomer(true);
 
-    const { data, error } = await supabase
-      .from("customers")
-      .insert([
-        {
-          subscriber_id: subscriberId,
-          first_name: newCustomerFirstName.trim(),
-          last_name: newCustomerLastName.trim(),
-          company_name: newCustomerCompanyName.trim() || null,
-          email: newCustomerEmail.trim(),
-          phone: newCustomerPhone.trim(),
-          address_line1: newCustomerAddress1.trim(),
-          address_line2: newCustomerAddress2.trim() || null,
-          address_line3: newCustomerAddress3.trim() || null,
-          postcode: newCustomerPostcode.trim(),
-          // ✅ matches your boolean column name
-          is_credit_account: newCustomerCreditAccount,
-        },
-      ])
-      .select("id, first_name, last_name, company_name, email")
-      .single();
+      const { data, error } = await supabase
+        .from("customers")
+        .insert([
+          {
+            subscriber_id: subscriberId,
+            first_name: newCustomerFirstName.trim(),
+            last_name: newCustomerLastName.trim(),
+            company_name: newCustomerCompanyName.trim() || null,
+            email: newCustomerEmail.trim(),
+            phone: newCustomerPhone.trim(),
+            address_line1: newCustomerAddress1.trim(),
+            address_line2: newCustomerAddress2.trim() || null,
+            address_line3: newCustomerAddress3.trim() || null,
+            postcode: newCustomerPostcode.trim(),
+            // ✅ matches your boolean column name
+            is_credit_account: newCustomerCreditAccount,
+          },
+        ])
+        .select("id, first_name, last_name, company_name, email")
+        .single();
 
-    if (error) {
-      console.error("Error creating customer from modal:", error);
-      setNewCustomerError(error.message || "Error creating customer");
+      if (error) {
+        console.error("Error creating customer from modal:", error);
+        setNewCustomerError(error.message || "Error creating customer");
+        setCreatingCustomer(false);
+        return;
+      }
+
+      // Add to customers list + select it
+      setCustomers((prev) => [...prev, data]);
+      setSelectedCustomerId(data.id);
+
+      // Reset + close modal
+      setNewCustomerFirstName("");
+      setNewCustomerLastName("");
+      setNewCustomerCompanyName("");
+      setNewCustomerEmail("");
+      setNewCustomerPhone("");
+      setNewCustomerAddress1("");
+      setNewCustomerAddress2("");
+      setNewCustomerAddress3("");
+      setNewCustomerPostcode("");
+      setNewCustomerCreditAccount(false);
       setCreatingCustomer(false);
-      return;
+      setShowNewCustomerModal(false);
+    } catch (err) {
+      console.error("Unexpected error creating customer:", err);
+      setNewCustomerError("Unexpected error creating customer");
+      setCreatingCustomer(false);
     }
-
-    // Add to customers list + select it
-    setCustomers((prev) => [...prev, data]);
-    setSelectedCustomerId(data.id);
-
-    // Reset + close modal
-    setNewCustomerFirstName("");
-    setNewCustomerLastName("");
-    setNewCustomerCompanyName("");
-    setNewCustomerEmail("");
-    setNewCustomerPhone("");
-    setNewCustomerAddress1("");
-    setNewCustomerAddress2("");
-    setNewCustomerAddress3("");
-    setNewCustomerPostcode("");
-    setNewCustomerCreditAccount(false);
-    setCreatingCustomer(false);
-    setShowNewCustomerModal(false);
-  } catch (err) {
-    console.error("Unexpected error creating customer:", err);
-    setNewCustomerError("Unexpected error creating customer");
-    setCreatingCustomer(false);
   }
-}
-  
+
   async function handleAddJob(e) {
     e.preventDefault();
     setErrorMsg("");
@@ -989,7 +998,7 @@ async function handleCreateCustomerFromModal() {
         )}
       </section>
 
-      {/* ✅ New Customer Modal */}
+      {/* ✅ New Customer Modal with full fields */}
       {showNewCustomerModal && (
         <div
           style={{
@@ -1008,11 +1017,15 @@ async function handleCreateCustomerFromModal() {
               padding: 24,
               borderRadius: 8,
               width: "100%",
-              maxWidth: 420,
+              maxWidth: 480,
               boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+              maxHeight: "90vh",
+              overflowY: "auto",
             }}
           >
-            <h2 style={{ marginTop: 0, marginBottom: 16 }}>Add new customer</h2>
+            <h2 style={{ marginTop: 0, marginBottom: 16 }}>
+              Add new customer
+            </h2>
 
             {newCustomerError && (
               <p style={{ color: "red", marginBottom: 12 }}>
@@ -1020,16 +1033,17 @@ async function handleCreateCustomerFromModal() {
               </p>
             )}
 
+            {/* First Name */}
             <div style={{ marginBottom: 12 }}>
               <label
                 style={{ display: "block", marginBottom: 4, fontSize: 14 }}
               >
-                Customer name (company or person) *
+                First Name *
               </label>
               <input
                 type="text"
-                value={newCustomerName}
-                onChange={(e) => setNewCustomerName(e.target.value)}
+                value={newCustomerFirstName}
+                onChange={(e) => setNewCustomerFirstName(e.target.value)}
                 style={{
                   width: "100%",
                   padding: 8,
@@ -1039,16 +1053,17 @@ async function handleCreateCustomerFromModal() {
               />
             </div>
 
+            {/* Last Name */}
             <div style={{ marginBottom: 12 }}>
               <label
                 style={{ display: "block", marginBottom: 4, fontSize: 14 }}
               >
-                Contact name
+                Last Name *
               </label>
               <input
                 type="text"
-                value={newCustomerContactName}
-                onChange={(e) => setNewCustomerContactName(e.target.value)}
+                value={newCustomerLastName}
+                onChange={(e) => setNewCustomerLastName(e.target.value)}
                 style={{
                   width: "100%",
                   padding: 8,
@@ -1058,11 +1073,32 @@ async function handleCreateCustomerFromModal() {
               />
             </div>
 
+            {/* Company Name */}
             <div style={{ marginBottom: 12 }}>
               <label
                 style={{ display: "block", marginBottom: 4, fontSize: 14 }}
               >
-                Email
+                Company Name (optional)
+              </label>
+              <input
+                type="text"
+                value={newCustomerCompanyName}
+                onChange={(e) => setNewCustomerCompanyName(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            {/* Email */}
+            <div style={{ marginBottom: 12 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Customer Email *
               </label>
               <input
                 type="email"
@@ -1077,11 +1113,12 @@ async function handleCreateCustomerFromModal() {
               />
             </div>
 
-            <div style={{ marginBottom: 16 }}>
+            {/* Phone */}
+            <div style={{ marginBottom: 12 }}>
               <label
                 style={{ display: "block", marginBottom: 4, fontSize: 14 }}
               >
-                Phone
+                Customer Phone *
               </label>
               <input
                 type="tel"
@@ -1094,6 +1131,107 @@ async function handleCreateCustomerFromModal() {
                   border: "1px solid #ccc",
                 }}
               />
+            </div>
+
+            {/* Address Line 1 */}
+            <div style={{ marginBottom: 12 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Address Line 1 *
+              </label>
+              <input
+                type="text"
+                value={newCustomerAddress1}
+                onChange={(e) => setNewCustomerAddress1(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            {/* Address Line 2 */}
+            <div style={{ marginBottom: 12 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Address Line 2 *
+              </label>
+              <input
+                type="text"
+                value={newCustomerAddress2}
+                onChange={(e) => setNewCustomerAddress2(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            {/* Address Line 3 */}
+            <div style={{ marginBottom: 12 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Address Line 3 (optional)
+              </label>
+              <input
+                type="text"
+                value={newCustomerAddress3}
+                onChange={(e) => setNewCustomerAddress3(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            {/* Postcode */}
+            <div style={{ marginBottom: 12 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Postcode *
+              </label>
+              <input
+                type="text"
+                value={newCustomerPostcode}
+                onChange={(e) => setNewCustomerPostcode(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            {/* Credit Account Customer */}
+            <div style={{ marginBottom: 16 }}>
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 14,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={newCustomerCreditAccount}
+                  onChange={(e) =>
+                    setNewCustomerCreditAccount(e.target.checked)
+                  }
+                />
+                Credit Account Customer *
+              </label>
             </div>
 
             <div
