@@ -15,7 +15,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // ✅ Now includes customerEmail
+    // ✅ Includes customerEmail, with proper commas
     const { job, customerName, customerEmail, jobPrice } = req.body || {};
 
     if (!job) {
@@ -39,7 +39,7 @@ Payment type: ${job.payment_type || ""}
 This is an automated email from SkipLogic.
 `;
 
-    // ✅ Decide who to send to
+    // ✅ Decide where to send
     if (!customerEmail) {
       console.warn("No customerEmail provided, defaulting to SENDGRID_TO");
     }
@@ -52,7 +52,7 @@ This is an automated email from SkipLogic.
       },
     ];
 
-    // ✅ Optionally BCC the office if sending to customer
+    // ✅ Optionally BCC the office if sending to the customer
     if (customerEmail && SENDGRID_TO && SENDGRID_TO !== customerEmail) {
       personalizations[0].bcc = [{ email: SENDGRID_TO }];
     }
@@ -80,6 +80,8 @@ This is an automated email from SkipLogic.
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("Unexpected error:", err);
-    return res.status(500).json({ error: "Unexpected error", details: err });
+    return res
+      .status(500)
+      .json({ error: "Unexpected error", details: err?.message || err });
   }
 }
