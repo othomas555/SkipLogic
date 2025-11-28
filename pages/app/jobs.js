@@ -39,6 +39,15 @@ export default function JobsPage() {
   // ✅ NEW: whether we should create a Xero invoice (currently parked)
   const [createInvoice, setCreateInvoice] = useState(false);
 
+  // ✅ NEW: "Add customer" modal state
+  const [showNewCustomerModal, setShowNewCustomerModal] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerContactName, setNewCustomerContactName] = useState("");
+  const [newCustomerEmail, setNewCustomerEmail] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [newCustomerError, setNewCustomerError] = useState("");
+
   useEffect(() => {
     if (checking) return;
     if (!subscriberId) return; // useAuthProfile handles redirect if not signed in
@@ -155,6 +164,64 @@ export default function JobsPage() {
       setPostcodeMsg("Error looking up skips for this postcode.");
     } finally {
       setLookingUpPostcode(false);
+    }
+  }
+
+  // ✅ NEW: create a customer directly from the Jobs page modal
+  async function handleCreateCustomerFromModal() {
+    try {
+      setNewCustomerError("");
+
+      if (!newCustomerName.trim()) {
+        setNewCustomerError("Customer name is required");
+        return;
+      }
+
+      if (!subscriberId) {
+        setNewCustomerError("Missing subscriberId – please refresh and try again.");
+        return;
+      }
+
+      setCreatingCustomer(true);
+
+      // Treat "Customer name" as company_name and "Contact name" as first_name
+      const { data, error } = await supabase
+        .from("customers")
+        .insert([
+          {
+            subscriber_id: subscriberId,
+            company_name: newCustomerName.trim(),
+            first_name: newCustomerContactName.trim() || null,
+            last_name: null,
+            email: newCustomerEmail.trim() || null,
+            phone: newCustomerPhone.trim() || null,
+          },
+        ])
+        .select("id, first_name, last_name, company_name, email")
+        .single();
+
+      if (error) {
+        console.error("Error creating customer from modal:", error);
+        setNewCustomerError(error.message || "Error creating customer");
+        setCreatingCustomer(false);
+        return;
+      }
+
+      // Add to customers list + select it
+      setCustomers((prev) => [...prev, data]);
+      setSelectedCustomerId(data.id);
+
+      // Reset + close modal
+      setNewCustomerName("");
+      setNewCustomerContactName("");
+      setNewCustomerEmail("");
+      setNewCustomerPhone("");
+      setCreatingCustomer(false);
+      setShowNewCustomerModal(false);
+    } catch (err) {
+      console.error("Unexpected error creating customer:", err);
+      setNewCustomerError("Unexpected error creating customer");
+      setCreatingCustomer(false);
     }
   }
 
@@ -539,23 +606,43 @@ export default function JobsPage() {
             <label style={{ display: "block", marginBottom: 4 }}>
               Customer *
             </label>
-            <select
-              value={selectedCustomerId}
-              onChange={(e) => setSelectedCustomerId(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            >
-              <option value="">Select a customer…</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {formatCustomerLabel(c)}
-                </option>
-              ))}
-            </select>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <select
+                value={selectedCustomerId}
+                onChange={(e) => setSelectedCustomerId(e.target.value)}
+                style={{
+                  flex: 1,
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              >
+                <option value="">Select a customer…</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {formatCustomerLabel(c)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewCustomerError("");
+                  setShowNewCustomerModal(true);
+                }}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                  background: "#f5f5f5",
+                  cursor: "pointer",
+                  fontSize: 14,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                + New
+              </button>
+            </div>
           </div>
 
           {/* Delivery site */}
@@ -871,6 +958,162 @@ export default function JobsPage() {
           </table>
         )}
       </section>
+
+      {/* ✅ New Customer Modal */}
+      {showNewCustomerModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              padding: 24,
+              borderRadius: 8,
+              width: "100%",
+              maxWidth: 420,
+              boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+            }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 16 }}>Add new customer</h2>
+
+            {newCustomerError && (
+              <p style={{ color: "red", marginBottom: 12 }}>
+                {newCustomerError}
+              </p>
+            )}
+
+            <div style={{ marginBottom: 12 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Customer name (company or person) *
+              </label>
+              <input
+                type="text"
+                value={newCustomerName}
+                onChange={(e) => setNewCustomerName(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Contact name
+              </label>
+              <input
+                type="text"
+                value={newCustomerContactName}
+                onChange={(e) => setNewCustomerContactName(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Email
+              </label>
+              <input
+                type="email"
+                value={newCustomerEmail}
+                onChange={(e) => setNewCustomerEmail(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <label
+                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
+              >
+                Phone
+              </label>
+              <input
+                type="tel"
+                value={newCustomerPhone}
+                onChange={(e) => setNewCustomerPhone(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                }}
+              />
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                marginTop: 8,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (!creatingCustomer) {
+                    setShowNewCustomerModal(false);
+                    setNewCustomerError("");
+                  }
+                }}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 4,
+                  border: "1px solid #ccc",
+                  background: "#f5f5f5",
+                  cursor: "pointer",
+                  fontSize: 14,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateCustomerFromModal}
+                disabled={creatingCustomer}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 4,
+                  border: "none",
+                  background: "#0070f3",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: 14,
+                  opacity: creatingCustomer ? 0.7 : 1,
+                }}
+              >
+                {creatingCustomer ? "Saving..." : "Save customer"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
