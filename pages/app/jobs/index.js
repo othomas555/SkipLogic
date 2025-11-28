@@ -221,7 +221,7 @@ export default function JobsListPage() {
                 <th
                   style={{
                     textAlign: "left",
-                    borderBottom: "1px solid "#ddd",
+                    borderBottom: "1px solid #ddd",
                     padding: "8px",
                   }}
                 >
