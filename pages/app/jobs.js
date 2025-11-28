@@ -34,9 +34,9 @@ export default function JobsPage() {
   const [paymentType, setPaymentType] = useState("card"); // card | cash | account etc.
 
   // Postcode → available skips + price
-  const [postcodeSkips, setPostcodeSkips] = useState([]); // [{skip_type_id, skip_type_name, price_inc_vat}]
+  const [postcodeSkips, setPostcodeSkips] = useState([]);
   const [postcodeMsg, setPostcodeMsg] = useState("");
-  const [jobPrice, setJobPrice] = useState(""); // price for this job
+  const [jobPrice, setJobPrice] = useState("");
   const [lookingUpPostcode, setLookingUpPostcode] = useState(false);
 
   // Whether we should create a Xero invoice (currently parked)
@@ -63,7 +63,7 @@ export default function JobsPage() {
 
   useEffect(() => {
     if (checking) return;
-    if (!subscriberId) return; // useAuthProfile handles redirect if not signed in
+    if (!subscriberId) return;
 
     async function loadData() {
       setErrorMsg("");
@@ -135,7 +135,6 @@ export default function JobsPage() {
 
       if (skipTypesError) {
         console.error("Skip types error:", skipTypesError);
-        // don’t hard fail the page, just show message
         setErrorMsg("Could not load skip types.");
       } else {
         setSkipTypes(skipTypesData || []);
@@ -169,7 +168,6 @@ export default function JobsPage() {
       if (!results || results.length === 0) {
         setPostcodeSkips([]);
         setPostcodeMsg("We don't serve this postcode or no prices are set.");
-        // Clear skip + price if postcode not served
         setSelectedSkipTypeId("");
         setJobPrice("");
         return;
@@ -178,7 +176,6 @@ export default function JobsPage() {
       setPostcodeSkips(results);
       setPostcodeMsg(`Found ${results.length} skip type(s) for this postcode.`);
 
-      // If the currently selected skip isn't in this postcode, clear it
       if (
         selectedSkipTypeId &&
         !results.some((r) => r.skip_type_id === selectedSkipTypeId)
@@ -200,7 +197,6 @@ export default function JobsPage() {
     if (!c) return;
     setSiteAddress1(c.address_line1 || "");
     setSiteAddress2(c.address_line2 || "");
-    // Treat address_line3 as town/extra line
     setSiteTown(c.address_line3 || "");
     setSitePostcode(c.postcode || "");
   }
@@ -348,24 +344,11 @@ export default function JobsPage() {
       newErrors.jobPrice = "Price must be a positive number.";
     }
 
-    // Payment type vs credit account
-    const selectedCustomerObj = customers.find(
-      (c) => c.id === selectedCustomerId
-    );
-    const isCreditCustomer = !!selectedCustomerObj?.is_credit_account;
-
     if (!paymentType) {
       newErrors.paymentType = "Please select a payment type.";
-    } else if (isCreditCustomer && paymentType !== "account") {
-      newErrors.paymentType =
-        "Credit account customers must use 'Account' as payment type.";
-    } else if (!isCreditCustomer && paymentType === "account") {
-      newErrors.paymentType =
-        "Only credit account customers can use 'Account' payment type.";
     }
 
     if (!subscriberId) {
-      // This is a deeper internal problem, keep it as a banner
       setErrorMsg("Could not find your subscriber when adding job.");
       return;
     }
@@ -378,16 +361,15 @@ export default function JobsPage() {
     setSaving(true);
 
     try {
-      // Find the selected skip type
       const selectedSkip = skipTypes.find((s) => s.id === selectedSkipTypeId);
-
       if (!selectedSkip) {
         setErrorMsg("Selected skip type not found.");
         setSaving(false);
         return;
       }
 
-      // Insert job with price_inc_vat
+      const numericPrice = parseFloat(jobPrice);
+
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([
@@ -404,7 +386,6 @@ export default function JobsPage() {
             notes: notes || `Standard skip: ${selectedSkip.name}`,
             payment_type: paymentType || null,
             price_inc_vat: numericPrice,
-            // job_status will default to 'booked'
           },
         ])
         .select(
@@ -432,7 +413,6 @@ export default function JobsPage() {
         return;
       }
 
-      // Create initial DELIVER event for this job
       const { data: event, error: eventError } = await supabase.rpc(
         "create_job_event",
         {
@@ -454,9 +434,8 @@ export default function JobsPage() {
         return;
       }
 
-      // Xero integration parked for now (createInvoice ignored for now)
+      // Xero integration still parked; createInvoice not used yet
 
-      // Prepend new job to list
       setJobs((prev) => [inserted, ...prev]);
 
       // Send notification email via SendGrid (fire-and-forget)
@@ -506,7 +485,6 @@ export default function JobsPage() {
   function formatCustomerLabel(c) {
     const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
     if (c.company_name) {
-      // e.g. "Acme Ltd – John Smith"
       return `${c.company_name} – ${baseName || "Unknown contact"}`;
     }
     return baseName || "Unknown customer";
@@ -532,14 +510,6 @@ export default function JobsPage() {
     if (!s) return "Unknown skip type";
     return `${s.name} (${s.quantity_owned} owned)`;
   }
-
-  // Derived info for UI (credit-account locking etc.)
-  const selectedCustomer =
-    selectedCustomerId &&
-    customers.find((c) => c.id === selectedCustomerId);
-  const selectedCustomerIsCredit = !!selectedCustomer?.is_credit_account;
-  const forceInvoiceForCredit =
-    selectedCustomerIsCredit && paymentType === "account";
 
   if (checking) {
     return (
@@ -783,16 +753,6 @@ export default function JobsPage() {
                     paymentType: undefined,
                   }));
 
-                  const sel = customers.find((c) => c.id === id);
-                  const isCredit = !!sel?.is_credit_account;
-
-                  // Lock payment type based on credit status
-                  if (isCredit) {
-                    setPaymentType("account");
-                  } else if (paymentType === "account") {
-                    setPaymentType("card");
-                  }
-
                   // If "same as customer" is on, copy address
                   if (sameAsCustomerAddress && id) {
                     applyCustomerAddressToSite(id);
@@ -991,15 +951,9 @@ export default function JobsPage() {
               }}
             >
               <option value="">Select payment type</option>
-              <option value="card" disabled={selectedCustomerIsCredit}>
-                Card
-              </option>
-              <option value="cash" disabled={selectedCustomerIsCredit}>
-                Cash
-              </option>
-              <option value="account" disabled={!selectedCustomerIsCredit}>
-                Account
-              </option>
+              <option value="card">Card</option>
+              <option value="cash">Cash</option>
+              <option value="account">Account</option>
             </select>
             {!selectedCustomerId && (
               <div
@@ -1010,17 +964,6 @@ export default function JobsPage() {
                 }}
               >
                 Select a customer to choose payment type.
-              </div>
-            )}
-            {selectedCustomerIsCredit && selectedCustomer && (
-              <div style={{ fontSize: 12, marginTop: 4 }}>
-                This customer is a credit account – payment type is locked to
-                &apos;Account&apos;.
-              </div>
-            )}
-            {!selectedCustomerIsCredit && selectedCustomer && (
-              <div style={{ fontSize: 12, marginTop: 4 }}>
-                This customer is pay-upfront – use Card or Cash.
               </div>
             )}
             {fieldErrors.paymentType && (
@@ -1041,21 +984,14 @@ export default function JobsPage() {
             <label style={{ display: "inline-flex", alignItems: "center" }}>
               <input
                 type="checkbox"
-                checked={forceInvoiceForCredit ? true : createInvoice}
-                onChange={(e) => {
-                  if (forceInvoiceForCredit) return;
-                  setCreateInvoice(e.target.checked);
-                }}
+                checked={createInvoice}
+                onChange={(e) => setCreateInvoice(e.target.checked)}
                 style={{ marginRight: 8 }}
-                disabled={forceInvoiceForCredit}
               />
               Create invoice in Xero
             </label>
             <div style={{ fontSize: 12, marginTop: 4 }}>
               Xero integration currently disabled
-              {forceInvoiceForCredit
-                ? " – for credit customers on Account, this will always invoice."
-                : ""}
             </div>
           </div>
 
@@ -1230,7 +1166,8 @@ export default function JobsPage() {
                   </td>
                   <td
                     style={{
-                      borderBottom: "1px solid #eee",
+                      borderBottom: "1px solid " +
+                        "#eee",
                       padding: "8px",
                     }}
                   >
@@ -1293,7 +1230,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1313,7 +1250,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1333,7 +1270,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1353,7 +1290,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1373,7 +1310,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1393,7 +1330,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1413,7 +1350,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1433,7 +1370,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1453,7 +1390,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               />
             </div>
@@ -1498,7 +1435,7 @@ export default function JobsPage() {
                 style={{
                   padding: "8px 12px",
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                   background: "#f5f5f5",
                   cursor: "pointer",
                   fontSize: 14,
