@@ -1230,7 +1230,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
