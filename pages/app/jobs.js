@@ -16,6 +16,9 @@ export default function JobsPage() {
 
   const [errorMsg, setErrorMsg] = useState("");
 
+  // Field-level validation errors
+  const [fieldErrors, setFieldErrors] = useState({});
+
   // Form state
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [saving, setSaving] = useState(false);
@@ -36,10 +39,10 @@ export default function JobsPage() {
   const [jobPrice, setJobPrice] = useState(""); // price for this job
   const [lookingUpPostcode, setLookingUpPostcode] = useState(false);
 
-  // ✅ NEW: whether we should create a Xero invoice (currently parked)
+  // Whether we should create a Xero invoice (currently parked)
   const [createInvoice, setCreateInvoice] = useState(false);
 
-  // ✅ NEW: "Add customer" modal state (full details)
+  // "Add customer" modal state (full details)
   const [showNewCustomerModal, setShowNewCustomerModal] = useState(false);
   const [newCustomerFirstName, setNewCustomerFirstName] = useState("");
   const [newCustomerLastName, setNewCustomerLastName] = useState("");
@@ -55,6 +58,9 @@ export default function JobsPage() {
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [newCustomerError, setNewCustomerError] = useState("");
 
+  // Same-as-customer-address toggle
+  const [sameAsCustomerAddress, setSameAsCustomerAddress] = useState(false);
+
   useEffect(() => {
     if (checking) return;
     if (!subscriberId) return; // useAuthProfile handles redirect if not signed in
@@ -65,7 +71,20 @@ export default function JobsPage() {
       // 1) Load customers for this subscriber
       const { data: customerData, error: customersError } = await supabase
         .from("customers")
-        .select("id, first_name, last_name, company_name, email")
+        .select(
+          `
+          id,
+          first_name,
+          last_name,
+          company_name,
+          email,
+          address_line1,
+          address_line2,
+          address_line3,
+          postcode,
+          is_credit_account
+        `
+        )
         .eq("subscriber_id", subscriberId)
         .order("last_name", { ascending: true });
 
@@ -130,6 +149,7 @@ export default function JobsPage() {
   const handleLookupPostcode = async () => {
     setPostcodeMsg("");
     setErrorMsg("");
+    setFieldErrors((prev) => ({ ...prev, sitePostcode: undefined }));
 
     const trimmed = (sitePostcode || "").trim();
     if (!trimmed) {
@@ -174,7 +194,25 @@ export default function JobsPage() {
     }
   };
 
-  // ✅ NEW: create a customer directly from the Jobs page modal (full details)
+  // Helper: copy customer address into site fields
+  function applyCustomerAddressToSite(customerId) {
+    const c = customers.find((cust) => cust.id === customerId);
+    if (!c) return;
+    setSiteAddress1(c.address_line1 || "");
+    setSiteAddress2(c.address_line2 || "");
+    // Treat address_line3 as town/extra line
+    setSiteTown(c.address_line3 || "");
+    setSitePostcode(c.postcode || "");
+  }
+
+  function handleSameAsCustomerToggle(checked) {
+    setSameAsCustomerAddress(checked);
+    if (checked && selectedCustomerId) {
+      applyCustomerAddressToSite(selectedCustomerId);
+    }
+  }
+
+  // Create a customer directly from the Jobs page modal (full details)
   async function handleCreateCustomerFromModal() {
     try {
       setNewCustomerError("");
@@ -197,6 +235,10 @@ export default function JobsPage() {
       }
       if (!newCustomerAddress1.trim()) {
         setNewCustomerError("Address Line 1 is required");
+        return;
+      }
+      if (!newCustomerAddress2.trim()) {
+        setNewCustomerError("Address Line 2 is required");
         return;
       }
       if (!newCustomerPostcode.trim()) {
@@ -223,14 +265,26 @@ export default function JobsPage() {
             email: newCustomerEmail.trim(),
             phone: newCustomerPhone.trim(),
             address_line1: newCustomerAddress1.trim(),
-            address_line2: newCustomerAddress2.trim() || null,
+            address_line2: newCustomerAddress2.trim(),
             address_line3: newCustomerAddress3.trim() || null,
             postcode: newCustomerPostcode.trim(),
-            // ✅ matches your boolean column name
             is_credit_account: newCustomerCreditAccount,
           },
         ])
-        .select("id, first_name, last_name, company_name, email")
+        .select(
+          `
+          id,
+          first_name,
+          last_name,
+          company_name,
+          email,
+          address_line1,
+          address_line2,
+          address_line3,
+          postcode,
+          is_credit_account
+        `
+        )
         .single();
 
       if (error) {
@@ -243,6 +297,11 @@ export default function JobsPage() {
       // Add to customers list + select it
       setCustomers((prev) => [...prev, data]);
       setSelectedCustomerId(data.id);
+
+      // If "same as customer" was ticked, apply address
+      if (sameAsCustomerAddress) {
+        applyCustomerAddressToSite(data.id);
+      }
 
       // Reset + close modal
       setNewCustomerFirstName("");
@@ -267,32 +326,52 @@ export default function JobsPage() {
   async function handleAddJob(e) {
     e.preventDefault();
     setErrorMsg("");
+    setFieldErrors({});
 
-    // Basic checks
+    const newErrors = {};
+
     if (!sitePostcode) {
-      setErrorMsg("Please enter a site postcode and look up available skips.");
-      return;
+      newErrors.sitePostcode =
+        "Please enter a site postcode and look up available skips.";
     }
 
     if (!selectedSkipTypeId) {
-      setErrorMsg("Please select a skip type for this postcode.");
-      return;
+      newErrors.skipType = "Please select a skip type for this postcode.";
     }
 
     if (!selectedCustomerId) {
-      setErrorMsg("Please select a customer.");
-      return;
+      newErrors.customer = "Please select a customer.";
+    }
+
+    const numericPrice = parseFloat(jobPrice);
+    if (Number.isNaN(numericPrice) || numericPrice <= 0) {
+      newErrors.jobPrice = "Price must be a positive number.";
+    }
+
+    // Payment type vs credit account
+    const selectedCustomerObj = customers.find(
+      (c) => c.id === selectedCustomerId
+    );
+    const isCreditCustomer = !!selectedCustomerObj?.is_credit_account;
+
+    if (!paymentType) {
+      newErrors.paymentType = "Please select a payment type.";
+    } else if (isCreditCustomer && paymentType !== "account") {
+      newErrors.paymentType =
+        "Credit account customers must use 'Account' as payment type.";
+    } else if (!isCreditCustomer && paymentType === "account") {
+      newErrors.paymentType =
+        "Only credit account customers can use 'Account' payment type.";
     }
 
     if (!subscriberId) {
+      // This is a deeper internal problem, keep it as a banner
       setErrorMsg("Could not find your subscriber when adding job.");
       return;
     }
 
-    // ✅ Validate job price
-    const numericPrice = parseFloat(jobPrice);
-    if (Number.isNaN(numericPrice) || numericPrice <= 0) {
-      setErrorMsg("Price must be a positive number.");
+    if (Object.keys(newErrors).length > 0) {
+      setFieldErrors(newErrors);
       return;
     }
 
@@ -308,7 +387,7 @@ export default function JobsPage() {
         return;
       }
 
-      // ✅ Insert job with price_inc_vat
+      // Insert job with price_inc_vat
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([
@@ -324,7 +403,7 @@ export default function JobsPage() {
             scheduled_date: scheduledDate || null,
             notes: notes || `Standard skip: ${selectedSkip.name}`,
             payment_type: paymentType || null,
-            price_inc_vat: numericPrice, // ← store the actual price
+            price_inc_vat: numericPrice,
             // job_status will default to 'booked'
           },
         ])
@@ -375,15 +454,12 @@ export default function JobsPage() {
         return;
       }
 
-      // ✅ Xero integration parked for now
-      // if (createInvoice) {
-      //   ... (currently disabled)
-      // }
+      // Xero integration parked for now (createInvoice ignored for now)
 
       // Prepend new job to list
       setJobs((prev) => [inserted, ...prev]);
 
-      // 🔔 Send notification email via SendGrid (fire-and-forget)
+      // Send notification email via SendGrid (fire-and-forget)
       try {
         const customerLabel = findCustomerNameById(inserted.customer_id);
         const customerEmail = findCustomerEmailById(inserted.customer_id);
@@ -416,8 +492,10 @@ export default function JobsPage() {
       setPostcodeSkips([]);
       setPostcodeMsg("");
       setJobPrice("");
-      setCreateInvoice(false); // reset checkbox
+      setCreateInvoice(false);
+      setSameAsCustomerAddress(false);
       setSaving(false);
+      setFieldErrors({});
     } catch (err) {
       console.error("Unexpected error adding job:", err);
       setErrorMsg("Something went wrong while adding the job.");
@@ -454,6 +532,14 @@ export default function JobsPage() {
     if (!s) return "Unknown skip type";
     return `${s.name} (${s.quantity_owned} owned)`;
   }
+
+  // Derived info for UI (credit-account locking etc.)
+  const selectedCustomer =
+    selectedCustomerId &&
+    customers.find((c) => c.id === selectedCustomerId);
+  const selectedCustomerIsCredit = !!selectedCustomer?.is_credit_account;
+  const forceInvoiceForCredit =
+    selectedCustomerIsCredit && paymentType === "account";
 
   if (checking) {
     return (
@@ -565,6 +651,17 @@ export default function JobsPage() {
               {postcodeMsg && (
                 <div style={{ marginTop: 4, fontSize: 12 }}>{postcodeMsg}</div>
               )}
+              {fieldErrors.sitePostcode && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 12,
+                    color: "red",
+                  }}
+                >
+                  {fieldErrors.sitePostcode}
+                </div>
+              )}
             </div>
 
             {/* Available skips dropdown */}
@@ -577,6 +674,7 @@ export default function JobsPage() {
                 onChange={(e) => {
                   const newId = e.target.value;
                   setSelectedSkipTypeId(newId);
+                  setFieldErrors((prev) => ({ ...prev, skipType: undefined }));
 
                   const chosen = postcodeSkips.find(
                     (s) => s.skip_type_id === newId
@@ -613,6 +711,17 @@ export default function JobsPage() {
                   </option>
                 ))}
               </select>
+              {fieldErrors.skipType && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 12,
+                    color: "red",
+                  }}
+                >
+                  {fieldErrors.skipType}
+                </div>
+              )}
             </div>
 
             {/* Job price field */}
@@ -624,7 +733,13 @@ export default function JobsPage() {
                 type="number"
                 step="0.01"
                 value={jobPrice}
-                onChange={(e) => setJobPrice(e.target.value)}
+                onChange={(e) => {
+                  setJobPrice(e.target.value);
+                  setFieldErrors((prev) => ({
+                    ...prev,
+                    jobPrice: undefined,
+                  }));
+                }}
                 style={{
                   width: 160,
                   padding: 8,
@@ -637,6 +752,17 @@ export default function JobsPage() {
                 Auto-filled from postcode table. You can override if needed
                 (we&apos;ll flag as custom later).
               </div>
+              {fieldErrors.jobPrice && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 12,
+                    color: "red",
+                  }}
+                >
+                  {fieldErrors.jobPrice}
+                </div>
+              )}
             </div>
           </div>
 
@@ -648,7 +774,30 @@ export default function JobsPage() {
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <select
                 value={selectedCustomerId}
-                onChange={(e) => setSelectedCustomerId(e.target.value)}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSelectedCustomerId(id);
+                  setFieldErrors((prev) => ({
+                    ...prev,
+                    customer: undefined,
+                    paymentType: undefined,
+                  }));
+
+                  const sel = customers.find((c) => c.id === id);
+                  const isCredit = !!sel?.is_credit_account;
+
+                  // Lock payment type based on credit status
+                  if (isCredit) {
+                    setPaymentType("account");
+                  } else if (paymentType === "account") {
+                    setPaymentType("card");
+                  }
+
+                  // If "same as customer" is on, copy address
+                  if (sameAsCustomerAddress && id) {
+                    applyCustomerAddressToSite(id);
+                  }
+                }}
                 style={{
                   flex: 1,
                   padding: 8,
@@ -682,6 +831,48 @@ export default function JobsPage() {
                 + New
               </button>
             </div>
+            {fieldErrors.customer && (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 12,
+                  color: "red",
+                }}
+              >
+                {fieldErrors.customer}
+              </div>
+            )}
+          </div>
+
+          {/* Same as customer address toggle */}
+          <div style={{ marginBottom: 12 }}>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 14,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={sameAsCustomerAddress}
+                disabled={!selectedCustomerId}
+                onChange={(e) => handleSameAsCustomerToggle(e.target.checked)}
+              />
+              Site address same as customer
+            </label>
+            {!selectedCustomerId && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#666",
+                  marginTop: 4,
+                }}
+              >
+                Select a customer first to use this.
+              </div>
+            )}
           </div>
 
           {/* Delivery site */}
@@ -784,7 +975,14 @@ export default function JobsPage() {
             </label>
             <select
               value={paymentType}
-              onChange={(e) => setPaymentType(e.target.value)}
+              onChange={(e) => {
+                setPaymentType(e.target.value);
+                setFieldErrors((prev) => ({
+                  ...prev,
+                  paymentType: undefined,
+                }));
+              }}
+              disabled={!selectedCustomerId}
               style={{
                 width: "100%",
                 padding: 8,
@@ -792,25 +990,72 @@ export default function JobsPage() {
                 border: "1px solid #ccc",
               }}
             >
-              <option value="card">Card</option>
-              <option value="cash">Cash</option>
-              <option value="account">Account</option>
+              <option value="">Select payment type</option>
+              <option value="card" disabled={selectedCustomerIsCredit}>
+                Card
+              </option>
+              <option value="cash" disabled={selectedCustomerIsCredit}>
+                Cash
+              </option>
+              <option value="account" disabled={!selectedCustomerIsCredit}>
+                Account
+              </option>
             </select>
+            {!selectedCustomerId && (
+              <div
+                style={{
+                  fontSize: 12,
+                  marginTop: 4,
+                  color: "#666",
+                }}
+              >
+                Select a customer to choose payment type.
+              </div>
+            )}
+            {selectedCustomerIsCredit && selectedCustomer && (
+              <div style={{ fontSize: 12, marginTop: 4 }}>
+                This customer is a credit account – payment type is locked to
+                &apos;Account&apos;.
+              </div>
+            )}
+            {!selectedCustomerIsCredit && selectedCustomer && (
+              <div style={{ fontSize: 12, marginTop: 4 }}>
+                This customer is pay-upfront – use Card or Cash.
+              </div>
+            )}
+            {fieldErrors.paymentType && (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 12,
+                  color: "red",
+                }}
+              >
+                {fieldErrors.paymentType}
+              </div>
+            )}
           </div>
 
-          {/* ✅ NEW: Create invoice checkbox (currently does nothing) */}
+          {/* Create invoice checkbox */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: "inline-flex", alignItems: "center" }}>
               <input
                 type="checkbox"
-                checked={createInvoice}
-                onChange={(e) => setCreateInvoice(e.target.checked)}
+                checked={forceInvoiceForCredit ? true : createInvoice}
+                onChange={(e) => {
+                  if (forceInvoiceForCredit) return;
+                  setCreateInvoice(e.target.checked);
+                }}
                 style={{ marginRight: 8 }}
+                disabled={forceInvoiceForCredit}
               />
               Create invoice in Xero
             </label>
             <div style={{ fontSize: 12, marginTop: 4 }}>
-              (Xero integration currently disabled)
+              Xero integration currently disabled
+              {forceInvoiceForCredit
+                ? " – for credit customers on Account, this will always invoice."
+                : ""}
             </div>
           </div>
 
@@ -998,7 +1243,7 @@ export default function JobsPage() {
         )}
       </section>
 
-      {/* ✅ New Customer Modal with full fields */}
+      {/* New Customer Modal with full fields */}
       {showNewCustomerModal && (
         <div
           style={{
