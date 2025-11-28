@@ -49,7 +49,7 @@ export default function JobsPage() {
       // 1) Load customers for this subscriber
       const { data: customerData, error: customersError } = await supabase
         .from("customers")
-        .select("id, first_name, last_name, company_name")
+        .select("id, first_name, last_name, company_name, email")
         .eq("subscriber_id", subscriberId)
         .order("last_name", { ascending: true });
 
@@ -368,6 +368,7 @@ try {
 
   function findCustomerNameById(customerId) {
     const c = customers.find((cust) => cust.id === customerId);
+    return c?.email || "";
     if (!c) return "Unknown customer";
     const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
     if (c.company_name) {
