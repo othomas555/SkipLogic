@@ -376,7 +376,7 @@ export default function JobsPage() {
       <header style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, marginBottom: 8 }}>Jobs</h1>
         {user?.email && (
-          <p style={{ fontSize: 14, color: #555" }}>
+          <p style={{ fontSize: 14, color: "#555" }}>
             Signed in as {user.email}
           </p>
         )}
