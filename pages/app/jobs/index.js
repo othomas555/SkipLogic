@@ -92,6 +92,22 @@ export default function JobsListPage() {
     return `${s.name} (${s.quantity_owned} owned)`;
   }
 
+  // ✅ New: nice labels for job status
+  function formatJobStatus(status) {
+    switch (status) {
+      case "booked":
+        return "Booked";
+      case "on_hire":
+        return "On hire";
+      case "awaiting_collection":
+        return "Awaiting collection";
+      case "collected":
+        return "Collected";
+      default:
+        return status || "Unknown";
+    }
+  }
+
   if (checking) {
     return (
       <main
@@ -205,7 +221,7 @@ export default function JobsListPage() {
                 <th
                   style={{
                     textAlign: "left",
-                    borderBottom: "1px solid #ddd",
+                    borderBottom: "1px solid "#ddd",
                     padding: "8px",
                   }}
                 >
@@ -299,7 +315,7 @@ export default function JobsListPage() {
                       padding: "8px",
                     }}
                   >
-                    {j.job_status || "unknown"}
+                    {formatJobStatus(j.job_status)}
                   </td>
                   <td
                     style={{
