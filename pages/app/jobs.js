@@ -50,7 +50,7 @@ export default function JobsPage() {
 
   useEffect(() => {
     if (checking) return;
-    if (!subscriberId) return; // useAuthProfile handles redirect if not signed in
+    if (!subscriberId) return; // useAuthProfile s redirect if not signed in
 
     async function loadData() {
       setErrorMsg("");
@@ -120,7 +120,7 @@ export default function JobsPage() {
   }, [checking, subscriberId]);
 
   // Lookup all skips + prices for a postcode
-  async function handleLookupPostcode() {
+  async function LookupPostcode() {
     setPostcodeMsg("");
     setErrorMsg("");
 
@@ -160,71 +160,101 @@ export default function JobsPage() {
         setJobPrice("");
       }
     } catch (err) {
-      console.error("handleLookupPostcode error:", err);
+      console.error("LookupPostcode error:", err);
       setPostcodeMsg("Error looking up skips for this postcode.");
     } finally {
       setLookingUpPostcode(false);
     }
   }
 
-  // ✅ NEW: create a customer directly from the Jobs page modal
-  async function handleCreateCustomerFromModal() {
-    try {
-      setNewCustomerError("");
+ // ✅ NEW: create a customer directly from the Jobs page modal (full details)
+async function handleCreateCustomerFromModal() {
+  try {
+    setNewCustomerError("");
 
-      if (!newCustomerName.trim()) {
-        setNewCustomerError("Customer name is required");
-        return;
-      }
-
-      if (!subscriberId) {
-        setNewCustomerError("Missing subscriberId – please refresh and try again.");
-        return;
-      }
-
-      setCreatingCustomer(true);
-
-      // Treat "Customer name" as company_name and "Contact name" as first_name
-      const { data, error } = await supabase
-        .from("customers")
-        .insert([
-          {
-            subscriber_id: subscriberId,
-            company_name: newCustomerName.trim(),
-            first_name: newCustomerContactName.trim() || null,
-            last_name: null,
-            email: newCustomerEmail.trim() || null,
-            phone: newCustomerPhone.trim() || null,
-          },
-        ])
-        .select("id, first_name, last_name, company_name, email")
-        .single();
-
-      if (error) {
-        console.error("Error creating customer from modal:", error);
-        setNewCustomerError(error.message || "Error creating customer");
-        setCreatingCustomer(false);
-        return;
-      }
-
-      // Add to customers list + select it
-      setCustomers((prev) => [...prev, data]);
-      setSelectedCustomerId(data.id);
-
-      // Reset + close modal
-      setNewCustomerName("");
-      setNewCustomerContactName("");
-      setNewCustomerEmail("");
-      setNewCustomerPhone("");
-      setCreatingCustomer(false);
-      setShowNewCustomerModal(false);
-    } catch (err) {
-      console.error("Unexpected error creating customer:", err);
-      setNewCustomerError("Unexpected error creating customer");
-      setCreatingCustomer(false);
+    if (!newCustomerFirstName.trim()) {
+      setNewCustomerError("First name is required");
+      return;
     }
-  }
+    if (!newCustomerLastName.trim()) {
+      setNewCustomerError("Last name is required");
+      return;
+    }
+    if (!newCustomerEmail.trim()) {
+      setNewCustomerError("Customer email is required");
+      return;
+    }
+    if (!newCustomerPhone.trim()) {
+      setNewCustomerError("Customer phone is required");
+      return;
+    }
+    if (!newCustomerAddress1.trim()) {
+      setNewCustomerError("Address Line 1 is required");
+      return;
+    }
+    if (!newCustomerPostcode.trim()) {
+      setNewCustomerError("Postcode is required");
+      return;
+    }
+    if (!subscriberId) {
+      setNewCustomerError("Missing subscriberId – please refresh and try again.");
+      return;
+    }
 
+    setCreatingCustomer(true);
+
+    const { data, error } = await supabase
+      .from("customers")
+      .insert([
+        {
+          subscriber_id: subscriberId,
+          first_name: newCustomerFirstName.trim(),
+          last_name: newCustomerLastName.trim(),
+          company_name: newCustomerCompanyName.trim() || null,
+          email: newCustomerEmail.trim(),
+          phone: newCustomerPhone.trim(),
+          address_line1: newCustomerAddress1.trim(),
+          address_line2: newCustomerAddress2.trim() || null,
+          address_line3: newCustomerAddress3.trim() || null,
+          postcode: newCustomerPostcode.trim(),
+          // ✅ matches your boolean column name
+          is_credit_account: newCustomerCreditAccount,
+        },
+      ])
+      .select("id, first_name, last_name, company_name, email")
+      .single();
+
+    if (error) {
+      console.error("Error creating customer from modal:", error);
+      setNewCustomerError(error.message || "Error creating customer");
+      setCreatingCustomer(false);
+      return;
+    }
+
+    // Add to customers list + select it
+    setCustomers((prev) => [...prev, data]);
+    setSelectedCustomerId(data.id);
+
+    // Reset + close modal
+    setNewCustomerFirstName("");
+    setNewCustomerLastName("");
+    setNewCustomerCompanyName("");
+    setNewCustomerEmail("");
+    setNewCustomerPhone("");
+    setNewCustomerAddress1("");
+    setNewCustomerAddress2("");
+    setNewCustomerAddress3("");
+    setNewCustomerPostcode("");
+    setNewCustomerCreditAccount(false);
+    setCreatingCustomer(false);
+    setShowNewCustomerModal(false);
+  } catch (err) {
+    console.error("Unexpected error creating customer:", err);
+    setNewCustomerError("Unexpected error creating customer");
+    setCreatingCustomer(false);
+  }
+}
+  
   async function handleAddJob(e) {
     e.preventDefault();
     setErrorMsg("");
