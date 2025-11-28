@@ -1,5 +1,3 @@
-// pages/api/send_booking_email.js
-
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 const SENDGRID_FROM = process.env.SENDGRID_FROM_EMAIL;
 const SENDGRID_TO = process.env.SENDGRID_TO_EMAIL;
@@ -17,7 +15,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { job, customerName, jobPrice } = req.body || {};
+    // ✅ Now includes customerEmail
+    const { job, customerName, customerEmail, jobPrice } = req.body || {};
 
     if (!job) {
       return res.status(400).json({ error: "Missing job in request body" });
@@ -32,14 +31,31 @@ A new skip booking has been created.
 
 Job number: ${job.job_number || job.id}
 Customer: ${customerName || "Unknown"}
-${priceText}
-Site: ${job.site_name || "(no site name)"}
+${priceText}Site: ${job.site_name || "(no site name)"}
 Postcode: ${job.site_postcode || ""}
 Delivery date: ${job.scheduled_date || ""}
 Payment type: ${job.payment_type || ""}
 
 This is an automated email from SkipLogic.
-    `;
+`;
+
+    // ✅ Decide who to send to
+    if (!customerEmail) {
+      console.warn("No customerEmail provided, defaulting to SENDGRID_TO");
+    }
+
+    const toAddress = customerEmail || SENDGRID_TO;
+
+    const personalizations = [
+      {
+        to: [{ email: toAddress }],
+      },
+    ];
+
+    // ✅ Optionally BCC the office if sending to customer
+    if (customerEmail && SENDGRID_TO && SENDGRID_TO !== customerEmail) {
+      personalizations[0].bcc = [{ email: SENDGRID_TO }];
+    }
 
     const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
       method: "POST",
@@ -48,11 +64,7 @@ This is an automated email from SkipLogic.
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        personalizations: [
-          {
-            to: [{ email: SENDGRID_TO }],
-          },
-        ],
+        personalizations,
         from: { email: SENDGRID_FROM },
         subject,
         content: [{ type: "text/plain", value: text }],
