@@ -316,6 +316,24 @@ export default function JobsPage() {
       // Prepend new job to list
       setJobs((prev) => [inserted, ...prev]);
 
+      // 🔔 Send notification email via SendGrid (fire-and-forget)
+try {
+  const customerLabel = findCustomerNameById(inserted.customer_id);
+  
+  await fetch("/api/send_booking_email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      job: inserted,
+      customerName: customerLabel,
+      jobPrice,
+    }),
+  });
+} catch (err) {
+  console.error("Email send failed:", err);
+}
+
+
       // Reset form
       setSelectedCustomerId("");
       setSelectedSkipTypeId("");
