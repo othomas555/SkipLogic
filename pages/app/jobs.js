@@ -36,7 +36,7 @@ export default function JobsPage() {
   const [jobPrice, setJobPrice] = useState(""); // price for this job
   const [lookingUpPostcode, setLookingUpPostcode] = useState(false);
 
-  // ✅ NEW: whether we should create a Xero invoice
+  // ✅ NEW: whether we should create a Xero invoice (currently parked)
   const [createInvoice, setCreateInvoice] = useState(false);
 
   useEffect(() => {
@@ -183,7 +183,7 @@ export default function JobsPage() {
       return;
     }
 
-    // ✅ STEP 2 — Validate job price
+    // ✅ Validate job price
     const numericPrice = parseFloat(jobPrice);
     if (Number.isNaN(numericPrice) || numericPrice <= 0) {
       setErrorMsg("Price must be a positive number.");
@@ -202,7 +202,7 @@ export default function JobsPage() {
         return;
       }
 
-      // ✅ STEP 3 — Insert job with price_inc_vat
+      // ✅ Insert job with price_inc_vat
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([
@@ -218,7 +218,7 @@ export default function JobsPage() {
             scheduled_date: scheduledDate || null,
             notes: notes || `Standard skip: ${selectedSkip.name}`,
             payment_type: paymentType || null,
-            price_inc_vat: numericPrice, // ← NEW: store the actual price
+            price_inc_vat: numericPrice, // ← store the actual price
             // job_status will default to 'booked'
           },
         ])
@@ -269,70 +269,32 @@ export default function JobsPage() {
         return;
       }
 
-    // ✅ Xero integration parked for now
-// if (createInvoice) {
-//   try {
-//     const response = await fetch("/api/xero/xero_create_invoice", {
-//       method: "POST",
-//       headers: {
-//         "Content-Type": "application/json",
-//       },
-//       body: JSON.stringify({ job_id: inserted.id }),
-//     });
-
-//     const rawText = await response.text();
-//     console.log("Xero API raw response:", rawText);
-
-//     let result;
-//     try {
-//       result = rawText ? JSON.parse(rawText) : {};
-//     } catch (parseErr) {
-//       console.error("Failed to parse Xero response as JSON:", parseErr);
-//       setErrorMsg(
-//         "Job created but Xero replied with something unexpected: " + rawText
-//       );
-//       return;
-//     }
-
-//     if (!response.ok || !result.success) {
-//       console.error("Xero invoice error:", result);
-//       setErrorMsg(
-//         "Job created but Xero invoice failed: " +
-//           (result.error || "Unknown error")
-//       );
-//     } else {
-//       console.log("Xero invoice created:", result);
-//       // optional: later we can write result.invoiceNumber back to the job
-//     }
-//   } catch (invErr) {
-//     console.error("Unexpected error calling /api/xero_create_invoice:", invErr);
-//     setErrorMsg(
-//       "Job created but there was an error contacting Xero: " +
-//         (invErr?.message || String(invErr))
-//     );
-//   }
-// }
+      // ✅ Xero integration parked for now
+      // if (createInvoice) {
+      //   ... (currently disabled)
+      // }
 
       // Prepend new job to list
       setJobs((prev) => [inserted, ...prev]);
 
       // 🔔 Send notification email via SendGrid (fire-and-forget)
-try {
-  const customerLabel = findCustomerNameById(inserted.customer_id);
-  
-  await fetch("/api/send_booking_email", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      job: inserted,
-      customerName: customerLabel,
-      jobPrice,
-    }),
-  });
-} catch (err) {
-  console.error("Email send failed:", err);
-}
+      try {
+        const customerLabel = findCustomerNameById(inserted.customer_id);
+        const customerEmail = findCustomerEmailById(inserted.customer_id);
 
+        await fetch("/api/send_booking_email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            job: inserted,
+            customerName: customerLabel,
+            customerEmail,
+            jobPrice,
+          }),
+        });
+      } catch (err) {
+        console.error("Email send failed:", err);
+      }
 
       // Reset form
       setSelectedCustomerId("");
@@ -348,7 +310,7 @@ try {
       setPostcodeSkips([]);
       setPostcodeMsg("");
       setJobPrice("");
-      setCreateInvoice(false); // ✅ reset checkbox
+      setCreateInvoice(false); // reset checkbox
       setSaving(false);
     } catch (err) {
       console.error("Unexpected error adding job:", err);
@@ -368,13 +330,17 @@ try {
 
   function findCustomerNameById(customerId) {
     const c = customers.find((cust) => cust.id === customerId);
-    return c?.email || "";
     if (!c) return "Unknown customer";
     const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
     if (c.company_name) {
       return `${c.company_name} – ${baseName || "Unknown contact"}`;
     }
     return baseName || "Unknown customer";
+  }
+
+  function findCustomerEmailById(customerId) {
+    const c = customers.find((cust) => cust.id === customerId);
+    return c?.email || "";
   }
 
   function findSkipTypeNameById(skipTypeId) {
@@ -524,7 +490,7 @@ try {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid #ccc",
+                  border: "1px solid "#ccc",
                 }}
               >
                 <option value="">
@@ -706,7 +672,7 @@ try {
             </select>
           </div>
 
-          {/* ✅ NEW: Create invoice checkbox */}
+          {/* ✅ NEW: Create invoice checkbox (currently does nothing) */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: "inline-flex", alignItems: "center" }}>
               <input
@@ -718,8 +684,7 @@ try {
               Create invoice in Xero
             </label>
             <div style={{ fontSize: 12, marginTop: 4 }}>
-              If checked: behaviour depends on payment type (Card = paid, Cash =
-              unpaid, Account = added to monthly account invoice).
+              (Xero integration currently disabled)
             </div>
           </div>
 
