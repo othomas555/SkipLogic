@@ -333,7 +333,7 @@ export default function BookJobPage() {
       newErrors.customer = "Please select a customer.";
     }
 
-    if (!selectedSkipTypesId && postcodeSkips.length === 0) {
+    if (!selectedSkipTypeId && postcodeSkips.length === 0) {
       // safety but we’ll validate properly below
     }
 
