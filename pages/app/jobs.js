@@ -1250,7 +1250,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
@@ -1270,7 +1270,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
@@ -1290,7 +1290,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
@@ -1310,7 +1310,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
@@ -1330,7 +1330,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
@@ -1350,7 +1350,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
@@ -1370,7 +1370,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
@@ -1390,7 +1390,7 @@ export default function JobsPage() {
                   width: "100%",
                   padding: 8,
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                 }}
               />
             </div>
@@ -1435,7 +1435,7 @@ export default function JobsPage() {
                 style={{
                   padding: "8px 12px",
                   borderRadius: 4,
-                  border: "1px solid "#ccc",
+                  border: "1px solid #ccc",
                   background: "#f5f5f5",
                   cursor: "pointer",
                   fontSize: 14,
