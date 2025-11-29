@@ -516,7 +516,7 @@ export default function DriversPage() {
               <input
                 type="text"
                 placeholder="e.g. Driver A"
-                value={callssign}
+                value={callsign}
                 onChange={(e) => setCallsign(e.target.value)}
                 style={{ width: "100%", padding: "6px" }}
               />
