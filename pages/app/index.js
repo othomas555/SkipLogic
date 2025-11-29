@@ -69,7 +69,10 @@ export default function AppDashboard() {
 </p>
 <p>
   <a href="/app/skip-types">Manage skip types</a>
-</p>  
+</p>
+        <p>
+  <a href="/app/drivers">Go to drivers</a>
+</p>
       </section>
     </main>
   );
