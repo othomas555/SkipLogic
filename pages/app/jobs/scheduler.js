@@ -225,14 +225,15 @@ export default function SchedulerPage() {
     e.dataTransfer.dropEffect = "move";
   }
 
-  function moveJobToColumn(jobId, targetColumnId) {
+    async function moveJobToColumn(jobId, targetColumnId) {
+    // 1) Update UI immediately
     setColumnLayout((prev) => {
       if (!prev) return prev;
       const next = { ...prev };
 
       const allColumnIds = [
         "unassigned",
-        ...drivers.map((d) => d.id), // 🔹 all current driver columns
+        ...drivers.map((d) => d.id),
       ];
 
       // remove job from all columns
@@ -247,7 +248,28 @@ export default function SchedulerPage() {
 
       return next;
     });
+
+    // 2) Work out new assigned_driver_id
+    let newAssignedDriverId = null;
+    if (targetColumnId !== "unassigned") {
+      newAssignedDriverId = targetColumnId;
+    }
+
+    // 3) Save to Supabase
+    const { error } = await supabase
+      .from("jobs")
+      .update({ assigned_driver_id: newAssignedDriverId })
+      .eq("id", jobId)
+      .eq("subscriber_id", subscriberId);
+
+    if (error) {
+      console.error("Error saving driver assignment", error);
+      setErrorMsg(
+        "Could not save driver assignment for one job. Check console for details."
+      );
+    }
   }
+
 
   function handleDropOnUnassigned(e) {
     e.preventDefault();
