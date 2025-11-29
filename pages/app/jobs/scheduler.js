@@ -11,11 +11,21 @@ export default function SchedulerPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // Selected date for planning
+  // Selected date for planning (the day you're looking at)
   const [selectedDate, setSelectedDate] = useState(() => {
     const today = new Date();
     return today.toISOString().slice(0, 10); // yyyy-mm-dd
   });
+
+  // Date to roll unassigned jobs to
+  const [rolloverDate, setRolloverDate] = useState(() => {
+    const today = new Date();
+    // default: tomorrow
+    const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+    return tomorrow.toISOString().slice(0, 10);
+  });
+
+  const [movingUnassigned, setMovingUnassigned] = useState(false);
 
   // Simple local driver list for now (later: load from Supabase drivers table)
   const drivers = [
@@ -245,6 +255,75 @@ export default function SchedulerPage() {
     });
   }
 
+  // Remove a specific break marker from a driver column
+  function handleRemoveBreak(driverId, breakKey) {
+    setColumnLayout((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      const col = next[driverId] || [];
+      next[driverId] = col.filter((item) => item !== breakKey);
+      return next;
+    });
+  }
+
+  // Move all unassigned jobs to rolloverDate (update their dates in Supabase)
+  async function handleMoveUnassigned() {
+    if (!rolloverDate) {
+      setErrorMsg("Please choose a date to move unassigned jobs to.");
+      return;
+    }
+
+    if (rolloverDate === selectedDate) {
+      setErrorMsg("The new date must be different from the current day.");
+      return;
+    }
+
+    if (unassignedJobs.length === 0) {
+      setErrorMsg("There are no unassigned jobs to move.");
+      return;
+    }
+
+    setMovingUnassigned(true);
+    setErrorMsg("");
+
+    for (const job of unassignedJobs) {
+      const updates = {};
+
+      // If this job is a delivery on the selected day, move that delivery date
+      if (job.scheduled_date === selectedDate) {
+        updates.scheduled_date = rolloverDate;
+      }
+
+      // If this job is a collection on the selected day, move that collection date
+      if (job.collection_date === selectedDate) {
+        updates.collection_date = rolloverDate;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        continue;
+      }
+
+      const { error } = await supabase
+        .from("jobs")
+        .update(updates)
+        .eq("id", job.id)
+        .eq("subscriber_id", subscriberId);
+
+      if (error) {
+        console.error("Error moving job", job.id, error);
+        setErrorMsg(
+          "Could not move one or more unassigned jobs. Check logs for details."
+        );
+        // keep going with others
+      }
+    }
+
+    setMovingUnassigned(false);
+
+    // After moving, jump the planner to the new date.
+    setSelectedDate(rolloverDate);
+  }
+
   return (
     <main
       style={{
@@ -340,6 +419,69 @@ export default function SchedulerPage() {
             <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
               Deliveries & collections for {selectedDate}
             </p>
+
+            {/* Move unassigned jobs control */}
+            <div
+              style={{
+                marginTop: 8,
+                marginBottom: 12,
+                paddingTop: 8,
+                borderTop: "1px solid #e5e5e5",
+              }}
+            >
+              <label
+                style={{
+                  display: "block",
+                  fontSize: 12,
+                  marginBottom: 4,
+                }}
+              >
+                Move all unassigned jobs to date:
+              </label>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 4,
+                  alignItems: "center",
+                  marginBottom: 4,
+                }}
+              >
+                <input
+                  type="date"
+                  value={rolloverDate}
+                  onChange={(e) => setRolloverDate(e.target.value)}
+                  style={{
+                    padding: 6,
+                    borderRadius: 4,
+                    border: "1px solid #ccc",
+                    fontSize: 12,
+                    flex: 1,
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleMoveUnassigned}
+                  disabled={movingUnassigned || unassignedJobs.length === 0}
+                  style={{
+                    padding: "6px 8px",
+                    borderRadius: 4,
+                    border: "1px solid #999",
+                    background: movingUnassigned ? "#ddd" : "#f5f5f5",
+                    fontSize: 11,
+                    cursor:
+                      movingUnassigned || unassignedJobs.length === 0
+                        ? "default"
+                        : "pointer",
+                  }}
+                >
+                  {movingUnassigned ? "Moving…" : "Move unassigned"}
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: "#777" }}>
+                Useful if you need to roll collections or deliveries to another
+                day.
+              </div>
+            </div>
 
             {unassignedJobs.length === 0 ? (
               <p style={{ fontSize: 12, color: "#999" }}>
@@ -440,16 +582,35 @@ export default function SchedulerPage() {
                             key={itemKey}
                             style={{
                               margin: "8px 0",
-                              padding: "4px 0",
+                              padding: "4px 6px",
                               borderTop: "1px dashed #bbb",
                               borderBottom: "1px dashed #bbb",
-                              textAlign: "center",
                               fontSize: 11,
                               color: "#555",
                               background: "#fafafa",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 8,
                             }}
                           >
-                            Return to yard / Start new run
+                            <span>Return to yard / Start new run</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleRemoveBreak(driver.id, itemKey)
+                              }
+                              style={{
+                                border: "none",
+                                background: "transparent",
+                                cursor: "pointer",
+                                fontSize: 12,
+                                color: "#999",
+                              }}
+                              title="Remove this break"
+                            >
+                              ✕
+                            </button>
                           </div>
                         );
                       }
