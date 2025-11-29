@@ -14,7 +14,7 @@ export default function DriversPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Form state
+  // Add form state
   const [name, setName] = useState("");
   const [callsign, setCallsign] = useState("");
   const [phone, setPhone] = useState("");
@@ -27,12 +27,33 @@ export default function DriversPage() {
   const [medicalExpiry, setMedicalExpiry] = useState("");
   const [notes, setNotes] = useState("");
 
-  // Expiry notification settings (for new driver)
   const [expiryNotificationsEnabled, setExpiryNotificationsEnabled] =
     useState(false);
   const [expiryWarningDays, setExpiryWarningDays] = useState(30);
 
-  // NEW: modal + list of expiring drivers
+  // Edit form state
+  const emptyEditForm = {
+    id: null,
+    name: "",
+    callsign: "",
+    phone: "",
+    email: "",
+    licence_number: "",
+    licence_check_due: "",
+    driver_card_number: "",
+    driver_card_expiry: "",
+    cpc_expiry: "",
+    medical_expiry: "",
+    notes: "",
+    expiry_notifications_enabled: false,
+    expiry_warning_days: 30,
+  };
+
+  const [editForm, setEditForm] = useState(emptyEditForm);
+  const [editing, setEditing] = useState(false);
+  const [updating, setUpdating] = useState(false);
+
+  // Expiry warnings
   const [expiringDrivers, setExpiringDrivers] = useState([]);
   const [showExpiryModal, setShowExpiryModal] = useState(false);
 
@@ -72,9 +93,6 @@ export default function DriversPage() {
         const diffMs = expiryDate.getTime() - today.getTime();
         const daysUntil = Math.round(diffMs / (1000 * 60 * 60 * 24));
 
-        // Show:
-        // - when within the warning window before expiry, or
-        // - any day after expiry (negative days) until they update the date.
         if (daysUntil <= warningDays) {
           if (!soonestDoc || expiryDate < soonestDoc.expiryDate) {
             soonestDoc = {
@@ -96,14 +114,13 @@ export default function DriversPage() {
       }
     });
 
-    // Sort by earliest expiry first
     results.sort((a, b) => a.expiryDate - b.expiryDate);
 
     setExpiringDrivers(results);
     setShowExpiryModal(results.length > 0);
   }
 
-  // Load drivers for this subscriber
+  // Load drivers
   useEffect(() => {
     async function loadDrivers() {
       if (checking) return;
@@ -150,7 +167,7 @@ export default function DriversPage() {
       } else {
         const list = data || [];
         setDrivers(list);
-        computeExpiringDrivers(list); // NEW: work out warnings
+        computeExpiringDrivers(list);
       }
 
       setLoading(false);
@@ -160,6 +177,7 @@ export default function DriversPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, authError, subscriberId]);
 
+  // ADD driver
   async function handleAddDriver(e) {
     e.preventDefault();
     setErrorMsg("");
@@ -210,12 +228,11 @@ export default function DriversPage() {
       return;
     }
 
-    // Add to list & reset form
     const updated = [...drivers, data].sort((a, b) =>
       a.name.localeCompare(b.name)
     );
     setDrivers(updated);
-    computeExpiringDrivers(updated); // re-calc warnings
+    computeExpiringDrivers(updated);
 
     setName("");
     setCallsign("");
@@ -231,6 +248,132 @@ export default function DriversPage() {
     setExpiryNotificationsEnabled(false);
     setExpiryWarningDays(30);
     setSuccessMsg("Driver added and saved ✓");
+  }
+
+  // Start editing an existing driver
+  function startEditDriver(d) {
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    setEditForm({
+      id: d.id,
+      name: d.name || "",
+      callsign: d.callsign || "",
+      phone: d.phone || "",
+      email: d.email || "",
+      licence_number: d.licence_number || "",
+      licence_check_due: d.licence_check_due || "",
+      driver_card_number: d.driver_card_number || "",
+      driver_card_expiry: d.driver_card_expiry || "",
+      cpc_expiry: d.cpc_expiry || "",
+      medical_expiry: d.medical_expiry || "",
+      notes: d.notes || "",
+      expiry_notifications_enabled: !!d.expiry_notifications_enabled,
+      expiry_warning_days:
+        d.expiry_warning_days === null ||
+        d.expiry_warning_days === undefined ||
+        d.expiry_warning_days === ""
+          ? 30
+          : Number(d.expiry_warning_days) || 30,
+    });
+    setEditing(true);
+  }
+
+  function cancelEdit() {
+    setEditing(false);
+    setEditForm(emptyEditForm);
+  }
+
+  // UPDATE driver
+  async function handleUpdateDriver(e) {
+    e.preventDefault();
+    if (!editForm.id) return;
+
+    if (!editForm.name.trim()) {
+      setErrorMsg("Driver name is required.");
+      return;
+    }
+
+    setErrorMsg("");
+    setSuccessMsg("");
+    setUpdating(true);
+
+    const warningDaysNumber =
+      editForm.expiry_warning_days === "" || editForm.expiry_warning_days === null
+        ? 30
+        : Number(editForm.expiry_warning_days) || 30;
+
+    const { data, error } = await supabase
+      .from("drivers")
+      .update({
+        name: editForm.name.trim(),
+        callsign: editForm.callsign.trim() || null,
+        phone: editForm.phone.trim() || null,
+        email: editForm.email.trim() || null,
+        licence_number: editForm.licence_number.trim() || null,
+        licence_check_due: editForm.licence_check_due || null,
+        driver_card_number: editForm.driver_card_number.trim() || null,
+        driver_card_expiry: editForm.driver_card_expiry || null,
+        cpc_expiry: editForm.cpc_expiry || null,
+        medical_expiry: editForm.medical_expiry || null,
+        notes: editForm.notes.trim() || null,
+        expiry_notifications_enabled: editForm.expiry_notifications_enabled,
+        expiry_warning_days: warningDaysNumber,
+      })
+      .eq("id", editForm.id)
+      .eq("subscriber_id", subscriberId)
+      .select("*")
+      .single();
+
+    setUpdating(false);
+
+    if (error) {
+      console.error("Error updating driver:", error);
+      setErrorMsg(error.message || "Could not update driver.");
+      return;
+    }
+
+    const updated = drivers
+      .map((d) => (d.id === data.id ? data : d))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    setDrivers(updated);
+    computeExpiringDrivers(updated);
+    setSuccessMsg("Driver updated ✓");
+    cancelEdit();
+  }
+
+  // DELETE driver
+  async function handleDeleteDriver(d) {
+    const ok = window.confirm(
+      `Delete driver "${d.name}"? This cannot be undone.`
+    );
+    if (!ok) return;
+
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    const { error } = await supabase
+      .from("drivers")
+      .delete()
+      .eq("id", d.id)
+      .eq("subscriber_id", subscriberId);
+
+    if (error) {
+      console.error("Error deleting driver:", error);
+      setErrorMsg(error.message || "Could not delete driver.");
+      return;
+    }
+
+    const updated = drivers.filter((x) => x.id !== d.id);
+    setDrivers(updated);
+    computeExpiringDrivers(updated);
+
+    if (editing && editForm.id === d.id) {
+      cancelEdit();
+    }
+
+    setSuccessMsg("Driver deleted ✓");
   }
 
   if (checking || loading) {
@@ -296,7 +439,6 @@ export default function DriversPage() {
         </div>
       )}
 
-      {/* If there are expiring drivers, small banner + button to reopen modal */}
       {expiringDrivers.length > 0 && (
         <div
           style={{
@@ -374,7 +516,7 @@ export default function DriversPage() {
               <input
                 type="text"
                 placeholder="e.g. Driver A"
-                value={callsign}
+                value={callssign}
                 onChange={(e) => setCallsign(e.target.value)}
                 style={{ width: "100%", padding: "6px" }}
               />
@@ -485,7 +627,6 @@ export default function DriversPage() {
             </label>
           </div>
 
-          {/* Notification controls */}
           <div style={{ gridColumn: "1 / -1", marginTop: 8 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <input
@@ -548,6 +689,293 @@ export default function DriversPage() {
         </button>
       </form>
 
+      {/* EDIT driver form */}
+      {editing && (
+        <form
+          onSubmit={handleUpdateDriver}
+          style={{
+            marginBottom: "32px",
+            padding: "16px",
+            border: "1px solid #ddd",
+            borderRadius: "4px",
+            background: "#f9f9f9",
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: "12px" }}>
+            Edit driver – {editForm.name}
+          </h2>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: "12px",
+            }}
+          >
+            <div>
+              <label>
+                Name *
+                <br />
+                <input
+                  type="text"
+                  value={editForm.name}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, name: e.target.value }))
+                  }
+                  required
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Callsign
+                <br />
+                <input
+                  type="text"
+                  value={editForm.callsign}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, callsign: e.target.value }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Phone
+                <br />
+                <input
+                  type="text"
+                  value={editForm.phone}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, phone: e.target.value }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Email
+                <br />
+                <input
+                  type="email"
+                  value={editForm.email}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, email: e.target.value }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Licence number
+                <br />
+                <input
+                  type="text"
+                  value={editForm.licence_number}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      licence_number: e.target.value,
+                    }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Next licence check due
+                <br />
+                <input
+                  type="date"
+                  value={editForm.licence_check_due || ""}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      licence_check_due: e.target.value,
+                    }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Driver card number
+                <br />
+                <input
+                  type="text"
+                  value={editForm.driver_card_number}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      driver_card_number: e.target.value,
+                    }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Driver card expiry
+                <br />
+                <input
+                  type="date"
+                  value={editForm.driver_card_expiry || ""}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      driver_card_expiry: e.target.value,
+                    }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                CPC expiry
+                <br />
+                <input
+                  type="date"
+                  value={editForm.cpc_expiry || ""}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      cpc_expiry: e.target.value,
+                    }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Medical expiry
+                <br />
+                <input
+                  type="date"
+                  value={editForm.medical_expiry || ""}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      medical_expiry: e.target.value,
+                    }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div style={{ gridColumn: "1 / -1", marginTop: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={editForm.expiry_notifications_enabled}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      expiry_notifications_enabled: e.target.checked,
+                    }))
+                  }
+                />
+                Enable expiry warnings for this driver
+              </label>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#555" }}>
+                If enabled, they will appear in the warning list when any
+                licence / card / CPC / medical expiry is within the warning
+                window.
+              </div>
+
+              <div style={{ marginTop: 8 }}>
+                <label>
+                  Warn from (days before expiry)
+                  <br />
+                  <input
+                    type="number"
+                    min="1"
+                    value={editForm.expiry_warning_days}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        expiry_warning_days: e.target.value,
+                      }))
+                    }
+                    style={{ width: "120px", padding: "6px" }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label>
+                Notes
+                <br />
+                <textarea
+                  value={editForm.notes}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, notes: e.target.value }))
+                  }
+                  rows={3}
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div
+            style={{
+              marginTop: "16px",
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            <button
+              type="submit"
+              disabled={updating}
+              style={{
+                padding: "8px 16px",
+                borderRadius: "4px",
+                border: "none",
+                background: updating ? "#888" : "#0070f3",
+                color: "#fff",
+                cursor: updating ? "default" : "pointer",
+              }}
+            >
+              {updating ? "Saving…" : "Save changes"}
+            </button>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              style={{
+                padding: "8px 16px",
+                borderRadius: "4px",
+                border: "1px solid #ccc",
+                background: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
       {/* Drivers table */}
       <h2>Existing drivers</h2>
       {drivers.length === 0 ? (
@@ -573,6 +1001,7 @@ export default function DriversPage() {
                 <th style={thStyle}>Notify?</th>
                 <th style={thStyle}>Warn from (days)</th>
                 <th style={thStyle}>Notes</th>
+                <th style={thStyle}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -590,6 +1019,37 @@ export default function DriversPage() {
                   </td>
                   <td style={tdStyle}>{d.expiry_warning_days ?? ""}</td>
                   <td style={tdStyle}>{d.notes || ""}</td>
+                  <td style={tdStyle}>
+                    <button
+                      type="button"
+                      onClick={() => startEditDriver(d)}
+                      style={{
+                        padding: "4px 8px",
+                        marginRight: 4,
+                        borderRadius: "4px",
+                        border: "1px solid #ccc",
+                        background: "#f5f5f5",
+                        cursor: "pointer",
+                        fontSize: 11,
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteDriver(d)}
+                      style={{
+                        padding: "4px 8px",
+                        borderRadius: "4px",
+                        border: "1px solid #f5b3b3",
+                        background: "#ffe5e5",
+                        cursor: "pointer",
+                        fontSize: 11,
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -597,7 +1057,7 @@ export default function DriversPage() {
         </div>
       )}
 
-      {/* NEW: Expiry warnings modal */}
+      {/* Expiry warnings modal */}
       {showExpiryModal && expiringDrivers.length > 0 && (
         <div style={modalOverlayStyle}>
           <div style={modalStyle}>
@@ -709,7 +1169,7 @@ const thStyle = {
 };
 
 const tdStyle = {
-  borderBottom: "1px solid #eee",
+  borderBottom: "1px solid "#eee",
   padding: "8px",
   fontSize: 12,
 };
