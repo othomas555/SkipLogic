@@ -8,6 +8,7 @@ export default function SchedulerPage() {
 
   const [customers, setCustomers] = useState([]);
   const [jobs, setJobs] = useState([]);
+  const [drivers, setDrivers] = useState([]); // 🔹 now loaded from Supabase
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -27,19 +28,11 @@ export default function SchedulerPage() {
 
   const [movingUnassigned, setMovingUnassigned] = useState(false);
 
-  // Simple local driver list for now (later: load from Supabase drivers table)
-  const drivers = [
-    { id: "driver-a", name: "Driver A" },
-    { id: "driver-b", name: "Driver B" },
-    { id: "driver-c", name: "Driver C" },
-  ];
-
   /**
    * Column layout:
    * {
    *   unassigned: [jobId, jobId, ...],
-   *   "driver-a": [jobId, "break:123", jobId, ...],
-   *   "driver-b": [...],
+   *   "<driver-uuid>": [jobId, "break:123", jobId, ...],
    *   ...
    * }
    *
@@ -70,7 +63,23 @@ export default function SchedulerPage() {
       }
       setCustomers(customerData || []);
 
-      // 2) Jobs – deliveries OR collections on selectedDate
+      // 2) Drivers (active for this subscriber)
+      const { data: driverData, error: driversError } = await supabase
+        .from("drivers")
+        .select("id, name, callsign, is_active")
+        .eq("subscriber_id", subscriberId)
+        .eq("is_active", true)
+        .order("name", { ascending: true });
+
+      if (driversError) {
+        console.error("Drivers error:", driversError);
+        setErrorMsg("Could not load drivers.");
+        setLoading(false);
+        return;
+      }
+      setDrivers(driverData || []);
+
+      // 3) Jobs – deliveries OR collections on selectedDate
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
@@ -103,13 +112,15 @@ export default function SchedulerPage() {
       setJobs(list);
 
       // Initialise column layout:
-      // all jobs start unassigned; drivers empty
+      // all jobs start unassigned; each driver gets an empty column
       const initialLayout = {
         unassigned: list.map((j) => j.id),
       };
-      drivers.forEach((d) => {
+
+      (driverData || []).forEach((d) => {
         initialLayout[d.id] = [];
       });
+
       setColumnLayout(initialLayout);
 
       setLoading(false);
@@ -207,7 +218,10 @@ export default function SchedulerPage() {
       if (!prev) return prev;
       const next = { ...prev };
 
-      const allColumnIds = ["unassigned", ...drivers.map((d) => d.id)];
+      const allColumnIds = [
+        "unassigned",
+        ...drivers.map((d) => d.id), // 🔹 all current driver columns
+      ];
 
       // remove job from all columns
       allColumnIds.forEach((colId) => {
@@ -512,129 +526,143 @@ export default function SchedulerPage() {
               overflowX: "auto",
             }}
           >
-            {drivers.map((driver) => {
-              const items = itemsForDriver(driver.id);
+            {drivers.length === 0 ? (
+              <div style={{ padding: 8, fontSize: 12, color: "#777" }}>
+                No active drivers found. Add drivers on the{" "}
+                <a href="/app/drivers">Drivers page</a> and refresh this
+                scheduler.
+              </div>
+            ) : (
+              drivers.map((driver) => {
+                const items = itemsForDriver(driver.id);
+                const driverLabel = driver.callsign || driver.name;
 
-              return (
-                <div
-                  key={driver.id}
-                  onDragOver={handleDragOver}
-                  onDrop={(e) => handleDropOnDriver(e, driver.id)}
-                  style={{
-                    minWidth: 260,
-                    border: "1px solid #ddd",
-                    borderRadius: 8,
-                    padding: 8,
-                    background: "#fff",
-                  }}
-                >
+                return (
                   <div
+                    key={driver.id}
+                    onDragOver={handleDragOver}
+                    onDrop={(e) => handleDropOnDriver(e, driver.id)}
                     style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: 4,
+                      minWidth: 260,
+                      border: "1px solid #ddd",
+                      borderRadius: 8,
+                      padding: 8,
+                      background: "#fff",
                     }}
                   >
-                    <h2
+                    <div
                       style={{
-                        fontSize: 16,
-                        margin: 0,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
                         marginBottom: 4,
                       }}
                     >
-                      {driver.name}
-                    </h2>
-                  </div>
-                  <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
-                    Drag jobs here to assign to this driver.
-                    <br />
-                    Add breaks to indicate returns to yard.
-                  </p>
-
-                  <button
-                    type="button"
-                    onClick={() => handleAddBreak(driver.id)}
-                    style={{
-                      marginTop: 4,
-                      marginBottom: 8,
-                      padding: "4px 8px",
-                      borderRadius: 4,
-                      border: "1px solid #999",
-                      background: "#f5f5f5",
-                      fontSize: 11,
-                      cursor: "pointer",
-                    }}
-                  >
-                    + Add yard break (new run)
-                  </button>
-
-                  {items.length === 0 ? (
-                    <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
-                      No jobs assigned.
+                      <h2
+                        style={{
+                          fontSize: 16,
+                          margin: 0,
+                          marginBottom: 4,
+                        }}
+                      >
+                        {driverLabel}
+                      </h2>
+                    </div>
+                    <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
+                      Drag jobs here to assign to this driver.
+                      <br />
+                      Add breaks to indicate returns to yard.
                     </p>
-                  ) : (
-                    items.map((itemKey) => {
-                      // Break marker
-                      if (typeof itemKey === "string" && itemKey.startsWith("break:")) {
-                        return (
-                          <div
-                            key={itemKey}
-                            style={{
-                              margin: "8px 0",
-                              padding: "4px 6px",
-                              borderTop: "1px dashed #bbb",
-                              borderBottom: "1px dashed #bbb",
-                              fontSize: 11,
-                              color: "#555",
-                              background: "#fafafa",
-                              display: "flex",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              gap: 8,
-                            }}
-                          >
-                            <span>Return to yard / Start new run</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleRemoveBreak(driver.id, itemKey)
-                              }
+
+                    <button
+                      type="button"
+                      onClick={() => handleAddBreak(driver.id)}
+                      style={{
+                        marginTop: 4,
+                        marginBottom: 8,
+                        padding: "4px 8px",
+                        borderRadius: 4,
+                        border: "1px solid #999",
+                        background: "#f5f5f5",
+                        fontSize: 11,
+                        cursor: "pointer",
+                      }}
+                    >
+                      + Add yard break (new run)
+                    </button>
+
+                    {items.length === 0 ? (
+                      <p
+                        style={{ fontSize: 12, color: "#999", marginTop: 8 }}
+                      >
+                        No jobs assigned.
+                      </p>
+                    ) : (
+                      items.map((itemKey) => {
+                        // Break marker
+                        if (
+                          typeof itemKey === "string" &&
+                          itemKey.startsWith("break:")
+                        ) {
+                          return (
+                            <div
+                              key={itemKey}
                               style={{
-                                border: "none",
-                                background: "transparent",
-                                cursor: "pointer",
-                                fontSize: 12,
-                                color: "#999",
+                                margin: "8px 0",
+                                padding: "4px 6px",
+                                borderTop: "1px dashed #bbb",
+                                borderBottom: "1px dashed #bbb",
+                                fontSize: 11,
+                                color: "#555",
+                                background: "#fafafa",
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                gap: 8,
                               }}
-                              title="Remove this break"
                             >
-                              ✕
-                            </button>
-                          </div>
+                              <span>Return to yard / Start new run</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRemoveBreak(driver.id, itemKey)
+                                }
+                                style={{
+                                  border: "none",
+                                  background: "transparent",
+                                  cursor: "pointer",
+                                  fontSize: 12,
+                                  color: "#999",
+                                }}
+                                title="Remove this break"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        const job = findJobById(itemKey);
+                        if (!job) return null;
+
+                        return (
+                          <JobCard
+                            key={job.id}
+                            job={job}
+                            selectedDate={selectedDate}
+                            customerName={findCustomerNameById(job.customer_id)}
+                            formatJobStatus={formatJobStatus}
+                            getJobTypeForDay={getJobTypeForDay}
+                            getJobTypeColor={getJobTypeColor}
+                            onDragStart={handleDragStart}
+                          />
                         );
-                      }
-
-                      const job = findJobById(itemKey);
-                      if (!job) return null;
-
-                      return (
-                        <JobCard
-                          key={job.id}
-                          job={job}
-                          selectedDate={selectedDate}
-                          customerName={findCustomerNameById(job.customer_id)}
-                          formatJobStatus={formatJobStatus}
-                          getJobTypeForDay={getJobTypeForDay}
-                          getJobTypeColor={getJobTypeColor}
-                          onDragStart={handleDragStart}
-                        />
-                      );
-                    })
-                  )}
-                </div>
-              );
-            })}
+                      })
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       )}
