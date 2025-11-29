@@ -1,15 +1,26 @@
-Detected Next.js version: 14.0.4
-Running "npm run build"
-> skip-logic@1.0.0 build
-> next build
-   Linting and checking validity of types ...
-   ▲ Next.js 14.0.4
-   Creating an optimized production build ...
- ⚠ Found lockfile missing swc dependencies, run next locally to automatically patch
-Failed to compile.
-./pages/app/jobs/index.js
-Module not found: Can't resolve '../../lib/useAuthProfile'
-https://nextjs.org/docs/messages/module-not-found
-> Build failed because of webpack errors
-Error: Command "npm run build" exited with 1
-Deployment Summary
+// pages/index.js
+import { useEffect } from "react";
+import { useRouter } from "next/router";
+
+export default function HomeRedirect() {
+  const router = useRouter();
+
+  useEffect(() => {
+    // When someone hits "/", send them to "/login"
+    router.replace("/login");
+  }, [router]);
+
+  return (
+    <main
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "system-ui, sans-serif",
+      }}
+    >
+      <p>Redirecting to SkipLogic login…</p>
+    </main>
+  );
+}
