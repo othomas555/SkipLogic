@@ -1,29 +1,11 @@
 // pages/app/index.js
-import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import { supabase } from "../../lib/supabaseClient";
+import { useAuthProfile } from "../../lib/useAuthProfile";
 
 export default function AppDashboard() {
   const router = useRouter();
-  const [checking, setChecking] = useState(true);
-  const [userEmail, setUserEmail] = useState(null);
-
-  useEffect(() => {
-    async function checkAuth() {
-      const { data, error } = await supabase.auth.getUser();
-
-      if (error || !data?.user) {
-        // Not logged in → go back to login
-        router.replace("/login");
-        return;
-      }
-
-      setUserEmail(data.user.email ?? null);
-      setChecking(false);
-    }
-
-    checkAuth();
-  }, [router]);
+  const { checking, user, subscriberId, errorMsg: authError } =
+    useAuthProfile();
 
   if (checking) {
     return (
@@ -36,7 +18,36 @@ export default function AppDashboard() {
           fontFamily: "system-ui, sans-serif",
         }}
       >
-        <p>Checking your login…</p>
+        <p>Loading SkipLogic dashboard…</p>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main
+        style={{
+          minHeight: "100vh",
+          padding: 24,
+          fontFamily: "system-ui, sans-serif",
+        }}
+      >
+        <h1>SkipLogic</h1>
+        <p>You must be signed in to view the dashboard.</p>
+        <button
+          type="button"
+          onClick={() => router.push("/login")}
+          style={{
+            marginTop: 8,
+            padding: "8px 12px",
+            borderRadius: 4,
+            border: "1px solid #ccc",
+            background: "#f5f5f5",
+            cursor: "pointer",
+          }}
+        >
+          Go to login
+        </button>
       </main>
     );
   }
@@ -47,33 +58,78 @@ export default function AppDashboard() {
         minHeight: "100vh",
         padding: 24,
         fontFamily: "system-ui, sans-serif",
+        maxWidth: 800,
+        margin: "0 auto",
       }}
     >
-      <header style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, marginBottom: 8 }}>SkipLogic Dashboard</h1>
-        {userEmail && (
-          <p style={{ fontSize: 14, color: "#555" }}>Signed in as {userEmail}</p>
-        )}
-      </header>
+      <h1 style={{ fontSize: 28, marginBottom: 8 }}>SkipLogic Dashboard</h1>
 
-      <section>
-       <p>This is your Phase 1 placeholder dashboard.</p>
-  <p>
-    Next steps will be: show customers, jobs, and basic multi-tenant data here.
-  </p>
-  <p style={{ marginTop: 16 }}>
-    <a href="/app/customers">Go to Customers →</a>
-  </p>
-      <p>
-  <a href="/app/jobs">Go to jobs</a>
-</p>
-<p>
-  <a href="/app/skip-types">Manage skip types</a>
-</p>
-        <p>
-  <a href="/app/drivers">Go to drivers</a>
-</p>
+      {authError && (
+        <p style={{ color: "red", marginBottom: 12 }}>{authError}</p>
+      )}
+
+      <p style={{ marginBottom: 4 }}>
+        Signed in as <strong>{user.email}</strong>
+      </p>
+
+      {subscriberId && (
+        <p style={{ marginBottom: 16 }}>
+          Subscriber ID: <code>{subscriberId}</code>
+        </p>
+      )}
+
+      <section
+        style={{
+          marginTop: 24,
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gap: 12,
+        }}
+      >
+        <DashboardLink href="/app/customers" title="Customers">
+          Add and manage your customers.
+        </DashboardLink>
+
+        <DashboardLink href="/app/jobs" title="Jobs">
+          Create and view skip hire jobs.
+        </DashboardLink>
+
+        <DashboardLink href="/app/jobs/scheduler" title="Scheduler">
+          Plan daily runs and assign jobs to drivers.
+        </DashboardLink>
+
+        <DashboardLink href="/app/drivers" title="Drivers">
+          Manage driver details and currencies.
+        </DashboardLink>
       </section>
     </main>
+  );
+}
+
+function DashboardLink({ href, title, children }) {
+  return (
+    <a
+      href={href}
+      style={{
+        display: "block",
+        padding: 12,
+        borderRadius: 8,
+        border: "1px solid #ddd",
+        textDecoration: "none",
+        color: "#222",
+        background: "#fafafa",
+      }}
+    >
+      <div
+        style={{
+          fontWeight: 600,
+          marginBottom: 4,
+          fontSize: 16,
+        }}
+      >
+        {title}
+      </div>
+      <div style={{ fontSize: 13, color: "#555" }}>{children}</div>
+    </a>
   );
 }
