@@ -396,7 +396,7 @@ export default function StaffPage() {
         style={{
           marginBottom: "32px",
           padding: "16px",
-          border: "1px solid "#ddd",
+          border: "1px solid #ddd",
           borderRadius: "4px",
         }}
       >
