@@ -31,6 +31,8 @@ export default function StaffPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [annualLeaveAllowance, setAnnualLeaveAllowance] = useState(28);
+  const [holidayYearStart, setHolidayYearStart] = useState("");
 
   // Edit staff form state
   const emptyEditForm = {
@@ -49,6 +51,8 @@ export default function StaffPage() {
     start_date: "",
     end_date: "",
     notes: "",
+    annual_leave_allowance: 28,
+    holiday_year_start: "",
   };
 
   const [editForm, setEditForm] = useState(emptyEditForm);
@@ -91,6 +95,8 @@ export default function StaffPage() {
           start_date,
           end_date,
           notes,
+          annual_leave_allowance,
+          holiday_year_start,
           created_at,
           updated_at
         `
@@ -127,6 +133,9 @@ export default function StaffPage() {
       return;
     }
 
+    const allowance =
+      annualLeaveAllowance === "" ? 28 : Number(annualLeaveAllowance) || 28;
+
     setSaving(true);
 
     const { data, error } = await supabase
@@ -148,6 +157,8 @@ export default function StaffPage() {
           start_date: startDate || null,
           end_date: endDate || null,
           notes: notes.trim() || null,
+          annual_leave_allowance: allowance,
+          holiday_year_start: holidayYearStart || null,
         },
       ])
       .select("*")
@@ -181,6 +192,8 @@ export default function StaffPage() {
     setStartDate("");
     setEndDate("");
     setNotes("");
+    setAnnualLeaveAllowance(28);
+    setHolidayYearStart("");
 
     setSuccessMsg("Staff member added ✓");
   }
@@ -206,6 +219,12 @@ export default function StaffPage() {
       start_date: member.start_date || "",
       end_date: member.end_date || "",
       notes: member.notes || "",
+      annual_leave_allowance:
+        member.annual_leave_allowance === null ||
+        member.annual_leave_allowance === undefined
+          ? 28
+          : Number(member.annual_leave_allowance) || 28,
+      holiday_year_start: member.holiday_year_start || "",
     });
     setEditing(true);
   }
@@ -229,6 +248,12 @@ export default function StaffPage() {
     setSuccessMsg("");
     setUpdating(true);
 
+    const allowance =
+      editForm.annual_leave_allowance === "" ||
+      editForm.annual_leave_allowance === null
+        ? 28
+        : Number(editForm.annual_leave_allowance) || 28;
+
     const { data, error } = await supabase
       .from("staff")
       .update({
@@ -246,6 +271,8 @@ export default function StaffPage() {
         start_date: editForm.start_date || null,
         end_date: editForm.end_date || null,
         notes: editForm.notes.trim() || null,
+        annual_leave_allowance: allowance,
+        holiday_year_start: editForm.holiday_year_start || null,
       })
       .eq("id", editForm.id)
       .eq("subscriber_id", subscriberId)
@@ -356,7 +383,7 @@ export default function StaffPage() {
             padding: "12px",
             borderRadius: "4px",
             background: "#e5ffe8",
-            border: "1px solid #b3ffbd",
+            border: "1px solid "#b3ffbd",
           }}
         >
           {successMsg}
@@ -369,7 +396,7 @@ export default function StaffPage() {
         style={{
           marginBottom: "32px",
           padding: "16px",
-          border: "1px solid #ddd",
+          border: "1px solid "#ddd",
           borderRadius: "4px",
         }}
       >
@@ -470,6 +497,33 @@ export default function StaffPage() {
                 type="date"
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
+                style={{ width: "100%", padding: "6px" }}
+              />
+            </label>
+          </div>
+
+          <div>
+            <label>
+              Annual leave allowance (days)
+              <br />
+              <input
+                type="number"
+                min="0"
+                value={annualLeaveAllowance}
+                onChange={(e) => setAnnualLeaveAllowance(e.target.value)}
+                style={{ width: "100%", padding: "6px" }}
+              />
+            </label>
+          </div>
+
+          <div>
+            <label>
+              Holiday year start
+              <br />
+              <input
+                type="date"
+                value={holidayYearStart}
+                onChange={(e) => setHolidayYearStart(e.target.value)}
                 style={{ width: "100%", padding: "6px" }}
               />
             </label>
@@ -711,6 +765,43 @@ export default function StaffPage() {
               </label>
             </div>
 
+            <div>
+              <label>
+                Annual leave allowance (days)
+                <br />
+                <input
+                  type="number"
+                  min="0"
+                  value={editForm.annual_leave_allowance}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      annual_leave_allowance: e.target.value,
+                    }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label>
+                Holiday year start
+                <br />
+                <input
+                  type="date"
+                  value={editForm.holiday_year_start || ""}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      holiday_year_start: e.target.value,
+                    }))
+                  }
+                  style={{ width: "100%", padding: "6px" }}
+                />
+              </label>
+            </div>
+
             <div style={{ gridColumn: "1 / -1", marginTop: 4 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <input
@@ -885,6 +976,8 @@ export default function StaffPage() {
                 <th style={thStyle}>Email</th>
                 <th style={thStyle}>Start date</th>
                 <th style={thStyle}>End date</th>
+                <th style={thStyle}>Allowance (days)</th>
+                <th style={thStyle}>Holiday year start</th>
                 <th style={thStyle}>Town</th>
                 <th style={thStyle}>Postcode</th>
                 <th style={thStyle}>Actions</th>
@@ -900,6 +993,8 @@ export default function StaffPage() {
                   <td style={tdStyle}>{m.email || ""}</td>
                   <td style={tdStyle}>{m.start_date || ""}</td>
                   <td style={tdStyle}>{m.end_date || ""}</td>
+                  <td style={tdStyle}>{m.annual_leave_allowance ?? ""}</td>
+                  <td style={tdStyle}>{m.holiday_year_start || ""}</td>
                   <td style={tdStyle}>{m.town || ""}</td>
                   <td style={tdStyle}>{m.postcode || ""}</td>
                   <td style={tdStyle}>
