@@ -383,7 +383,7 @@ export default function StaffPage() {
             padding: "12px",
             borderRadius: "4px",
             background: "#e5ffe8",
-            border: "1px solid "#b3ffbd",
+            border: "1px solid #b3ffbd",
           }}
         >
           {successMsg}
