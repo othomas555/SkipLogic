@@ -24,8 +24,18 @@ export default function SchedulerPage() {
     { id: "driver-c", name: "Driver C" },
   ];
 
-  // jobId -> driverId (or undefined for unassigned)
-  const [jobAssignments, setJobAssignments] = useState({});
+  /**
+   * Column layout:
+   * {
+   *   unassigned: [jobId, jobId, ...],
+   *   "driver-a": [jobId, "break:123", jobId, ...],
+   *   "driver-b": [...],
+   *   ...
+   * }
+   *
+   * "break:xxxx" entries represent "Return to yard" markers (run breaks).
+   */
+  const [columnLayout, setColumnLayout] = useState(null);
 
   useEffect(() => {
     if (checking) return;
@@ -79,14 +89,18 @@ export default function SchedulerPage() {
         return;
       }
 
-      setJobs(jobData || []);
+      const list = jobData || [];
+      setJobs(list);
 
-      // Reset assignments each time date changes
-      const initialAssignments = {};
-      (jobData || []).forEach((j) => {
-        initialAssignments[j.id] = undefined;
+      // Initialise column layout:
+      // all jobs start unassigned; drivers empty
+      const initialLayout = {
+        unassigned: list.map((j) => j.id),
+      };
+      drivers.forEach((d) => {
+        initialLayout[d.id] = [];
       });
-      setJobAssignments(initialAssignments);
+      setColumnLayout(initialLayout);
 
       setLoading(false);
     }
@@ -119,17 +133,6 @@ export default function SchedulerPage() {
     }
   }
 
-  // Just the jobs that are relevant for the selected date
-  const jobsForDay = jobs;
-
-  const unassignedJobs = jobsForDay.filter(
-    (j) => !jobAssignments[j.id]
-  );
-
-  function jobsForDriver(driverId) {
-    return jobsForDay.filter((j) => jobAssignments[j.id] === driverId);
-  }
-
   function getJobTypeForDay(job) {
     const isDelivery = job.scheduled_date === selectedDate;
     const isCollection = job.collection_date === selectedDate;
@@ -148,42 +151,11 @@ export default function SchedulerPage() {
     return "#595959";
   }
 
-  // Drag handlers
-  function handleDragStart(e, jobId) {
-    e.dataTransfer.setData("text/plain", jobId);
-    e.dataTransfer.effectAllowed = "move";
+  function findJobById(jobId) {
+    return jobs.find((j) => j.id === jobId) || null;
   }
 
-  function handleDragOver(e) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-  }
-
-  function handleDropOnUnassigned(e) {
-    e.preventDefault();
-    const jobId = e.dataTransfer.getData("text/plain");
-    if (!jobId) return;
-    setJobAssignments((prev) => {
-      const next = { ...prev };
-      next[jobId] = undefined;
-      return next;
-    });
-  }
-
-  function handleDropOnDriver(e, driverId) {
-    e.preventDefault();
-    const jobId = e.dataTransfer.getData("text/plain");
-    if (!jobId) return;
-    setJobAssignments((prev) => ({
-      ...prev,
-      [jobId]: driverId,
-    }));
-
-    // 🔜 Later: persist to Supabase (assigned_driver_id, route_id etc.)
-    // For now this is purely a front-end planning board.
-  }
-
-  if (checking || loading) {
+  if (checking || loading || !columnLayout) {
     return (
       <main
         style={{
@@ -197,6 +169,80 @@ export default function SchedulerPage() {
         <p>Loading scheduler…</p>
       </main>
     );
+  }
+
+  const jobsForDay = jobs; // already filtered by date in query
+
+  const unassignedJobs = (columnLayout.unassigned || [])
+    .map((id) => findJobById(id))
+    .filter(Boolean);
+
+  function itemsForDriver(driverId) {
+    return columnLayout[driverId] || [];
+  }
+
+  // Drag handlers
+  function handleDragStart(e, jobId) {
+    e.dataTransfer.setData("text/plain", jobId);
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }
+
+  function moveJobToColumn(jobId, targetColumnId) {
+    setColumnLayout((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+
+      const allColumnIds = ["unassigned", ...drivers.map((d) => d.id)];
+
+      // remove job from all columns
+      allColumnIds.forEach((colId) => {
+        const col = next[colId] || [];
+        next[colId] = col.filter((item) => item !== jobId);
+      });
+
+      // append to target column
+      if (!next[targetColumnId]) next[targetColumnId] = [];
+      next[targetColumnId] = [...next[targetColumnId], jobId];
+
+      return next;
+    });
+  }
+
+  function handleDropOnUnassigned(e) {
+    e.preventDefault();
+    const jobId = e.dataTransfer.getData("text/plain");
+    if (!jobId) return;
+    moveJobToColumn(jobId, "unassigned");
+  }
+
+  function handleDropOnDriver(e, driverId) {
+    e.preventDefault();
+    const jobId = e.dataTransfer.getData("text/plain");
+    if (!jobId) return;
+    moveJobToColumn(jobId, driverId);
+    // 🔜 Later: persist assigned_driver_id, run info to Supabase
+  }
+
+  // Add a "Return to yard" break (run separator) at the end of a driver column
+  function handleAddBreak(driverId) {
+    setColumnLayout((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      const key =
+        "break:" +
+        Date.now().toString(36) +
+        ":" +
+        Math.random().toString(36).slice(2, 8);
+
+      if (!next[driverId]) next[driverId] = [];
+      next[driverId] = [...next[driverId], key];
+      return next;
+    });
   }
 
   return (
@@ -324,52 +370,110 @@ export default function SchedulerPage() {
               overflowX: "auto",
             }}
           >
-            {drivers.map((driver) => (
-              <div
-                key={driver.id}
-                onDragOver={handleDragOver}
-                onDrop={(e) => handleDropOnDriver(e, driver.id)}
-                style={{
-                  minWidth: 260,
-                  border: "1px solid #ddd",
-                  borderRadius: 8,
-                  padding: 8,
-                  background: "#fff",
-                }}
-              >
-                <h2
+            {drivers.map((driver) => {
+              const items = itemsForDriver(driver.id);
+
+              return (
+                <div
+                  key={driver.id}
+                  onDragOver={handleDragOver}
+                  onDrop={(e) => handleDropOnDriver(e, driver.id)}
                   style={{
-                    fontSize: 16,
-                    margin: 0,
-                    marginBottom: 8,
+                    minWidth: 260,
+                    border: "1px solid #ddd",
+                    borderRadius: 8,
+                    padding: 8,
+                    background: "#fff",
                   }}
                 >
-                  {driver.name}
-                </h2>
-                <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
-                  Drag jobs here to assign to this driver.
-                </p>
-
-                {jobsForDriver(driver.id).length === 0 ? (
-                  <p style={{ fontSize: 12, color: "#999" }}>
-                    No jobs assigned.
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: 4,
+                    }}
+                  >
+                    <h2
+                      style={{
+                        fontSize: 16,
+                        margin: 0,
+                        marginBottom: 4,
+                      }}
+                    >
+                      {driver.name}
+                    </h2>
+                  </div>
+                  <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
+                    Drag jobs here to assign to this driver.
+                    <br />
+                    Add breaks to indicate returns to yard.
                   </p>
-                ) : (
-                  jobsForDriver(driver.id).map((j) => (
-                    <JobCard
-                      key={j.id}
-                      job={j}
-                      selectedDate={selectedDate}
-                      customerName={findCustomerNameById(j.customer_id)}
-                      formatJobStatus={formatJobStatus}
-                      getJobTypeForDay={getJobTypeForDay}
-                      getJobTypeColor={getJobTypeColor}
-                      onDragStart={handleDragStart}
-                    />
-                  ))
-                )}
-              </div>
-            ))}
+
+                  <button
+                    type="button"
+                    onClick={() => handleAddBreak(driver.id)}
+                    style={{
+                      marginTop: 4,
+                      marginBottom: 8,
+                      padding: "4px 8px",
+                      borderRadius: 4,
+                      border: "1px solid #999",
+                      background: "#f5f5f5",
+                      fontSize: 11,
+                      cursor: "pointer",
+                    }}
+                  >
+                    + Add yard break (new run)
+                  </button>
+
+                  {items.length === 0 ? (
+                    <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
+                      No jobs assigned.
+                    </p>
+                  ) : (
+                    items.map((itemKey) => {
+                      // Break marker
+                      if (typeof itemKey === "string" && itemKey.startsWith("break:")) {
+                        return (
+                          <div
+                            key={itemKey}
+                            style={{
+                              margin: "8px 0",
+                              padding: "4px 0",
+                              borderTop: "1px dashed #bbb",
+                              borderBottom: "1px dashed #bbb",
+                              textAlign: "center",
+                              fontSize: 11,
+                              color: "#555",
+                              background: "#fafafa",
+                            }}
+                          >
+                            Return to yard / Start new run
+                          </div>
+                        );
+                      }
+
+                      const job = findJobById(itemKey);
+                      if (!job) return null;
+
+                      return (
+                        <JobCard
+                          key={job.id}
+                          job={job}
+                          selectedDate={selectedDate}
+                          customerName={findCustomerNameById(job.customer_id)}
+                          formatJobStatus={formatJobStatus}
+                          getJobTypeForDay={getJobTypeForDay}
+                          getJobTypeColor={getJobTypeColor}
+                          onDragStart={handleDragStart}
+                        />
+                      );
+                    })
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
