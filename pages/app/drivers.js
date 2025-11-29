@@ -27,6 +27,11 @@ export default function DriversPage() {
   const [medicalExpiry, setMedicalExpiry] = useState("");
   const [notes, setNotes] = useState("");
 
+  // NEW: expiry notification settings
+  const [expiryNotificationsEnabled, setExpiryNotificationsEnabled] =
+    useState(false);
+  const [expiryWarningDays, setExpiryWarningDays] = useState(30);
+
   // Load drivers for this subscriber
   useEffect(() => {
     async function loadDrivers() {
@@ -46,7 +51,25 @@ export default function DriversPage() {
 
       const { data, error } = await supabase
         .from("drivers")
-        .select("*")
+        .select(
+          `
+          id,
+          name,
+          callsign,
+          phone,
+          email,
+          licence_number,
+          licence_check_due,
+          driver_card_number,
+          driver_card_expiry,
+          cpc_expiry,
+          medical_expiry,
+          notes,
+          is_active,
+          expiry_notifications_enabled,
+          expiry_warning_days
+        `
+        )
         .eq("subscriber_id", subscriberId)
         .order("name", { ascending: true });
 
@@ -77,6 +100,9 @@ export default function DriversPage() {
       return;
     }
 
+    const warningDaysNumber =
+      expiryWarningDays === "" ? 30 : Number(expiryWarningDays) || 30;
+
     setSaving(true);
 
     const { data, error } = await supabase
@@ -95,7 +121,10 @@ export default function DriversPage() {
           cpc_expiry: cpcExpiry || null,
           medical_expiry: medicalExpiry || null,
           notes: notes.trim() || null,
-          // is_active will default to true
+          // NEW fields:
+          expiry_notifications_enabled: expiryNotificationsEnabled,
+          expiry_warning_days: warningDaysNumber,
+          // is_active defaults to true
         },
       ])
       .select("*")
@@ -125,6 +154,8 @@ export default function DriversPage() {
     setCpcExpiry("");
     setMedicalExpiry("");
     setNotes("");
+    setExpiryNotificationsEnabled(false);
+    setExpiryWarningDays(30);
     setSuccessMsg("Driver added and saved ✓");
   }
 
@@ -231,7 +262,7 @@ export default function DriversPage() {
               <input
                 type="text"
                 placeholder="e.g. Driver A"
-                value={callsign}
+                value={callssign}
                 onChange={(e) => setCallsign(e.target.value)}
                 style={{ width: "100%", padding: "6px" }}
               />
@@ -342,6 +373,39 @@ export default function DriversPage() {
             </label>
           </div>
 
+          {/* NEW: notification controls */}
+          <div style={{ gridColumn: "1 / -1", marginTop: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={expiryNotificationsEnabled}
+                onChange={(e) =>
+                  setExpiryNotificationsEnabled(e.target.checked)
+                }
+              />
+              Enable expiry warnings for this driver
+            </label>
+            <div style={{ marginTop: 4, fontSize: 12, color: "#555" }}>
+              If enabled, they will appear in the dashboard warning modal when
+              any licence / card / CPC / medical expiry is within the warning
+              window.
+            </div>
+
+            <div style={{ marginTop: 8 }}>
+              <label>
+                Warn from (days before expiry)
+                <br />
+                <input
+                  type="number"
+                  min="1"
+                  value={expiryWarningDays}
+                  onChange={(e) => setExpiryWarningDays(e.target.value)}
+                  style={{ width: "120px", padding: "6px" }}
+                />
+              </label>
+            </div>
+          </div>
+
           <div style={{ gridColumn: "1 / -1" }}>
             <label>
               Notes
@@ -383,7 +447,7 @@ export default function DriversPage() {
             style={{
               width: "100%",
               borderCollapse: "collapse",
-              minWidth: "800px",
+              minWidth: "900px",
             }}
           >
             <thead>
@@ -395,6 +459,8 @@ export default function DriversPage() {
                 <th style={thStyle}>Driver card expiry</th>
                 <th style={thStyle}>CPC expiry</th>
                 <th style={thStyle}>Medical expiry</th>
+                <th style={thStyle}>Notify?</th>
+                <th style={thStyle}>Warn from (days)</th>
                 <th style={thStyle}>Notes</th>
               </tr>
             </thead>
@@ -408,6 +474,10 @@ export default function DriversPage() {
                   <td style={tdStyle}>{d.driver_card_expiry || ""}</td>
                   <td style={tdStyle}>{d.cpc_expiry || ""}</td>
                   <td style={tdStyle}>{d.medical_expiry || ""}</td>
+                  <td style={tdStyle}>
+                    {d.expiry_notifications_enabled ? "Yes" : "No"}
+                  </td>
+                  <td style={tdStyle}>{d.expiry_warning_days ?? ""}</td>
                   <td style={tdStyle}>{d.notes || ""}</td>
                 </tr>
               ))}
@@ -425,9 +495,11 @@ const thStyle = {
   borderBottom: "1px solid #ddd",
   padding: "8px",
   fontWeight: "bold",
+  fontSize: 12,
 };
 
 const tdStyle = {
   borderBottom: "1px solid #eee",
   padding: "8px",
+  fontSize: 12,
 };
