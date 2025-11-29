@@ -92,7 +92,8 @@ export default function SchedulerPage() {
           collection_date,
           site_name,
           site_postcode,
-          payment_type
+          payment_type,
+          assigned_driver_id
         `
         )
         .eq("subscriber_id", subscriberId)
@@ -108,21 +109,32 @@ export default function SchedulerPage() {
         return;
       }
 
-      const list = jobData || [];
+     const list = jobData || [];
       setJobs(list);
 
       // Initialise column layout:
-      // all jobs start unassigned; each driver gets an empty column
+      // - each driver gets an empty column
+      // - jobs with assigned_driver_id go to that driver
+      // - everything else goes to "unassigned"
       const initialLayout = {
-        unassigned: list.map((j) => j.id),
+        unassigned: [],
       };
 
-      (driverData || []).forEach((d) => {
+      const activeDrivers = driverData || [];
+
+      activeDrivers.forEach((d) => {
         initialLayout[d.id] = [];
       });
 
-      setColumnLayout(initialLayout);
+      for (const job of list) {
+        if (job.assigned_driver_id && initialLayout[job.assigned_driver_id]) {
+          initialLayout[job.assigned_driver_id].push(job.id);
+        } else {
+          initialLayout.unassigned.push(job.id);
+        }
+      }
 
+      setColumnLayout(initialLayout);
       setLoading(false);
     }
 
