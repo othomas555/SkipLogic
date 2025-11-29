@@ -27,10 +27,81 @@ export default function DriversPage() {
   const [medicalExpiry, setMedicalExpiry] = useState("");
   const [notes, setNotes] = useState("");
 
-  // NEW: expiry notification settings
+  // Expiry notification settings (for new driver)
   const [expiryNotificationsEnabled, setExpiryNotificationsEnabled] =
     useState(false);
   const [expiryWarningDays, setExpiryWarningDays] = useState(30);
+
+  // NEW: modal + list of expiring drivers
+  const [expiringDrivers, setExpiringDrivers] = useState([]);
+  const [showExpiryModal, setShowExpiryModal] = useState(false);
+
+  // Helper: compute which drivers are in warning window
+  function computeExpiringDrivers(list) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const results = [];
+
+    list.forEach((d) => {
+      if (!d.expiry_notifications_enabled) return;
+
+      const warningDays =
+        d.expiry_warning_days === null || d.expiry_warning_days === undefined
+          ? 30
+          : Number(d.expiry_warning_days) || 30;
+
+      const docs = [
+        { key: "licence_check_due", label: "Licence check" },
+        { key: "driver_card_expiry", label: "Driver card" },
+        { key: "cpc_expiry", label: "CPC" },
+        { key: "medical_expiry", label: "Medical" },
+      ];
+
+      let soonestDoc = null;
+
+      docs.forEach((doc) => {
+        const value = d[doc.key];
+        if (!value) return;
+
+        const expiryDate = new Date(value);
+        if (Number.isNaN(expiryDate.getTime())) return;
+
+        expiryDate.setHours(0, 0, 0, 0);
+
+        const diffMs = expiryDate.getTime() - today.getTime();
+        const daysUntil = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+        // Show:
+        // - when within the warning window before expiry, or
+        // - any day after expiry (negative days) until they update the date.
+        if (daysUntil <= warningDays) {
+          if (!soonestDoc || expiryDate < soonestDoc.expiryDate) {
+            soonestDoc = {
+              label: doc.label,
+              expiryDate,
+              daysUntil,
+            };
+          }
+        }
+      });
+
+      if (soonestDoc) {
+        results.push({
+          driver: d,
+          label: soonestDoc.label,
+          expiryDate: soonestDoc.expiryDate,
+          daysUntil: soonestDoc.daysUntil,
+        });
+      }
+    });
+
+    // Sort by earliest expiry first
+    results.sort((a, b) => a.expiryDate - b.expiryDate);
+
+    setExpiringDrivers(results);
+    setShowExpiryModal(results.length > 0);
+  }
 
   // Load drivers for this subscriber
   useEffect(() => {
@@ -77,13 +148,16 @@ export default function DriversPage() {
         console.error("Error loading drivers:", error);
         setErrorMsg(error.message || "Could not load drivers.");
       } else {
-        setDrivers(data || []);
+        const list = data || [];
+        setDrivers(list);
+        computeExpiringDrivers(list); // NEW: work out warnings
       }
 
       setLoading(false);
     }
 
     loadDrivers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, authError, subscriberId]);
 
   async function handleAddDriver(e) {
@@ -121,10 +195,8 @@ export default function DriversPage() {
           cpc_expiry: cpcExpiry || null,
           medical_expiry: medicalExpiry || null,
           notes: notes.trim() || null,
-          // NEW fields:
           expiry_notifications_enabled: expiryNotificationsEnabled,
           expiry_warning_days: warningDaysNumber,
-          // is_active defaults to true
         },
       ])
       .select("*")
@@ -139,9 +211,11 @@ export default function DriversPage() {
     }
 
     // Add to list & reset form
-    setDrivers((prev) =>
-      [...prev, data].sort((a, b) => a.name.localeCompare(b.name))
+    const updated = [...drivers, data].sort((a, b) =>
+      a.name.localeCompare(b.name)
     );
+    setDrivers(updated);
+    computeExpiringDrivers(updated); // re-calc warnings
 
     setName("");
     setCallsign("");
@@ -219,6 +293,44 @@ export default function DriversPage() {
           }}
         >
           {successMsg}
+        </div>
+      )}
+
+      {/* If there are expiring drivers, small banner + button to reopen modal */}
+      {expiringDrivers.length > 0 && (
+        <div
+          style={{
+            marginBottom: "16px",
+            padding: "10px 12px",
+            borderRadius: "4px",
+            background: "#fff7e0",
+            border: "1px solid #ffd666",
+            fontSize: 13,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span>
+            ⚠️ {expiringDrivers.length} driver
+            {expiringDrivers.length > 1 ? "s" : ""} have documents due or
+            overdue.
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowExpiryModal(true)}
+            style={{
+              padding: "4px 10px",
+              borderRadius: "4px",
+              border: "none",
+              background: "#ffb400",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            View details
+          </button>
         </div>
       )}
 
@@ -373,7 +485,7 @@ export default function DriversPage() {
             </label>
           </div>
 
-          {/* NEW: notification controls */}
+          {/* Notification controls */}
           <div style={{ gridColumn: "1 / -1", marginTop: 8 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <input
@@ -386,9 +498,8 @@ export default function DriversPage() {
               Enable expiry warnings for this driver
             </label>
             <div style={{ marginTop: 4, fontSize: 12, color: "#555" }}>
-              If enabled, they will appear in the dashboard warning modal when
-              any licence / card / CPC / medical expiry is within the warning
-              window.
+              If enabled, they will appear in the warning list when any licence
+              / card / CPC / medical expiry is within the warning window.
             </div>
 
             <div style={{ marginTop: 8 }}>
@@ -485,6 +596,105 @@ export default function DriversPage() {
           </table>
         </div>
       )}
+
+      {/* NEW: Expiry warnings modal */}
+      {showExpiryModal && expiringDrivers.length > 0 && (
+        <div style={modalOverlayStyle}>
+          <div style={modalStyle}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 12,
+              }}
+            >
+              <h3 style={{ margin: 0 }}>Driver document warnings</h3>
+              <button
+                type="button"
+                onClick={() => setShowExpiryModal(false)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  fontSize: 16,
+                }}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ fontSize: 13, marginBottom: 12 }}>
+              These drivers have licence / card / CPC / medical dates within
+              their warning window, or already past due.
+            </p>
+
+            <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 13,
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th style={thStyle}>Driver</th>
+                    <th style={thStyle}>Callsign</th>
+                    <th style={thStyle}>Document</th>
+                    <th style={thStyle}>Expiry date</th>
+                    <th style={thStyle}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {expiringDrivers.map((item) => {
+                    const { driver, label, expiryDate, daysUntil } = item;
+                    const isOverdue = daysUntil < 0;
+                    return (
+                      <tr key={driver.id + label}>
+                        <td style={tdStyle}>{driver.name}</td>
+                        <td style={tdStyle}>{driver.callsign || ""}</td>
+                        <td style={tdStyle}>{label}</td>
+                        <td style={tdStyle}>
+                          {expiryDate.toISOString().slice(0, 10)}
+                        </td>
+                        <td style={tdStyle}>
+                          {isOverdue
+                            ? `Overdue by ${Math.abs(daysUntil)} day${
+                                Math.abs(daysUntil) === 1 ? "" : "s"
+                              }`
+                            : `Due in ${daysUntil} day${
+                                daysUntil === 1 ? "" : "s"
+                              }`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ marginTop: 12, textAlign: "right" }}>
+              <button
+                type="button"
+                onClick={() => setShowExpiryModal(false)}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: "4px",
+                  border: "none",
+                  background: "#0070f3",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -502,4 +712,24 @@ const tdStyle = {
   borderBottom: "1px solid #eee",
   padding: "8px",
   fontSize: 12,
+};
+
+// Modal styles
+const modalOverlayStyle = {
+  position: "fixed",
+  inset: 0,
+  backgroundColor: "rgba(0,0,0,0.4)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  zIndex: 1000,
+};
+
+const modalStyle = {
+  background: "#fff",
+  borderRadius: "6px",
+  padding: "16px",
+  maxWidth: "800px",
+  width: "100%",
+  boxShadow: "0 10px 30px rgba(0,0,0,0.2)",
 };
