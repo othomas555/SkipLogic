@@ -1,6 +1,6 @@
 // pages/app/index.js
 import Link from "next/link";
-import { useAuthProfile } from "../../lib/useAuthProfile";
+import { useAuthProfile } from "../lib/useAuthProfile";
 
 export default function AppDashboardPage() {
   const { checking, user, subscriberId, errorMsg } = useAuthProfile();
