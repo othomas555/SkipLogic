@@ -1,62 +1,201 @@
-// pages/app/index.js
+// pages/app/jobs/index.js
 import { useEffect, useState } from "react";
-import { useRouter } from "next/router";
-import { supabase } from "../../lib/supabaseClient";
-import { useAuthProfile } from "../../lib/useAuthProfile";
+import { supabase } from "../../../lib/supabaseClient";
+import { useAuthProfile } from "../../../lib/useAuthProfile";
 
-export default function AppDashboard() {
-  const router = useRouter();
-  const { checking, user, subscriberId, errorMsg: authError } =
-    useAuthProfile();
+export default function JobsListPage() {
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
-  const [driverWarnings, setDriverWarnings] = useState([]);
-  const [showDriverModal, setShowDriverModal] = useState(true);
-  const [loadingWarnings, setLoadingWarnings] = useState(false);
+  const [jobs, setJobs] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [lastEventsByJobId, setLastEventsByJobId] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
-    async function loadWarnings() {
-      if (!user || !subscriberId) return;
-      setLoadingWarnings(true);
+    if (checking) return;
+    if (!subscriberId) return;
 
-      const { data, error } = await supabase
-        .from("drivers")
+    async function loadData() {
+      setLoading(true);
+      setErrorMsg("");
+
+      // 1) Load customers for labels
+      const { data: customerData, error: customersError } = await supabase
+        .from("customers")
         .select(
           `
           id,
-          name,
-          callsign,
-          licence_check_due,
-          driver_card_expiry,
-          cpc_expiry,
-          medical_expiry,
-          expiry_notifications_enabled,
-          expiry_warning_days,
-          is_active
+          first_name,
+          last_name,
+          company_name
         `
         )
         .eq("subscriber_id", subscriberId)
-        .eq("is_active", true)
-        .eq("expiry_notifications_enabled", true);
+        .order("last_name", { ascending: true });
 
-      if (error) {
-        console.error("Error loading driver expiries:", error);
-        setDriverWarnings([]);
-        setLoadingWarnings(false);
+      if (customersError) {
+        console.error("Customers error:", customersError);
+        setErrorMsg("Could not load customers.");
+        setLoading(false);
         return;
       }
 
-      const warnings = buildDriverWarnings(data || []);
-      setDriverWarnings(warnings);
-      setShowDriverModal(warnings.length > 0);
-      setLoadingWarnings(false);
+      setCustomers(customerData || []);
+
+      // 2) Load jobs for this subscriber
+      const { data: jobData, error: jobsError } = await supabase
+        .from("jobs")
+        .select(
+          `
+          id,
+          job_number,
+          customer_id,
+          skip_type_id,
+          job_status,
+          scheduled_date,
+          collection_date,
+          notes,
+          site_name,
+          site_address_line1,
+          site_town,
+          site_postcode,
+          payment_type,
+          price_inc_vat,
+          created_at
+        `
+        )
+        .eq("subscriber_id", subscriberId)
+        .order("created_at", { ascending: false });
+
+      if (jobsError) {
+        console.error("Jobs error:", jobsError);
+        setErrorMsg("Could not load jobs.");
+        setLoading(false);
+        return;
+      }
+
+      const list = jobData || [];
+      setJobs(list);
+
+      // 3) Load last event per job
+      if (list.length > 0) {
+        const jobIds = list.map((j) => j.id);
+
+        const { data: eventData, error: eventsError } = await supabase
+          .from("job_events")
+          .select(
+            `
+            id,
+            job_id,
+            event_type,
+            event_status,
+            event_ref,
+            event_order,
+            event_datetime,
+            created_at
+          `
+          )
+          .in("job_id", jobIds)
+          .order("event_order", { ascending: true });
+
+        if (eventsError) {
+          console.error("Job events error:", eventsError);
+          // Don't block the jobs list if this fails
+        } else {
+          const map = {};
+          for (const ev of eventData || []) {
+            const jobId = ev.job_id;
+            const existing = map[jobId];
+
+            // pick event with highest event_order; break ties by created_at
+            if (
+              !existing ||
+              ev.event_order > existing.event_order ||
+              (ev.event_order === existing.event_order &&
+                ev.created_at > existing.created_at)
+            ) {
+              map[jobId] = ev;
+            }
+          }
+          setLastEventsByJobId(map);
+        }
+      } else {
+        setLastEventsByJobId({});
+      }
+
+      setLoading(false);
     }
 
-    if (!checking && user && subscriberId) {
-      loadWarnings();
-    }
-  }, [checking, user, subscriberId]);
+    loadData();
+  }, [checking, subscriberId]);
 
-  if (checking) {
+  function formatJobStatusLabel(status) {
+    switch (status) {
+      case "booked":
+        return "Booked";
+      case "delivered":
+        return "Delivered";
+      case "awaiting_collection":
+        return "Awaiting collection";
+      case "collected":
+        return "Collected";
+      case "cancelled":
+        return "Cancelled";
+      default:
+        return status || "Unknown";
+    }
+  }
+
+  function formatEventTypeLabel(type) {
+    switch (type) {
+      case "delivery":
+        return "Delivery";
+      case "collection":
+        return "Collection";
+      case "exchange":
+        return "Exchange";
+      case "move":
+        return "Move";
+      case "note":
+        return "Note";
+      default:
+        return type || "Unknown";
+    }
+  }
+
+  function formatEventStatusLabel(status) {
+    switch (status) {
+      case "planned":
+        return "planned";
+      case "assigned":
+        return "assigned";
+      case "completed":
+        return "completed";
+      case "failed":
+        return "failed";
+      case "cancelled":
+        return "cancelled";
+      default:
+        return status || "unknown";
+    }
+  }
+
+  function formatCustomerLabel(customerId) {
+    const c = customers.find((cust) => cust.id === customerId);
+    if (!c) return "Unknown customer";
+    const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
+    if (c.company_name) {
+      return `${c.company_name} – ${baseName || "Unknown contact"}`;
+    }
+    return baseName || "Unknown customer";
+  }
+
+  function getLastEventForJob(jobId) {
+    return lastEventsByJobId[jobId] || null;
+  }
+
+  if (checking || loading) {
     return (
       <main
         style={{
@@ -67,36 +206,7 @@ export default function AppDashboard() {
           fontFamily: "system-ui, sans-serif",
         }}
       >
-        <p>Loading SkipLogic dashboard…</p>
-      </main>
-    );
-  }
-
-  if (!user) {
-    return (
-      <main
-        style={{
-          minHeight: "100vh",
-          padding: 24,
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
-        <h1>SkipLogic</h1>
-        <p>You must be signed in to view the dashboard.</p>
-        <button
-          type="button"
-          onClick={() => router.push("/login")}
-          style={{
-            marginTop: 8,
-            padding: "8px 12px",
-            borderRadius: 4,
-            border: "1px solid #ccc",
-            background: "#f5f5f5",
-            cursor: "pointer",
-          }}
-        >
-          Go to login
-        </button>
+        <p>Loading jobs…</p>
       </main>
     );
   }
@@ -107,256 +217,261 @@ export default function AppDashboard() {
         minHeight: "100vh",
         padding: 24,
         fontFamily: "system-ui, sans-serif",
-        maxWidth: 800,
-        margin: "0 auto",
-        position: "relative",
       }}
     >
-      <h1 style={{ fontSize: 28, marginBottom: 8 }}>SkipLogic Dashboard</h1>
+      <header
+        style={{
+          marginBottom: 24,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 16,
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <h1 style={{ fontSize: 24, marginBottom: 8 }}>Jobs</h1>
+          {user?.email && (
+            <p style={{ fontSize: 14, color: "#555" }}>
+              Signed in as {user.email}
+            </p>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/app/jobs/book"
+            style={{
+              padding: "8px 12px",
+              borderRadius: 4,
+              border: "1px solid #0070f3",
+              background: "#0070f3",
+              color: "#fff",
+              fontSize: 14,
+              textDecoration: "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            + Book a skip
+          </a>
+          <a
+            href="/app/jobs/scheduler"
+            style={{
+              padding: "8px 12px",
+              borderRadius: 4,
+              border: "1px solid #ccc",
+              background: "#f5f5f5",
+              color: "#333",
+              fontSize: 14,
+              textDecoration: "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Open scheduler
+          </a>
+        </div>
+      </header>
 
-      {authError && (
-        <p style={{ color: "red", marginBottom: 12 }}>{authError}</p>
-      )}
-
-      <p style={{ marginBottom: 4 }}>
-        Signed in as <strong>{user.email}</strong>
-      </p>
-
-      {subscriberId && (
-        <p style={{ marginBottom: 16 }}>
-          Subscriber ID: <code>{subscriberId}</code>
+      {(authError || errorMsg) && (
+        <p style={{ color: "red", marginBottom: 16 }}>
+          {authError || errorMsg}
         </p>
       )}
 
-      {/* Main nav tiles */}
-      <section
-        style={{
-          marginTop: 24,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-          gap: 12,
-        }}
-      >
-        <DashboardLink href="/app/customers" title="Customers">
-          Add and manage your customers.
-        </DashboardLink>
-
-        <DashboardLink href="/app/jobs" title="Jobs">
-          Create and view skip hire jobs.
-        </DashboardLink>
-
-        <DashboardLink href="/app/jobs/scheduler" title="Scheduler">
-          Plan daily runs and assign jobs to drivers.
-        </DashboardLink>
-
-        <DashboardLink href="/app/drivers" title="Drivers">
-          Manage driver details and currencies.
-        </DashboardLink>
-      </section>
-
-      {/* Driver expiry modal */}
-      {showDriverModal && driverWarnings.length > 0 && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.45)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-          }}
-        >
-          <div
+      {jobs.length === 0 ? (
+        <p>No jobs found yet.</p>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table
             style={{
-              background: "#fff",
-              borderRadius: 8,
-              padding: 16,
-              maxWidth: 600,
-              width: "90%",
-              boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: 13,
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 8,
-              }}
-            >
-              <h2 style={{ margin: 0, fontSize: 18 }}>
-                Driver expiry warnings
-              </h2>
-              <button
-                type="button"
-                onClick={() => setShowDriverModal(false)}
-                style={{
-                  border: "none",
-                  background: "transparent",
-                  cursor: "pointer",
-                  fontSize: 16,
-                }}
-                title="Close"
-              >
-                ✕
-              </button>
-            </div>
-            <p style={{ marginTop: 0, fontSize: 13, color: "#555" }}>
-              These drivers have licence / card / CPC / medical expiries that
-              are within their warning window or already overdue.
-            </p>
+            <thead>
+              <tr>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px 4px",
+                  }}
+                >
+                  Job no.
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px 4px",
+                  }}
+                >
+                  Customer
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px 4px",
+                  }}
+                >
+                  Status
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px 4px",
+                  }}
+                >
+                  Last event
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px 4px",
+                  }}
+                >
+                  Site
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px 4px",
+                  }}
+                >
+                  Payment
+                </th>
+                <th
+                  style={{
+                    textAlign: "right",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px 4px",
+                  }}
+                >
+                  Price inc VAT
+                </th>
+                <th
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #ddd",
+                    padding: "8px 4px",
+                  }}
+                >
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobs.map((job) => {
+                const lastEvent = getLastEventForJob(job.id);
+                const siteLabel = job.site_name
+                  ? `${job.site_name}, ${job.site_postcode || ""}`
+                  : job.site_postcode || "";
 
-            <ul style={{ paddingLeft: 18, marginTop: 8, marginBottom: 12 }}>
-              {driverWarnings.map((w) => (
-                <li key={w.id} style={{ marginBottom: 4, fontSize: 13 }}>
-                  <strong>{w.driverLabel}</strong> – {w.itemLabel} on{" "}
-                  <strong>{w.date}</strong>{" "}
-                  <span style={{ color: w.daysUntil < 0 ? "#d32029" : "#fa8c16" }}>
-                    ({formatDaysText(w.daysUntil)})
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 8,
-                marginTop: 8,
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => setShowDriverModal(false)}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                  background: "#f5f5f5",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                Dismiss for now
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowDriverModal(false);
-                  router.push("/app/drivers");
-                }}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 4,
-                  border: "none",
-                  background: "#0070f3",
-                  color: "#fff",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                Go to drivers
-              </button>
-            </div>
-          </div>
+                return (
+                  <tr key={job.id}>
+                    <td
+                      style={{
+                        padding: "6px 4px",
+                        borderBottom: "1px solid #eee",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {job.job_number || job.id}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 4px",
+                        borderBottom: "1px solid #eee",
+                      }}
+                    >
+                      {formatCustomerLabel(job.customer_id)}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 4px",
+                        borderBottom: "1px solid #eee",
+                      }}
+                    >
+                      {formatJobStatusLabel(job.job_status)}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 4px",
+                        borderBottom: "1px solid #eee",
+                        fontSize: 12,
+                      }}
+                    >
+                      {lastEvent ? (
+                        <>
+                          <div>
+                            {formatEventTypeLabel(lastEvent.event_type)}{" "}
+                            {lastEvent.event_ref
+                              ? `(${lastEvent.event_ref})`
+                              : null}
+                          </div>
+                          <div style={{ color: "#666" }}>
+                            {formatEventStatusLabel(lastEvent.event_status)}
+                            {lastEvent.event_datetime
+                              ? ` – ${new Date(
+                                  lastEvent.event_datetime
+                                ).toLocaleString()}`
+                              : ""}
+                          </div>
+                        </>
+                      ) : (
+                        <span style={{ color: "#999" }}>No events</span>
+                      )}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 4px",
+                        borderBottom: "1px solid #eee",
+                        fontSize: 12,
+                      }}
+                    >
+                      {siteLabel || <span style={{ color: "#999" }}>–</span>}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 4px",
+                        borderBottom: "1px solid #eee",
+                        fontSize: 12,
+                      }}
+                    >
+                      {job.payment_type || <span style={{ color: "#999" }}>–</span>}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 4px",
+                        borderBottom: "1px solid #eee",
+                        textAlign: "right",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {job.price_inc_vat != null
+                        ? `£${Number(job.price_inc_vat).toFixed(2)}`
+                        : "–"}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 4px",
+                        borderBottom: "1px solid #eee",
+                        fontSize: 12,
+                      }}
+                    >
+                      <a href={`/app/jobs/${job.id}`}>View / edit</a>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </main>
   );
-}
-
-function DashboardLink({ href, title, children }) {
-  return (
-    <a
-      href={href}
-      style={{
-        display: "block",
-        padding: 12,
-        borderRadius: 8,
-        border: "1px solid #ddd",
-        textDecoration: "none",
-        color: "#222",
-        background: "#fafafa",
-      }}
-    >
-      <div
-        style={{
-          fontWeight: 600,
-          marginBottom: 4,
-          fontSize: 16,
-        }}
-      >
-        {title}
-      </div>
-      <div style={{ fontSize: 13, color: "#555" }}>{children}</div>
-    </a>
-  );
-}
-
-function buildDriverWarnings(drivers) {
-  const warnings = [];
-  const today = new Date();
-  const startOfToday = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate()
-  ).getTime();
-
-  const fields = [
-    { key: "licence_check_due", label: "Licence check due" },
-    { key: "driver_card_expiry", label: "Driver card expiry" },
-    { key: "cpc_expiry", label: "CPC expiry" },
-    { key: "medical_expiry", label: "Medical expiry" },
-  ];
-
-  for (const d of drivers) {
-    const driverLabel = d.callsign || d.name;
-    const warningWindow = d.expiry_warning_days ?? 30;
-
-    for (const field of fields) {
-      const raw = d[field.key];
-      if (!raw) continue;
-
-      const dateObj = new Date(raw);
-      const startOfTarget = new Date(
-        dateObj.getFullYear(),
-        dateObj.getMonth(),
-        dateObj.getDate()
-      ).getTime();
-
-      const diffDays = Math.round(
-        (startOfTarget - startOfToday) / (1000 * 60 * 60 * 24)
-      );
-
-      // Show if within window OR already overdue
-      if (diffDays <= warningWindow) {
-        warnings.push({
-          id: `${d.id}-${field.key}`,
-          driverId: d.id,
-          driverLabel,
-          itemKey: field.key,
-          itemLabel: field.label,
-          date: raw,
-          daysUntil: diffDays,
-        });
-      }
-    }
-  }
-
-  // Sort: overdue first, then nearest
-  warnings.sort((a, b) => a.daysUntil - b.daysUntil);
-
-  return warnings;
-}
-
-function formatDaysText(days) {
-  if (days < 0) {
-    const n = Math.abs(days);
-    return n === 1 ? "1 day overdue" : `${n} days overdue`;
-  }
-  if (days === 0) return "today";
-  if (days === 1) return "in 1 day";
-  return `in ${days} days`;
 }
