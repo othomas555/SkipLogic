@@ -8,12 +8,22 @@ export default function SchedulerPage() {
 
   const [customers, setCustomers] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [drivers, setDrivers] = useState([]); // 🔹 now loaded from Supabase
+  const [drivers, setDrivers] = useState([]);
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // 🔹 Map of driverId -> true if that driver is on holiday for selectedDate
+  // Holidays: driverId -> true if that driver is on holiday for selectedDate
   const [holidaysByDriverId, setHolidaysByDriverId] = useState({});
+
+  // Run timing params
+  const [yardPostcode, setYardPostcode] = useState("");
+  const [startTime, setStartTime] = useState("08:00"); // when lorry leaves yard
+  const [preTripMinutes, setPreTripMinutes] = useState(30); // checks + loading
+  const [serviceMinutesDelivery, setServiceMinutesDelivery] = useState(10);
+  const [serviceMinutesCollection, setServiceMinutesCollection] = useState(10);
+  const [serviceMinutesTipReturn, setServiceMinutesTipReturn] = useState(20);
+  const [driverBreakMinutes, setDriverBreakMinutes] = useState(15);
+  const [timingsByJobId, setTimingsByJobId] = useState({}); // jobId -> { eta }
 
   // Selected date for planning (the day you're looking at)
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -24,7 +34,6 @@ export default function SchedulerPage() {
   // Date to roll unassigned jobs to
   const [rolloverDate, setRolloverDate] = useState(() => {
     const today = new Date();
-    // default: tomorrow
     const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
     return tomorrow.toISOString().slice(0, 10);
   });
@@ -35,11 +44,9 @@ export default function SchedulerPage() {
    * Column layout:
    * {
    *   unassigned: [jobId, jobId, ...],
-   *   "<driver-uuid>": [jobId, "break:123", jobId, ...],
+   *   "<driver-uuid>": [jobId, "yardbreak:xxx", "driverbreak:yyy", jobId, ...],
    *   ...
    * }
-   *
-   * "break:xxxx" entries represent "Return to yard" markers (run breaks).
    */
   const [columnLayout, setColumnLayout] = useState(null);
 
@@ -51,7 +58,7 @@ export default function SchedulerPage() {
       setErrorMsg("");
       setLoading(true);
 
-      // 1) Customers (for labels)
+      // 1) Customers
       const { data: customerData, error: customersError } = await supabase
         .from("customers")
         .select("id, first_name, last_name, company_name")
@@ -66,8 +73,7 @@ export default function SchedulerPage() {
       }
       setCustomers(customerData || []);
 
-      // 2) Drivers (active for this subscriber)
-      //    ⚠️ includes staff_id so we can map to staff_holidays.staff_id
+      // 2) Drivers (active for this subscriber, include staff_id)
       const { data: driverData, error: driversError } = await supabase
         .from("drivers")
         .select("id, name, callsign, is_active, staff_id")
@@ -85,8 +91,7 @@ export default function SchedulerPage() {
       setDrivers(activeDrivers);
 
       // 3) Holidays – approved and covering selectedDate
-      //    Uses staff_holidays.staff_id and maps to driver.staff_id
-      const dateStr = selectedDate; // already yyyy-mm-dd
+      const dateStr = selectedDate;
 
       try {
         const { data: holidayRows, error: holidaysError } = await supabase
@@ -138,9 +143,7 @@ export default function SchedulerPage() {
         `
         )
         .eq("subscriber_id", subscriberId)
-        .or(
-          `scheduled_date.eq.${selectedDate},collection_date.eq.${selectedDate}`
-        )
+        .or(`scheduled_date.eq.${selectedDate},collection_date.eq.${selectedDate}`)
         .order("created_at", { ascending: true });
 
       if (jobsError) {
@@ -153,10 +156,7 @@ export default function SchedulerPage() {
       const list = jobData || [];
       setJobs(list);
 
-      // Initialise column layout:
-      // - each driver gets an empty column
-      // - jobs with assigned_driver_id go to that driver
-      // - everything else goes to "unassigned"
+      // 5) Column layout
       const initialLayout = {
         unassigned: [],
       };
@@ -175,6 +175,7 @@ export default function SchedulerPage() {
 
       setColumnLayout(initialLayout);
       setLoading(false);
+      setTimingsByJobId({}); // clear old timings when day changes
     }
 
     loadData();
@@ -231,6 +232,127 @@ export default function SchedulerPage() {
     return !!holidaysByDriverId[driverId];
   }
 
+  function parseStartDateTime(dateStr, timeStr) {
+    try {
+      const [hStr, mStr] = (timeStr || "08:00").split(":");
+      const h = parseInt(hStr || "8", 10);
+      const m = parseInt(mStr || "0", 10);
+      const d = new Date(dateStr + "T00:00:00");
+      d.setHours(h, m, 0, 0);
+      return d;
+    } catch {
+      const d = new Date(dateStr + "T08:00:00");
+      return d;
+    }
+  }
+
+  function addMinutes(dateObj, minutes) {
+    return new Date(dateObj.getTime() + minutes * 60 * 1000);
+  }
+
+  function calculateTimings() {
+    if (!columnLayout) return;
+
+    const timings = {};
+
+    const preTrip = Number(preTripMinutes) || 0;
+    const svcDel = Number(serviceMinutesDelivery) || 0;
+    const svcCol = Number(serviceMinutesCollection) || 0;
+    const svcTip = Number(serviceMinutesTipReturn) || 0;
+    const drvBreak = Number(driverBreakMinutes) || 0;
+
+    // Placeholder travel times (mins)
+    const travelFromYard = 20;
+    const travelBetweenJobs = 15;
+    const travelBackToYard = 20;
+
+    drivers.forEach((driver) => {
+      const items = columnLayout[driver.id] || [];
+      if (!items.length) return;
+
+      let currentTime = parseStartDateTime(selectedDate, startTime);
+      let preTripApplied = false;
+      let currentLocation = "yard";
+
+      items.forEach((itemKey) => {
+        // Yard break (tip return)
+        if (
+          typeof itemKey === "string" &&
+          (itemKey.startsWith("yardbreak:") || itemKey.startsWith("break:"))
+        ) {
+          if (!preTripApplied) {
+            currentTime = addMinutes(currentTime, preTrip);
+            preTripApplied = true;
+          }
+          // travel back to yard
+          if (currentLocation !== "yard") {
+            currentTime = addMinutes(
+              currentTime,
+              travelBackToYard
+            );
+          }
+          // time tipping
+          currentTime = addMinutes(currentTime, svcTip);
+          currentLocation = "yard";
+          return;
+        }
+
+        // Driver break
+        if (
+          typeof itemKey === "string" &&
+          itemKey.startsWith("driverbreak:")
+        ) {
+          if (!preTripApplied) {
+            currentTime = addMinutes(currentTime, preTrip);
+            preTripApplied = true;
+          }
+          currentTime = addMinutes(currentTime, drvBreak);
+          return;
+        }
+
+        // Job
+        const job = findJobById(itemKey);
+        if (!job) return;
+
+        if (!preTripApplied) {
+          currentTime = addMinutes(currentTime, preTrip);
+          preTripApplied = true;
+        }
+
+        // Travel time
+        if (currentLocation === "yard") {
+          currentTime = addMinutes(currentTime, travelFromYard);
+        } else {
+          currentTime = addMinutes(currentTime, travelBetweenJobs);
+        }
+
+        // ETA is arrival time
+        const eta = new Date(currentTime);
+        timings[job.id] = { eta: eta.toISOString() };
+
+        // Service time based on job type
+        const type = getJobTypeForDay(job);
+        let svc = 0;
+        if (type === "Delivery") svc = svcDel;
+        else if (type === "Collection") svc = svcCol;
+        else if (type === "Delivery & Collection") svc = svcDel + svcCol;
+        else svc = Math.max(svcDel, svcCol); // fallback
+
+        currentTime = addMinutes(currentTime, svc);
+        currentLocation = `job:${job.id}`;
+      });
+    });
+
+    setTimingsByJobId(timings);
+  }
+
+  function formatEta(etaIso) {
+    if (!etaIso) return "";
+    const d = new Date(etaIso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
   if (checking || loading || !columnLayout) {
     return (
       <main
@@ -247,8 +369,7 @@ export default function SchedulerPage() {
     );
   }
 
-  const jobsForDay = jobs; // already filtered by date in query
-
+  const jobsForDay = jobs;
   const unassignedJobs = (columnLayout.unassigned || [])
     .map((id) => findJobById(id))
     .filter(Boolean);
@@ -269,33 +390,28 @@ export default function SchedulerPage() {
   }
 
   async function moveJobToColumn(jobId, targetColumnId) {
-    // 1) Update UI immediately
     setColumnLayout((prev) => {
       if (!prev) return prev;
       const next = { ...prev };
 
       const allColumnIds = ["unassigned", ...drivers.map((d) => d.id)];
 
-      // remove job from all columns
       allColumnIds.forEach((colId) => {
         const col = next[colId] || [];
         next[colId] = col.filter((item) => item !== jobId);
       });
 
-      // append to target column
       if (!next[targetColumnId]) next[targetColumnId] = [];
       next[targetColumnId] = [...next[targetColumnId], jobId];
 
       return next;
     });
 
-    // 2) Work out new assigned_driver_id
     let newAssignedDriverId = null;
     if (targetColumnId !== "unassigned") {
       newAssignedDriverId = targetColumnId;
     }
 
-    // 3) Save to Supabase
     const { error } = await supabase
       .from("jobs")
       .update({ assigned_driver_id: newAssignedDriverId })
@@ -308,6 +424,9 @@ export default function SchedulerPage() {
         "Could not save driver assignment for one job. Check console for details."
       );
     }
+
+    // Changing layout invalidates timings
+    setTimingsByJobId({});
   }
 
   function handleDropOnUnassigned(e) {
@@ -322,16 +441,15 @@ export default function SchedulerPage() {
     const jobId = e.dataTransfer.getData("text/plain");
     if (!jobId) return;
     moveJobToColumn(jobId, driverId);
-    // 🔜 Later: persist run info to Supabase
   }
 
-  // Add a "Return to yard" break (run separator) at the end of a driver column
-  function handleAddBreak(driverId) {
+  // Add yard break (tip return)
+  function handleAddYardBreak(driverId) {
     setColumnLayout((prev) => {
       if (!prev) return prev;
       const next = { ...prev };
       const key =
-        "break:" +
+        "yardbreak:" +
         Date.now().toString(36) +
         ":" +
         Math.random().toString(36).slice(2, 8);
@@ -340,9 +458,28 @@ export default function SchedulerPage() {
       next[driverId] = [...next[driverId], key];
       return next;
     });
+    setTimingsByJobId({});
   }
 
-  // Remove a specific break marker from a driver column
+  // Add driver break
+  function handleAddDriverBreak(driverId) {
+    setColumnLayout((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      const key =
+        "driverbreak:" +
+        Date.now().toString(36) +
+        ":" +
+        Math.random().toString(36).slice(2, 8);
+
+      if (!next[driverId]) next[driverId] = [];
+      next[driverId] = [...next[driverId], key];
+      return next;
+    });
+    setTimingsByJobId({});
+  }
+
+  // Remove any break marker
   function handleRemoveBreak(driverId, breakKey) {
     setColumnLayout((prev) => {
       if (!prev) return prev;
@@ -351,9 +488,9 @@ export default function SchedulerPage() {
       next[driverId] = col.filter((item) => item !== breakKey);
       return next;
     });
+    setTimingsByJobId({});
   }
 
-  // Move all unassigned jobs to rolloverDate (update their dates in Supabase)
   async function handleMoveUnassigned() {
     if (!rolloverDate) {
       setErrorMsg("Please choose a date to move unassigned jobs to.");
@@ -376,19 +513,15 @@ export default function SchedulerPage() {
     for (const job of unassignedJobs) {
       const updates = {};
 
-      // If this job is a delivery on the selected day, move that delivery date
       if (job.scheduled_date === selectedDate) {
         updates.scheduled_date = rolloverDate;
       }
 
-      // If this job is a collection on the selected day, move that collection date
       if (job.collection_date === selectedDate) {
         updates.collection_date = rolloverDate;
       }
 
-      if (Object.keys(updates).length === 0) {
-        continue;
-      }
+      if (Object.keys(updates).length === 0) continue;
 
       const { error } = await supabase
         .from("jobs")
@@ -401,13 +534,10 @@ export default function SchedulerPage() {
         setErrorMsg(
           "Could not move one or more unassigned jobs. Check logs for details."
         );
-        // keep going with others
       }
     }
 
     setMovingUnassigned(false);
-
-    // After moving, jump the planner to the new date.
     setSelectedDate(rolloverDate);
   }
 
@@ -455,12 +585,13 @@ export default function SchedulerPage() {
           <input
             type="date"
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
+            onChange={(e) => {
+              setSelectedDate(e.target.value);
+            }}
             style={{
               padding: 8,
               borderRadius: 4,
-              border: "1px solid " +
-                "#ccc",
+              border: "1px solid #ccc",
             }}
           />
         </div>
@@ -472,7 +603,7 @@ export default function SchedulerPage() {
         </p>
       )}
 
-      {/* 🔹 Banner if any drivers are on holiday for this day */}
+      {/* Banner if any drivers are on holiday */}
       {Object.keys(holidaysByDriverId).length > 0 && (
         <div
           style={{
@@ -490,6 +621,169 @@ export default function SchedulerPage() {
         </div>
       )}
 
+      {/* Run timing controls */}
+      <section
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          padding: 12,
+          marginBottom: 16,
+          fontSize: 13,
+          background: "#fafafa",
+        }}
+      >
+        <h2 style={{ fontSize: 16, margin: 0, marginBottom: 8 }}>
+          Run timing settings
+        </h2>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 12,
+            marginBottom: 8,
+          }}
+        >
+          <div>
+            <label style={{ display: "block", marginBottom: 2 }}>
+              Yard postcode
+            </label>
+            <input
+              type="text"
+              value={yardPostcode}
+              onChange={(e) => setYardPostcode(e.target.value)}
+              placeholder="CFxx xxx"
+              style={{
+                padding: 6,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 2 }}>
+              Start time (leave yard)
+            </label>
+            <input
+              type="time"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+              style={{
+                padding: 6,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 2 }}>
+              Pre-trip mins (checks + loading)
+            </label>
+            <input
+              type="number"
+              value={preTripMinutes}
+              onChange={(e) => setPreTripMinutes(e.target.value)}
+              style={{
+                width: 70,
+                padding: 6,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 2 }}>
+              Delivery mins on site
+            </label>
+            <input
+              type="number"
+              value={serviceMinutesDelivery}
+              onChange={(e) => setServiceMinutesDelivery(e.target.value)}
+              style={{
+                width: 70,
+                padding: 6,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 2 }}>
+              Collection mins on site
+            </label>
+            <input
+              type="number"
+              value={serviceMinutesCollection}
+              onChange={(e) => setServiceMinutesCollection(e.target.value)}
+              style={{
+                width: 70,
+                padding: 6,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 2 }}>
+              Tip return mins (at yard)
+            </label>
+            <input
+              type="number"
+              value={serviceMinutesTipReturn}
+              onChange={(e) => setServiceMinutesTipReturn(e.target.value)}
+              style={{
+                width: 70,
+                padding: 6,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 2 }}>
+              Driver break mins
+            </label>
+            <input
+              type="number"
+              value={driverBreakMinutes}
+              onChange={(e) => setDriverBreakMinutes(e.target.value)}
+              style={{
+                width: 70,
+                padding: 6,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            />
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={calculateTimings}
+          style={{
+            padding: "6px 10px",
+            borderRadius: 4,
+            border: "1px solid #0070f3",
+            background: "#0070f3",
+            color: "#fff",
+            fontSize: 13,
+            cursor: "pointer",
+          }}
+        >
+          Calculate timings (ETA per job)
+        </button>
+        {Object.keys(timingsByJobId).length > 0 && (
+          <span style={{ marginLeft: 8, fontSize: 12, color: "#555" }}>
+            ETAs updated. Change layout or settings → recalc.
+          </span>
+        )}
+      </section>
+
       {jobsForDay.length === 0 ? (
         <p>No deliveries or collections for this date.</p>
       ) : (
@@ -500,7 +794,7 @@ export default function SchedulerPage() {
             alignItems: "flex-start",
           }}
         >
-          {/* Left: unassigned jobs */}
+          {/* Unassigned column */}
           <div
             onDragOver={handleDragOver}
             onDrop={handleDropOnUnassigned}
@@ -598,12 +892,13 @@ export default function SchedulerPage() {
                 <JobCard
                   key={j.id}
                   job={j}
-                  selectedDate={selectedDate}
                   customerName={findCustomerNameById(j.customer_id)}
                   formatJobStatus={formatJobStatus}
                   getJobTypeForDay={getJobTypeForDay}
                   getJobTypeColor={getJobTypeColor}
                   onDragStart={handleDragStart}
+                  eta={timingsByJobId[j.id]?.eta}
+                  formatEta={formatEta}
                 />
               ))
             )}
@@ -689,28 +984,51 @@ export default function SchedulerPage() {
                       {!onHoliday && (
                         <>
                           <br />
-                          Add breaks to indicate returns to yard.
+                          Add yard breaks for tip returns & driver breaks.
                         </>
                       )}
                     </p>
 
-                    <button
-                      type="button"
-                      onClick={() => handleAddBreak(driver.id)}
-                      disabled={onHoliday}
+                    <div
                       style={{
-                        marginTop: 4,
+                        display: "flex",
+                        gap: 4,
                         marginBottom: 8,
-                        padding: "4px 8px",
-                        borderRadius: 4,
-                        border: "1px solid #999",
-                        background: onHoliday ? "#eee" : "#f5f5f5",
-                        fontSize: 11,
-                        cursor: onHoliday ? "default" : "pointer",
+                        flexWrap: "wrap",
                       }}
                     >
-                      + Add yard break (new run)
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAddYardBreak(driver.id)}
+                        disabled={onHoliday}
+                        style={{
+                          padding: "4px 8px",
+                          borderRadius: 4,
+                          border: "1px solid #999",
+                          background: onHoliday ? "#eee" : "#f5f5f5",
+                          fontSize: 11,
+                          cursor: onHoliday ? "default" : "pointer",
+                        }}
+                      >
+                        + Yard break (tip return)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleAddDriverBreak(driver.id)}
+                        disabled={onHoliday}
+                        style={{
+                          padding: "4px 8px",
+                          borderRadius: 4,
+                          border: "1px solid #999",
+                          background: onHoliday ? "#eee" : "#f5f5f5",
+                          fontSize: 11,
+                          cursor: onHoliday ? "default" : "pointer",
+                        }}
+                      >
+                        + Driver break ({driverBreakMinutes} mins)
+                      </button>
+                    </div>
 
                     {items.length === 0 ? (
                       <p
@@ -720,10 +1038,11 @@ export default function SchedulerPage() {
                       </p>
                     ) : (
                       items.map((itemKey) => {
-                        // Break marker
+                        // Yard break marker
                         if (
                           typeof itemKey === "string" &&
-                          itemKey.startsWith("break:")
+                          (itemKey.startsWith("yardbreak:") ||
+                            itemKey.startsWith("break:"))
                         ) {
                           return (
                             <div
@@ -742,7 +1061,50 @@ export default function SchedulerPage() {
                                 gap: 8,
                               }}
                             >
-                              <span>Return to yard / Start new run</span>
+                              <span>Return to yard / Tip & new run</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRemoveBreak(driver.id, itemKey)
+                                }
+                                style={{
+                                  border: "none",
+                                  background: "transparent",
+                                  cursor: "pointer",
+                                  fontSize: 12,
+                                  color: "#999",
+                                }}
+                                title="Remove this break"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        // Driver break marker
+                        if (
+                          typeof itemKey === "string" &&
+                          itemKey.startsWith("driverbreak:")
+                        ) {
+                          return (
+                            <div
+                              key={itemKey}
+                              style={{
+                                margin: "8px 0",
+                                padding: "4px 6px",
+                                borderTop: "1px dotted #bbb",
+                                borderBottom: "1px dotted #bbb",
+                                fontSize: 11,
+                                color: "#555",
+                                background: "#fdf5e6",
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                gap: 8,
+                              }}
+                            >
+                              <span>Driver break ({driverBreakMinutes} mins)</span>
                               <button
                                 type="button"
                                 onClick={() =>
@@ -770,12 +1132,13 @@ export default function SchedulerPage() {
                           <JobCard
                             key={job.id}
                             job={job}
-                            selectedDate={selectedDate}
                             customerName={findCustomerNameById(job.customer_id)}
                             formatJobStatus={formatJobStatus}
                             getJobTypeForDay={getJobTypeForDay}
                             getJobTypeColor={getJobTypeColor}
                             onDragStart={handleDragStart}
+                            eta={timingsByJobId[job.id]?.eta}
+                            formatEta={formatEta}
                           />
                         );
                       })
@@ -794,15 +1157,17 @@ export default function SchedulerPage() {
 // Small reusable card component for jobs in the scheduler
 function JobCard({
   job,
-  selectedDate,
   customerName,
   formatJobStatus,
   getJobTypeForDay,
   getJobTypeColor,
   onDragStart,
+  eta,
+  formatEta,
 }) {
   const type = getJobTypeForDay(job);
   const typeColor = getJobTypeColor(job);
+  const etaLabel = eta ? formatEta(eta) : null;
 
   return (
     <div
@@ -860,6 +1225,11 @@ function JobCard({
       <div style={{ marginBottom: 4, color: "#777" }}>
         Payment: {job.payment_type || "Unknown"}
       </div>
+      {etaLabel && (
+        <div style={{ marginBottom: 4, color: "#333", fontWeight: 600 }}>
+          ETA: {etaLabel}
+        </div>
+      )}
       <a
         href={`/app/jobs/${job.id}`}
         style={{ fontSize: 11, textDecoration: "underline" }}
