@@ -1,7 +1,7 @@
 // pages/app/jobs/index.js
 import { useEffect, useState } from "react";
-import { supabase } from "../../../lib/supabaseClient";
-import { useAuthProfile } from "../../../lib/useAuthProfile";
+import { supabase } from "../../lib/supabaseClient";
+import { useAuthProfile } from "../../lib/useAuthProfile";
 
 export default function JobsListPage() {
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
