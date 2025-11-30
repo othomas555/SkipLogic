@@ -12,26 +12,28 @@ export default function SchedulerPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // Holidays: driverId -> true if that driver is on holiday for selectedDate
+  // Holidays: driverId -> true
   const [holidaysByDriverId, setHolidaysByDriverId] = useState({});
 
   // Run timing params
   const [yardPostcode, setYardPostcode] = useState("");
-  const [startTime, setStartTime] = useState("08:00"); // when lorry leaves yard
-  const [preTripMinutes, setPreTripMinutes] = useState(30); // checks + loading
+  const [startTime, setStartTime] = useState("08:00");
+  const [preTripMinutes, setPreTripMinutes] = useState(30);
   const [serviceMinutesDelivery, setServiceMinutesDelivery] = useState(10);
-  const [serviceMinutesCollection, setServiceMinutesCollection] = useState(10);
+  const [serviceMinutesCollection, setServiceMinutesCollection] =
+    useState(10);
   const [serviceMinutesTipReturn, setServiceMinutesTipReturn] = useState(20);
   const [driverBreakMinutes, setDriverBreakMinutes] = useState(15);
-  const [timingsByJobId, setTimingsByJobId] = useState({}); // jobId -> { eta }
+  const [timingsByJobId, setTimingsByJobId] = useState({});
 
-  // Selected date for planning (the day you're looking at)
+  // Travel time cache: "from|||to" -> minutes
+  const [travelTimes, setTravelTimes] = useState({});
+
   const [selectedDate, setSelectedDate] = useState(() => {
     const today = new Date();
-    return today.toISOString().slice(0, 10); // yyyy-mm-dd
+    return today.toISOString().slice(0, 10);
   });
 
-  // Date to roll unassigned jobs to
   const [rolloverDate, setRolloverDate] = useState(() => {
     const today = new Date();
     const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
@@ -44,8 +46,7 @@ export default function SchedulerPage() {
    * Column layout:
    * {
    *   unassigned: [jobId, jobId, ...],
-   *   "<driver-uuid>": [jobId, "yardbreak:xxx", "driverbreak:yyy", jobId, ...],
-   *   ...
+   *   "<driver-uuid>": [jobId, "yardbreak:xxx", "driverbreak:yyy", jobId, ...]
    * }
    */
   const [columnLayout, setColumnLayout] = useState(null);
@@ -73,7 +74,7 @@ export default function SchedulerPage() {
       }
       setCustomers(customerData || []);
 
-      // 2) Drivers (active for this subscriber, include staff_id)
+      // 2) Drivers (include staff_id)
       const { data: driverData, error: driversError } = await supabase
         .from("drivers")
         .select("id, name, callsign, is_active, staff_id")
@@ -90,9 +91,8 @@ export default function SchedulerPage() {
       const activeDrivers = driverData || [];
       setDrivers(activeDrivers);
 
-      // 3) Holidays – approved and covering selectedDate
+      // 3) Holidays
       const dateStr = selectedDate;
-
       try {
         const { data: holidayRows, error: holidaysError } = await supabase
           .from("staff_holidays")
@@ -117,7 +117,6 @@ export default function SchedulerPage() {
               driverHolidayMap[d.id] = true;
             }
           });
-
           setHolidaysByDriverId(driverHolidayMap);
         }
       } catch (err) {
@@ -125,7 +124,7 @@ export default function SchedulerPage() {
         setHolidaysByDriverId({});
       }
 
-      // 4) Jobs – deliveries OR collections on selectedDate
+      // 4) Jobs
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
@@ -143,7 +142,9 @@ export default function SchedulerPage() {
         `
         )
         .eq("subscriber_id", subscriberId)
-        .or(`scheduled_date.eq.${selectedDate},collection_date.eq.${selectedDate}`)
+        .or(
+          `scheduled_date.eq.${selectedDate},collection_date.eq.${selectedDate}`
+        )
         .order("created_at", { ascending: true });
 
       if (jobsError) {
@@ -156,11 +157,7 @@ export default function SchedulerPage() {
       const list = jobData || [];
       setJobs(list);
 
-      // 5) Column layout
-      const initialLayout = {
-        unassigned: [],
-      };
-
+      const initialLayout = { unassigned: [] };
       activeDrivers.forEach((d) => {
         initialLayout[d.id] = [];
       });
@@ -175,7 +172,8 @@ export default function SchedulerPage() {
 
       setColumnLayout(initialLayout);
       setLoading(false);
-      setTimingsByJobId({}); // clear old timings when day changes
+      setTimingsByJobId({});
+      setTravelTimes({});
     }
 
     loadData();
@@ -250,10 +248,41 @@ export default function SchedulerPage() {
     return new Date(dateObj.getTime() + minutes * 60 * 1000);
   }
 
-  function calculateTimings() {
-    if (!columnLayout) return;
+  function locationForJob(job) {
+    // For now just postcode; later you could store full address
+    return job.site_postcode || "";
+  }
 
-    const timings = {};
+  function travelKey(from, to) {
+    return `${from || "yard"}|||${to || "yard"}`;
+  }
+
+  async function fetchMissingTravelTimes(pairsNeeded) {
+    // pairsNeeded: [{ key, from, to }]
+    if (!pairsNeeded.length) return {};
+
+    try {
+      const resp = await fetch("/api/distance-matrix", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pairs: pairsNeeded }),
+      });
+
+      if (!resp.ok) {
+        console.error("distance-matrix API error", resp.status);
+        return {};
+      }
+
+      const data = await resp.json();
+      return data.travelMinutes || {};
+    } catch (err) {
+      console.error("distance-matrix fetch error", err);
+      return {};
+    }
+  }
+
+  async function calculateTimings() {
+    if (!columnLayout) return;
 
     const preTrip = Number(preTripMinutes) || 0;
     const svcDel = Number(serviceMinutesDelivery) || 0;
@@ -261,10 +290,85 @@ export default function SchedulerPage() {
     const svcTip = Number(serviceMinutesTipReturn) || 0;
     const drvBreak = Number(driverBreakMinutes) || 0;
 
-    // Placeholder travel times (mins)
-    const travelFromYard = 20;
-    const travelBetweenJobs = 15;
-    const travelBackToYard = 20;
+    // Fallbacks if Distance Matrix fails
+    const fallbackFromYard = 20;
+    const fallbackBetweenJobs = 15;
+    const fallbackBackToYard = 20;
+
+    const yardLoc = yardPostcode.trim() || "yard";
+
+    // 1) Work out all movement segments we need travel times for
+    const neededPairs = [];
+    const seenKeys = new Set();
+
+    drivers.forEach((driver) => {
+      const items = columnLayout[driver.id] || [];
+      if (!items.length) return;
+
+      let currentLocation = yardLoc;
+
+      items.forEach((itemKey) => {
+        if (
+          typeof itemKey === "string" &&
+          (itemKey.startsWith("yardbreak:") || itemKey.startsWith("break:"))
+        ) {
+          // job -> yard movement
+          if (currentLocation !== yardLoc) {
+            const key = travelKey(currentLocation, yardLoc);
+            if (!travelTimes[key] && !seenKeys.has(key)) {
+              neededPairs.push({ key, from: currentLocation, to: yardLoc });
+              seenKeys.add(key);
+            }
+          }
+          currentLocation = yardLoc;
+          return;
+        }
+
+        if (typeof itemKey === "string" && itemKey.startsWith("driverbreak:")) {
+          // break, no movement
+          return;
+        }
+
+        const job = findJobById(itemKey);
+        if (!job) return;
+        const jobLoc = locationForJob(job) || yardLoc;
+
+        const key = travelKey(currentLocation, jobLoc);
+        if (!travelTimes[key] && !seenKeys.has(key)) {
+          neededPairs.push({ key, from: currentLocation, to: jobLoc });
+          seenKeys.add(key);
+        }
+
+        currentLocation = jobLoc;
+      });
+    });
+
+    // 2) Call backend for missing ones
+    let newTravelTimes = {};
+    if (neededPairs.length > 0) {
+      const fetched = await fetchMissingTravelTimes(neededPairs);
+      newTravelTimes = fetched;
+      setTravelTimes((prev) => ({ ...prev, ...fetched }));
+    }
+
+    // helper to get travel minutes
+    function getTravelMinutes(fromLoc, toLoc, direction) {
+      const key = travelKey(fromLoc, toLoc);
+      const cached =
+        newTravelTimes[key] !== undefined
+          ? newTravelTimes[key]
+          : travelTimes[key];
+
+      if (cached !== undefined) return cached;
+
+      // fallback if API had no answer
+      if (direction === "yard->job") return fallbackFromYard;
+      if (direction === "job->yard") return fallbackBackToYard;
+      return fallbackBetweenJobs;
+    }
+
+    // 3) Walk each driver route and assign ETAs
+    const timings = {};
 
     drivers.forEach((driver) => {
       const items = columnLayout[driver.id] || [];
@@ -272,10 +376,10 @@ export default function SchedulerPage() {
 
       let currentTime = parseStartDateTime(selectedDate, startTime);
       let preTripApplied = false;
-      let currentLocation = "yard";
+      let currentLocation = yardLoc;
 
       items.forEach((itemKey) => {
-        // Yard break (tip return)
+        // Yard break / tip return
         if (
           typeof itemKey === "string" &&
           (itemKey.startsWith("yardbreak:") || itemKey.startsWith("break:"))
@@ -284,16 +388,15 @@ export default function SchedulerPage() {
             currentTime = addMinutes(currentTime, preTrip);
             preTripApplied = true;
           }
-          // travel back to yard
-          if (currentLocation !== "yard") {
-            currentTime = addMinutes(
-              currentTime,
-              travelBackToYard
-            );
+
+          if (currentLocation !== yardLoc) {
+            const mins = getTravelMinutes(currentLocation, yardLoc, "job->yard");
+            currentTime = addMinutes(currentTime, mins);
           }
-          // time tipping
+
+          // tip time
           currentTime = addMinutes(currentTime, svcTip);
-          currentLocation = "yard";
+          currentLocation = yardLoc;
           return;
         }
 
@@ -314,32 +417,33 @@ export default function SchedulerPage() {
         const job = findJobById(itemKey);
         if (!job) return;
 
+        const jobLoc = locationForJob(job) || yardLoc;
+
         if (!preTripApplied) {
           currentTime = addMinutes(currentTime, preTrip);
           preTripApplied = true;
         }
 
         // Travel time
-        if (currentLocation === "yard") {
-          currentTime = addMinutes(currentTime, travelFromYard);
-        } else {
-          currentTime = addMinutes(currentTime, travelBetweenJobs);
-        }
+        let direction = "between";
+        if (currentLocation === yardLoc) direction = "yard->job";
+        const mins = getTravelMinutes(currentLocation, jobLoc, direction);
+        currentTime = addMinutes(currentTime, mins);
 
-        // ETA is arrival time
+        // ETA
         const eta = new Date(currentTime);
         timings[job.id] = { eta: eta.toISOString() };
 
-        // Service time based on job type
+        // Service time
         const type = getJobTypeForDay(job);
         let svc = 0;
         if (type === "Delivery") svc = svcDel;
         else if (type === "Collection") svc = svcCol;
         else if (type === "Delivery & Collection") svc = svcDel + svcCol;
-        else svc = Math.max(svcDel, svcCol); // fallback
+        else svc = Math.max(svcDel, svcCol);
 
         currentTime = addMinutes(currentTime, svc);
-        currentLocation = `job:${job.id}`;
+        currentLocation = jobLoc;
       });
     });
 
@@ -395,7 +499,6 @@ export default function SchedulerPage() {
       const next = { ...prev };
 
       const allColumnIds = ["unassigned", ...drivers.map((d) => d.id)];
-
       allColumnIds.forEach((colId) => {
         const col = next[colId] || [];
         next[colId] = col.filter((item) => item !== jobId);
@@ -425,7 +528,6 @@ export default function SchedulerPage() {
       );
     }
 
-    // Changing layout invalidates timings
     setTimingsByJobId({});
   }
 
@@ -443,7 +545,6 @@ export default function SchedulerPage() {
     moveJobToColumn(jobId, driverId);
   }
 
-  // Add yard break (tip return)
   function handleAddYardBreak(driverId) {
     setColumnLayout((prev) => {
       if (!prev) return prev;
@@ -461,7 +562,6 @@ export default function SchedulerPage() {
     setTimingsByJobId({});
   }
 
-  // Add driver break
   function handleAddDriverBreak(driverId) {
     setColumnLayout((prev) => {
       if (!prev) return prev;
@@ -479,7 +579,6 @@ export default function SchedulerPage() {
     setTimingsByJobId({});
   }
 
-  // Remove any break marker
   function handleRemoveBreak(driverId, breakKey) {
     setColumnLayout((prev) => {
       if (!prev) return prev;
@@ -512,15 +611,12 @@ export default function SchedulerPage() {
 
     for (const job of unassignedJobs) {
       const updates = {};
-
       if (job.scheduled_date === selectedDate) {
         updates.scheduled_date = rolloverDate;
       }
-
       if (job.collection_date === selectedDate) {
         updates.collection_date = rolloverDate;
       }
-
       if (Object.keys(updates).length === 0) continue;
 
       const { error } = await supabase
@@ -541,701 +637,11 @@ export default function SchedulerPage() {
     setSelectedDate(rolloverDate);
   }
 
-  return (
-    <main
-      style={{
-        minHeight: "100vh",
-        padding: 24,
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      <header
-        style={{
-          marginBottom: 16,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 16,
-          flexWrap: "wrap",
-        }}
-      >
-        <div>
-          <h1 style={{ fontSize: 24, marginBottom: 8 }}>Skip hire scheduler</h1>
-          {user?.email && (
-            <p style={{ fontSize: 14, color: "#555" }}>
-              Signed in as {user.email}
-            </p>
-          )}
-          <p style={{ marginTop: 8 }}>
-            <a href="/app/jobs" style={{ fontSize: 14 }}>
-              ← Back to jobs list
-            </a>
-          </p>
-        </div>
-        <div>
-          <label
-            style={{
-              display: "block",
-              fontSize: 14,
-              marginBottom: 4,
-            }}
-          >
-            Day to plan
-          </label>
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => {
-              setSelectedDate(e.target.value);
-            }}
-            style={{
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-            }}
-          />
-        </div>
-      </header>
+  // ---------- JSX below (same as previous version except button uses calculateTimings) ----------
 
-      {(authError || errorMsg) && (
-        <p style={{ color: "red", marginBottom: 16 }}>
-          {authError || errorMsg}
-        </p>
-      )}
+  // ... (for brevity I’m not re-pasting the entire JSX from the last answer;
+  // you can keep your current JSX, but make sure the "Calculate timings" button calls:
+  //    onClick={calculateTimings}
+  // and that JobCard receives eta + formatEta props and displays them.)
 
-      {/* Banner if any drivers are on holiday */}
-      {Object.keys(holidaysByDriverId).length > 0 && (
-        <div
-          style={{
-            backgroundColor: "#fff8e1",
-            border: "1px solid #ffe082",
-            padding: "8px 12px",
-            borderRadius: 4,
-            marginBottom: 12,
-            fontSize: 13,
-          }}
-        >
-          <strong>Heads up:</strong> one or more drivers are on holiday for{" "}
-          {selectedDate}. They’re shown in red and cannot be assigned jobs for
-          this day.
-        </div>
-      )}
-
-      {/* Run timing controls */}
-      <section
-        style={{
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          padding: 12,
-          marginBottom: 16,
-          fontSize: 13,
-          background: "#fafafa",
-        }}
-      >
-        <h2 style={{ fontSize: 16, margin: 0, marginBottom: 8 }}>
-          Run timing settings
-        </h2>
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 12,
-            marginBottom: 8,
-          }}
-        >
-          <div>
-            <label style={{ display: "block", marginBottom: 2 }}>
-              Yard postcode
-            </label>
-            <input
-              type="text"
-              value={yardPostcode}
-              onChange={(e) => setYardPostcode(e.target.value)}
-              placeholder="CFxx xxx"
-              style={{
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: 2 }}>
-              Start time (leave yard)
-            </label>
-            <input
-              type="time"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              style={{
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: 2 }}>
-              Pre-trip mins (checks + loading)
-            </label>
-            <input
-              type="number"
-              value={preTripMinutes}
-              onChange={(e) => setPreTripMinutes(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: 2 }}>
-              Delivery mins on site
-            </label>
-            <input
-              type="number"
-              value={serviceMinutesDelivery}
-              onChange={(e) => setServiceMinutesDelivery(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: 2 }}>
-              Collection mins on site
-            </label>
-            <input
-              type="number"
-              value={serviceMinutesCollection}
-              onChange={(e) => setServiceMinutesCollection(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: 2 }}>
-              Tip return mins (at yard)
-            </label>
-            <input
-              type="number"
-              value={serviceMinutesTipReturn}
-              onChange={(e) => setServiceMinutesTipReturn(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", marginBottom: 2 }}>
-              Driver break mins
-            </label>
-            <input
-              type="number"
-              value={driverBreakMinutes}
-              onChange={(e) => setDriverBreakMinutes(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={calculateTimings}
-          style={{
-            padding: "6px 10px",
-            borderRadius: 4,
-            border: "1px solid #0070f3",
-            background: "#0070f3",
-            color: "#fff",
-            fontSize: 13,
-            cursor: "pointer",
-          }}
-        >
-          Calculate timings (ETA per job)
-        </button>
-        {Object.keys(timingsByJobId).length > 0 && (
-          <span style={{ marginLeft: 8, fontSize: 12, color: "#555" }}>
-            ETAs updated. Change layout or settings → recalc.
-          </span>
-        )}
-      </section>
-
-      {jobsForDay.length === 0 ? (
-        <p>No deliveries or collections for this date.</p>
-      ) : (
-        <div
-          style={{
-            display: "flex",
-            gap: 12,
-            alignItems: "flex-start",
-          }}
-        >
-          {/* Unassigned column */}
-          <div
-            onDragOver={handleDragOver}
-            onDrop={handleDropOnUnassigned}
-            style={{
-              width: 280,
-              minHeight: 200,
-              border: "1px solid #ddd",
-              borderRadius: 8,
-              padding: 8,
-              background: "#fafafa",
-            }}
-          >
-            <h2
-              style={{
-                fontSize: 16,
-                margin: 0,
-                marginBottom: 8,
-              }}
-            >
-              Unassigned jobs
-            </h2>
-            <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
-              Deliveries & collections for {selectedDate}
-            </p>
-
-            {/* Move unassigned jobs control */}
-            <div
-              style={{
-                marginTop: 8,
-                marginBottom: 12,
-                paddingTop: 8,
-                borderTop: "1px solid #e5e5e5",
-              }}
-            >
-              <label
-                style={{
-                  display: "block",
-                  fontSize: 12,
-                  marginBottom: 4,
-                }}
-              >
-                Move all unassigned jobs to date:
-              </label>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 4,
-                  alignItems: "center",
-                  marginBottom: 4,
-                }}
-              >
-                <input
-                  type="date"
-                  value={rolloverDate}
-                  onChange={(e) => setRolloverDate(e.target.value)}
-                  style={{
-                    padding: 6,
-                    borderRadius: 4,
-                    border: "1px solid #ccc",
-                    fontSize: 12,
-                    flex: 1,
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={handleMoveUnassigned}
-                  disabled={movingUnassigned || unassignedJobs.length === 0}
-                  style={{
-                    padding: "6px 8px",
-                    borderRadius: 4,
-                    border: "1px solid #999",
-                    background: movingUnassigned ? "#ddd" : "#f5f5f5",
-                    fontSize: 11,
-                    cursor:
-                      movingUnassigned || unassignedJobs.length === 0
-                        ? "default"
-                        : "pointer",
-                  }}
-                >
-                  {movingUnassigned ? "Moving…" : "Move unassigned"}
-                </button>
-              </div>
-              <div style={{ fontSize: 11, color: "#777" }}>
-                Useful if you need to roll collections or deliveries to another
-                day.
-              </div>
-            </div>
-
-            {unassignedJobs.length === 0 ? (
-              <p style={{ fontSize: 12, color: "#999" }}>
-                All jobs assigned to drivers.
-              </p>
-            ) : (
-              unassignedJobs.map((j) => (
-                <JobCard
-                  key={j.id}
-                  job={j}
-                  customerName={findCustomerNameById(j.customer_id)}
-                  formatJobStatus={formatJobStatus}
-                  getJobTypeForDay={getJobTypeForDay}
-                  getJobTypeColor={getJobTypeColor}
-                  onDragStart={handleDragStart}
-                  eta={timingsByJobId[j.id]?.eta}
-                  formatEta={formatEta}
-                />
-              ))
-            )}
-          </div>
-
-          {/* Driver columns */}
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              flex: 1,
-              overflowX: "auto",
-            }}
-          >
-            {drivers.length === 0 ? (
-              <div style={{ padding: 8, fontSize: 12, color: "#777" }}>
-                No active drivers found. Add drivers on the{" "}
-                <a href="/app/drivers">Drivers page</a> and refresh this
-                scheduler.
-              </div>
-            ) : (
-              drivers.map((driver) => {
-                const items = itemsForDriver(driver.id);
-                const driverLabel = driver.callsign || driver.name;
-                const onHoliday = isDriverOnHoliday(driver.id);
-
-                return (
-                  <div
-                    key={driver.id}
-                    onDragOver={handleDragOver}
-                    onDrop={(e) => {
-                      if (onHoliday) {
-                        e.preventDefault();
-                        return;
-                      }
-                      handleDropOnDriver(e, driver.id);
-                    }}
-                    style={{
-                      minWidth: 260,
-                      border: "1px solid #ddd",
-                      borderRadius: 8,
-                      padding: 8,
-                      background: onHoliday ? "#fff4f4" : "#fff",
-                      opacity: onHoliday ? 0.5 : 1,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        marginBottom: 4,
-                      }}
-                    >
-                      <h2
-                        style={{
-                          fontSize: 16,
-                          margin: 0,
-                          marginBottom: 4,
-                        }}
-                      >
-                        {driverLabel}
-                      </h2>
-                      {onHoliday && (
-                        <span
-                          style={{
-                            backgroundColor: "#ffcccc",
-                            color: "#b00020",
-                            padding: "2px 6px",
-                            borderRadius: 4,
-                            fontSize: 11,
-                            fontWeight: 600,
-                          }}
-                        >
-                          On holiday
-                        </span>
-                      )}
-                    </div>
-                    <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
-                      {onHoliday
-                        ? "This driver is on holiday today."
-                        : "Drag jobs here to assign to this driver."}
-                      {!onHoliday && (
-                        <>
-                          <br />
-                          Add yard breaks for tip returns & driver breaks.
-                        </>
-                      )}
-                    </p>
-
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 4,
-                        marginBottom: 8,
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => handleAddYardBreak(driver.id)}
-                        disabled={onHoliday}
-                        style={{
-                          padding: "4px 8px",
-                          borderRadius: 4,
-                          border: "1px solid #999",
-                          background: onHoliday ? "#eee" : "#f5f5f5",
-                          fontSize: 11,
-                          cursor: onHoliday ? "default" : "pointer",
-                        }}
-                      >
-                        + Yard break (tip return)
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleAddDriverBreak(driver.id)}
-                        disabled={onHoliday}
-                        style={{
-                          padding: "4px 8px",
-                          borderRadius: 4,
-                          border: "1px solid #999",
-                          background: onHoliday ? "#eee" : "#f5f5f5",
-                          fontSize: 11,
-                          cursor: onHoliday ? "default" : "pointer",
-                        }}
-                      >
-                        + Driver break ({driverBreakMinutes} mins)
-                      </button>
-                    </div>
-
-                    {items.length === 0 ? (
-                      <p
-                        style={{ fontSize: 12, color: "#999", marginTop: 8 }}
-                      >
-                        No jobs assigned.
-                      </p>
-                    ) : (
-                      items.map((itemKey) => {
-                        // Yard break marker
-                        if (
-                          typeof itemKey === "string" &&
-                          (itemKey.startsWith("yardbreak:") ||
-                            itemKey.startsWith("break:"))
-                        ) {
-                          return (
-                            <div
-                              key={itemKey}
-                              style={{
-                                margin: "8px 0",
-                                padding: "4px 6px",
-                                borderTop: "1px dashed #bbb",
-                                borderBottom: "1px dashed #bbb",
-                                fontSize: 11,
-                                color: "#555",
-                                background: "#fafafa",
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                gap: 8,
-                              }}
-                            >
-                              <span>Return to yard / Tip & new run</span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleRemoveBreak(driver.id, itemKey)
-                                }
-                                style={{
-                                  border: "none",
-                                  background: "transparent",
-                                  cursor: "pointer",
-                                  fontSize: 12,
-                                  color: "#999",
-                                }}
-                                title="Remove this break"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          );
-                        }
-
-                        // Driver break marker
-                        if (
-                          typeof itemKey === "string" &&
-                          itemKey.startsWith("driverbreak:")
-                        ) {
-                          return (
-                            <div
-                              key={itemKey}
-                              style={{
-                                margin: "8px 0",
-                                padding: "4px 6px",
-                                borderTop: "1px dotted #bbb",
-                                borderBottom: "1px dotted #bbb",
-                                fontSize: 11,
-                                color: "#555",
-                                background: "#fdf5e6",
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                gap: 8,
-                              }}
-                            >
-                              <span>Driver break ({driverBreakMinutes} mins)</span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleRemoveBreak(driver.id, itemKey)
-                                }
-                                style={{
-                                  border: "none",
-                                  background: "transparent",
-                                  cursor: "pointer",
-                                  fontSize: 12,
-                                  color: "#999",
-                                }}
-                                title="Remove this break"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          );
-                        }
-
-                        const job = findJobById(itemKey);
-                        if (!job) return null;
-
-                        return (
-                          <JobCard
-                            key={job.id}
-                            job={job}
-                            customerName={findCustomerNameById(job.customer_id)}
-                            formatJobStatus={formatJobStatus}
-                            getJobTypeForDay={getJobTypeForDay}
-                            getJobTypeColor={getJobTypeColor}
-                            onDragStart={handleDragStart}
-                            eta={timingsByJobId[job.id]?.eta}
-                            formatEta={formatEta}
-                          />
-                        );
-                      })
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
-    </main>
-  );
-}
-
-// Small reusable card component for jobs in the scheduler
-function JobCard({
-  job,
-  customerName,
-  formatJobStatus,
-  getJobTypeForDay,
-  getJobTypeColor,
-  onDragStart,
-  eta,
-  formatEta,
-}) {
-  const type = getJobTypeForDay(job);
-  const typeColor = getJobTypeColor(job);
-  const etaLabel = eta ? formatEta(eta) : null;
-
-  return (
-    <div
-      draggable
-      onDragStart={(e) => onDragStart(e, job.id)}
-      style={{
-        padding: 8,
-        marginBottom: 8,
-        borderRadius: 6,
-        border: "1px solid #ddd",
-        background: "#fff",
-        cursor: "grab",
-        fontSize: 12,
-      }}
-    >
-      <div
-        style={{
-          marginBottom: 4,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 8,
-        }}
-      >
-        <span
-          style={{
-            fontWeight: 600,
-            fontSize: 12,
-          }}
-        >
-          {job.job_number || job.id}
-        </span>
-        <span
-          style={{
-            display: "inline-block",
-            padding: "2px 6px",
-            borderRadius: 999,
-            fontSize: 10,
-            background: typeColor,
-            color: "#fff",
-          }}
-        >
-          {type}
-        </span>
-      </div>
-      <div style={{ marginBottom: 2 }}>{customerName}</div>
-      <div style={{ marginBottom: 2, color: "#555" }}>
-        {job.site_name
-          ? `${job.site_name}, ${job.site_postcode || ""}`
-          : job.site_postcode || ""}
-      </div>
-      <div style={{ marginBottom: 2, color: "#777" }}>
-        Status: {formatJobStatus(job.job_status)}
-      </div>
-      <div style={{ marginBottom: 4, color: "#777" }}>
-        Payment: {job.payment_type || "Unknown"}
-      </div>
-      {etaLabel && (
-        <div style={{ marginBottom: 4, color: "#333", fontWeight: 600 }}>
-          ETA: {etaLabel}
-        </div>
-      )}
-      <a
-        href={`/app/jobs/${job.id}`}
-        style={{ fontSize: 11, textDecoration: "underline" }}
-      >
-        View / Edit job
-      </a>
-    </div>
-  );
 }
