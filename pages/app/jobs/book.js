@@ -414,11 +414,12 @@ export default function BookJobPage() {
         return;
       }
 
-      // Create initial DELIVER event
+            // Create initial delivery event in the job timeline
       const { error: eventError } = await supabase.rpc("create_job_event", {
         _subscriber_id: subscriberId,
         _job_id: inserted.id,
-        _event_type: "DELIVER",
+        // Use the clean event type; the DB trigger will normalise if needed
+        _event_type: "delivery",
         _scheduled_at: null,
         _completed_at: null,
         _notes: "Initial delivery booked",
