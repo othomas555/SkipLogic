@@ -1,89 +1,64 @@
-// pages/app/index.js
+// pages/index.js
 import Link from "next/link";
-import { useAuthProfile } from "../lib/useAuthProfile";
 
-export default function AppDashboardPage() {
-  const { checking, user, subscriberId, errorMsg } = useAuthProfile();
-
-  if (checking) {
-    return <p style={{ padding: "16px" }}>Loading...</p>;
-  }
-
-  if (!user) {
-    return (
-      <div style={{ padding: "16px" }}>
-        <p>You need to be logged in to view the app.</p>
-        <Link href="/login">Go to login</Link>
-      </div>
-    );
-  }
-
+export default function HomePage() {
   return (
-    <div style={{ padding: "24px" }}>
-      <h1 style={{ marginBottom: "8px" }}>SkipLogic Dashboard</h1>
-      <p style={{ marginBottom: "24px" }}>
-        Welcome back{user.email ? `, ${user.email}` : ""}.
-      </p>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-          gap: "16px",
-        }}
-      >
-        <DashboardCard
-          title="Jobs"
-          description="Create and manage skip jobs, deliveries, and collections."
-          href="/app/jobs"
-        />
-        <DashboardCard
-          title="Customers"
-          description="Add and edit your customer accounts."
-          href="/app/customers"
-        />
-        <DashboardCard
-          title="Drivers"
-          description="View drivers and assign work (future: driver app)."
-          href="/app/drivers"
-        />
-        <DashboardCard
-          title="Staff & Holidays"
-          description="Manage staff details and holidays."
-          href="/app/staff"
-        />
-        <DashboardCard
-          title="Skip Types & Pricing"
-          description="Configure skip sizes and pricing."
-          href="/app/skip-types"
-        />
-        <DashboardCard
-          title="Settings"
-          description="Subscriber / company settings (coming later)."
-          href="/app/settings"
-        />
-      </div>
-    </div>
-  );
-}
-
-function DashboardCard({ title, description, href }) {
-  return (
-    <Link
-      href={href}
+    <main
       style={{
-        border: "1px solid #ddd",
-        borderRadius: "8px",
-        padding: "16px",
-        textDecoration: "none",
-        color: "inherit",
-        display: "block",
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "24px",
+        fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+        background: "#f5f5f5",
       }}
     >
-      <h2 style={{ marginTop: 0, marginBottom: "8px" }}>{title}</h2>
-      <p style={{ margin: 0, fontSize: "0.9rem", color: "#555" }}>
-        {description}
-      </p>
-    </Link>
+      <div
+        style={{
+          maxWidth: "480px",
+          width: "100%",
+          background: "#fff",
+          borderRadius: "12px",
+          padding: "24px",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+          textAlign: "center",
+        }}
+      >
+        <h1 style={{ marginBottom: "8px" }}>SkipLogic</h1>
+        <p style={{ marginBottom: "24px", color: "#555" }}>
+          Simple software for skip &amp; waste operators.
+        </p>
+
+        <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+          <Link
+            href="/login"
+            style={{
+              padding: "10px 18px",
+              borderRadius: "999px",
+              background: "#2563eb",
+              color: "#fff",
+              textDecoration: "none",
+              fontWeight: 600,
+            }}
+          >
+            Log in
+          </Link>
+          <Link
+            href="/app"
+            style={{
+              padding: "10px 18px",
+              borderRadius: "999px",
+              border: "1px solid #2563eb",
+              color: "#2563eb",
+              textDecoration: "none",
+              fontWeight: 600,
+            }}
+          >
+            Go to app
+          </Link>
+        </div>
+      </div>
+    </main>
   );
 }
