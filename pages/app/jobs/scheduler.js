@@ -12,6 +12,9 @@ export default function SchedulerPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(true);
 
+  // 🔹 Map of driverId -> true if that driver is on holiday for selectedDate
+  const [holidaysByDriverId, setHolidaysByDriverId] = useState({});
+
   // Selected date for planning (the day you're looking at)
   const [selectedDate, setSelectedDate] = useState(() => {
     const today = new Date();
@@ -64,9 +67,10 @@ export default function SchedulerPage() {
       setCustomers(customerData || []);
 
       // 2) Drivers (active for this subscriber)
+      //    ⚠️ includes staff_id so we can map to staff_holidays.staff_id
       const { data: driverData, error: driversError } = await supabase
         .from("drivers")
-        .select("id, name, callsign, is_active")
+        .select("id, name, callsign, is_active, staff_id")
         .eq("subscriber_id", subscriberId)
         .eq("is_active", true)
         .order("name", { ascending: true });
@@ -77,9 +81,46 @@ export default function SchedulerPage() {
         setLoading(false);
         return;
       }
-      setDrivers(driverData || []);
+      const activeDrivers = driverData || [];
+      setDrivers(activeDrivers);
 
-      // 3) Jobs – deliveries OR collections on selectedDate
+      // 3) Holidays – approved and covering selectedDate
+      //    Uses staff_holidays.staff_id and maps to driver.staff_id
+      const dateStr = selectedDate; // already yyyy-mm-dd
+
+      try {
+        const { data: holidayRows, error: holidaysError } = await supabase
+          .from("staff_holidays")
+          .select("staff_id, start_date, end_date, status")
+          .eq("subscriber_id", subscriberId)
+          .eq("status", "approved")
+          .lte("start_date", dateStr)
+          .gte("end_date", dateStr);
+
+        if (holidaysError) {
+          console.error("Holidays error:", holidaysError);
+          setHolidaysByDriverId({});
+        } else {
+          const staffHolidayMap = {};
+          (holidayRows || []).forEach((h) => {
+            staffHolidayMap[h.staff_id] = true;
+          });
+
+          const driverHolidayMap = {};
+          activeDrivers.forEach((d) => {
+            if (d.staff_id && staffHolidayMap[d.staff_id]) {
+              driverHolidayMap[d.id] = true;
+            }
+          });
+
+          setHolidaysByDriverId(driverHolidayMap);
+        }
+      } catch (err) {
+        console.error("Unexpected holidays error:", err);
+        setHolidaysByDriverId({});
+      }
+
+      // 4) Jobs – deliveries OR collections on selectedDate
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
@@ -109,7 +150,7 @@ export default function SchedulerPage() {
         return;
       }
 
-     const list = jobData || [];
+      const list = jobData || [];
       setJobs(list);
 
       // Initialise column layout:
@@ -119,8 +160,6 @@ export default function SchedulerPage() {
       const initialLayout = {
         unassigned: [],
       };
-
-      const activeDrivers = driverData || [];
 
       activeDrivers.forEach((d) => {
         initialLayout[d.id] = [];
@@ -188,6 +227,10 @@ export default function SchedulerPage() {
     return jobs.find((j) => j.id === jobId) || null;
   }
 
+  function isDriverOnHoliday(driverId) {
+    return !!holidaysByDriverId[driverId];
+  }
+
   if (checking || loading || !columnLayout) {
     return (
       <main
@@ -225,16 +268,13 @@ export default function SchedulerPage() {
     e.dataTransfer.dropEffect = "move";
   }
 
-    async function moveJobToColumn(jobId, targetColumnId) {
+  async function moveJobToColumn(jobId, targetColumnId) {
     // 1) Update UI immediately
     setColumnLayout((prev) => {
       if (!prev) return prev;
       const next = { ...prev };
 
-      const allColumnIds = [
-        "unassigned",
-        ...drivers.map((d) => d.id),
-      ];
+      const allColumnIds = ["unassigned", ...drivers.map((d) => d.id)];
 
       // remove job from all columns
       allColumnIds.forEach((colId) => {
@@ -270,7 +310,6 @@ export default function SchedulerPage() {
     }
   }
 
-
   function handleDropOnUnassigned(e) {
     e.preventDefault();
     const jobId = e.dataTransfer.getData("text/plain");
@@ -283,7 +322,7 @@ export default function SchedulerPage() {
     const jobId = e.dataTransfer.getData("text/plain");
     if (!jobId) return;
     moveJobToColumn(jobId, driverId);
-    // 🔜 Later: persist assigned_driver_id, run info to Supabase
+    // 🔜 Later: persist run info to Supabase
   }
 
   // Add a "Return to yard" break (run separator) at the end of a driver column
@@ -420,7 +459,8 @@ export default function SchedulerPage() {
             style={{
               padding: 8,
               borderRadius: 4,
-              border: "1px solid #ccc",
+              border: "1px solid " +
+                "#ccc",
             }}
           />
         </div>
@@ -430,6 +470,24 @@ export default function SchedulerPage() {
         <p style={{ color: "red", marginBottom: 16 }}>
           {authError || errorMsg}
         </p>
+      )}
+
+      {/* 🔹 Banner if any drivers are on holiday for this day */}
+      {Object.keys(holidaysByDriverId).length > 0 && (
+        <div
+          style={{
+            backgroundColor: "#fff8e1",
+            border: "1px solid #ffe082",
+            padding: "8px 12px",
+            borderRadius: 4,
+            marginBottom: 12,
+            fontSize: 13,
+          }}
+        >
+          <strong>Heads up:</strong> one or more drivers are on holiday for{" "}
+          {selectedDate}. They’re shown in red and cannot be assigned jobs for
+          this day.
+        </div>
       )}
 
       {jobsForDay.length === 0 ? (
@@ -570,18 +628,26 @@ export default function SchedulerPage() {
               drivers.map((driver) => {
                 const items = itemsForDriver(driver.id);
                 const driverLabel = driver.callsign || driver.name;
+                const onHoliday = isDriverOnHoliday(driver.id);
 
                 return (
                   <div
                     key={driver.id}
                     onDragOver={handleDragOver}
-                    onDrop={(e) => handleDropOnDriver(e, driver.id)}
+                    onDrop={(e) => {
+                      if (onHoliday) {
+                        e.preventDefault();
+                        return;
+                      }
+                      handleDropOnDriver(e, driver.id);
+                    }}
                     style={{
                       minWidth: 260,
                       border: "1px solid #ddd",
                       borderRadius: 8,
                       padding: 8,
-                      background: "#fff",
+                      background: onHoliday ? "#fff4f4" : "#fff",
+                      opacity: onHoliday ? 0.5 : 1,
                     }}
                   >
                     <div
@@ -601,25 +667,46 @@ export default function SchedulerPage() {
                       >
                         {driverLabel}
                       </h2>
+                      {onHoliday && (
+                        <span
+                          style={{
+                            backgroundColor: "#ffcccc",
+                            color: "#b00020",
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            fontSize: 11,
+                            fontWeight: 600,
+                          }}
+                        >
+                          On holiday
+                        </span>
+                      )}
                     </div>
                     <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
-                      Drag jobs here to assign to this driver.
-                      <br />
-                      Add breaks to indicate returns to yard.
+                      {onHoliday
+                        ? "This driver is on holiday today."
+                        : "Drag jobs here to assign to this driver."}
+                      {!onHoliday && (
+                        <>
+                          <br />
+                          Add breaks to indicate returns to yard.
+                        </>
+                      )}
                     </p>
 
                     <button
                       type="button"
                       onClick={() => handleAddBreak(driver.id)}
+                      disabled={onHoliday}
                       style={{
                         marginTop: 4,
                         marginBottom: 8,
                         padding: "4px 8px",
                         borderRadius: 4,
                         border: "1px solid #999",
-                        background: "#f5f5f5",
+                        background: onHoliday ? "#eee" : "#f5f5f5",
                         fontSize: 11,
-                        cursor: "pointer",
+                        cursor: onHoliday ? "default" : "pointer",
                       }}
                     >
                       + Add yard break (new run)
