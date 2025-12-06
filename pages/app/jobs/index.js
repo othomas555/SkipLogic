@@ -451,7 +451,7 @@ const thStyle = {
 };
 
 const tdStyle = {
-  borderBottom: "1px solid "#eee",
+  borderBottom: "1px solid #eee",
   padding: "6px",
   fontSize: 12,
 };
