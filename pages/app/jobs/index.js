@@ -13,45 +13,48 @@ export default function JobsPage() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
+  const [actionLoadingKey, setActionLoadingKey] = useState(null); // jobId:eventType
 
-  useEffect(() => {
-    async function loadData() {
-      if (checking) return;
+  // -------- Load jobs + customers ----------
+  async function loadData() {
+    if (checking) return;
 
-      if (!user) {
-        setLoading(false);
-        return;
-      }
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
-      if (!subscriberId) {
-        setErrorMsg("No subscriber found for this user.");
-        setLoading(false);
-        return;
-      }
+    if (!subscriberId) {
+      setErrorMsg("No subscriber found for this user.");
+      setLoading(false);
+      return;
+    }
 
-      setErrorMsg("");
-      setLoading(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+    setLoading(true);
 
-      // 1) Load customers for name lookup
-      const { data: customerData, error: customersError } = await supabase
-        .from("customers")
-        .select("id, first_name, last_name, company_name")
-        .eq("subscriber_id", subscriberId)
-        .order("company_name", { ascending: true });
+    // 1) Load customers for name lookup
+    const { data: customerData, error: customersError } = await supabase
+      .from("customers")
+      .select("id, first_name, last_name, company_name")
+      .eq("subscriber_id", subscriberId)
+      .order("company_name", { ascending: true });
 
-      if (customersError) {
-        console.error("Customers error:", customersError);
-        setErrorMsg("Could not load customers.");
-        setLoading(false);
-        return;
-      }
-      setCustomers(customerData || []);
+    if (customersError) {
+      console.error("Customers error:", customersError);
+      setErrorMsg("Could not load customers.");
+      setLoading(false);
+      return;
+    }
+    setCustomers(customerData || []);
 
-      // 2) Load jobs for this subscriber
-      const { data: jobData, error: jobsError } = await supabase
-        .from("jobs")
-        .select(
-          `
+    // 2) Load jobs for this subscriber
+    const { data: jobData, error: jobsError } = await supabase
+      .from("jobs")
+      .select(
+        `
           id,
           job_number,
           customer_id,
@@ -63,21 +66,22 @@ export default function JobsPage() {
           payment_type,
           created_at
         `
-        )
-        .eq("subscriber_id", subscriberId)
-        .order("created_at", { ascending: false });
+      )
+      .eq("subscriber_id", subscriberId)
+      .order("created_at", { ascending: false });
 
-      if (jobsError) {
-        console.error("Jobs error:", jobsError);
-        setErrorMsg("Could not load jobs.");
-        setLoading(false);
-        return;
-      }
-
-      setJobs(jobData || []);
+    if (jobsError) {
+      console.error("Jobs error:", jobsError);
+      setErrorMsg("Could not load jobs.");
       setLoading(false);
+      return;
     }
 
+    setJobs(jobData || []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
     loadData();
   }, [checking, user, subscriberId]);
 
@@ -104,6 +108,52 @@ export default function JobsPage() {
       default:
         return status || "Unknown";
     }
+  }
+
+  function isActionLoading(jobId, eventType) {
+    return actionLoadingKey === `${jobId}:${eventType}`;
+  }
+
+  // --------- Create job event helper ----------
+  async function createJobEvent(jobId, eventType) {
+    if (!subscriberId) {
+      setErrorMsg("No subscriber found for this user.");
+      return;
+    }
+
+    setErrorMsg("");
+    setSuccessMsg("");
+    setActionLoadingKey(`${jobId}:${eventType}`);
+
+    // ⚠️ IMPORTANT:
+    // These argument names (_job_id, _subscriber_id, etc.) MUST match
+    // your Postgres function definition for create_job_event.
+    // If your function uses different names, just change them here.
+    const { error } = await supabase.rpc("create_job_event", {
+      _job_id: jobId,
+      _subscriber_id: subscriberId,
+      _event_type: eventType,
+      _event_time: new Date().toISOString(),
+      _scheduled_time: null,
+      _notes: null,
+    });
+
+    setActionLoadingKey(null);
+
+    if (error) {
+      console.error("create_job_event error:", error);
+      setErrorMsg(
+        "Could not update job: " + (error.message || "Unknown error")
+      );
+      return;
+    }
+
+    // Nice friendly message
+    const label = eventType.replace(/_/g, " ");
+    setSuccessMsg(`Job updated: ${label}`);
+
+    // Refresh list so status / dates update
+    await loadData();
   }
 
   if (checking || loading) {
@@ -190,7 +240,6 @@ export default function JobsPage() {
           >
             ← Back to dashboard
           </button>
-          {/* later you can wire this to the booking form */}
           <button
             type="button"
             onClick={() => router.push("/app/jobs/book")}
@@ -209,10 +258,17 @@ export default function JobsPage() {
         </div>
       </header>
 
-      {(authError || errorMsg) && (
-        <p style={{ color: "red", marginBottom: 16 }}>
-          {authError || errorMsg}
-        </p>
+      {(authError || errorMsg || successMsg) && (
+        <div style={{ marginBottom: 16 }}>
+          {authError || errorMsg ? (
+            <p style={{ color: "red", margin: 0 }}>
+              {authError || errorMsg}
+            </p>
+          ) : null}
+          {successMsg ? (
+            <p style={{ color: "green", margin: 0 }}>{successMsg}</p>
+          ) : null}
+        </div>
       )}
 
       {jobs.length === 0 ? (
@@ -255,12 +311,126 @@ export default function JobsPage() {
                   </td>
                   <td style={tdStyle}>{job.payment_type || ""}</td>
                   <td style={tdStyle}>
-                    <a
-                      href={`/app/jobs/${job.id}`}
-                      style={{ fontSize: 12, textDecoration: "underline" }}
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
                     >
-                      View / Edit
-                    </a>
+                      <a
+                        href={`/app/jobs/${job.id}`}
+                        style={{
+                          fontSize: 12,
+                          textDecoration: "underline",
+                          marginBottom: 4,
+                        }}
+                      >
+                        View / Edit
+                      </a>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 4,
+                        }}
+                      >
+                        {/* Mark Delivered: when booked */}
+                        {job.job_status === "booked" && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              createJobEvent(job.id, "delivered")
+                            }
+                            disabled={isActionLoading(job.id, "delivered")}
+                            style={smallPrimaryButton}
+                          >
+                            {isActionLoading(job.id, "delivered")
+                              ? "Saving…"
+                              : "Mark Delivered"}
+                          </button>
+                        )}
+
+                        {/* On hire: can request collection, exchange, or mark collected */}
+                        {job.job_status === "on_hire" && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                createJobEvent(
+                                  job.id,
+                                  "customer_requested_collection"
+                                )
+                              }
+                              disabled={isActionLoading(
+                                job.id,
+                                "customer_requested_collection"
+                              )}
+                              style={smallSecondaryButton}
+                            >
+                              {isActionLoading(
+                                job.id,
+                                "customer_requested_collection"
+                              )
+                                ? "Saving…"
+                                : "Customer Requested Collection"}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                createJobEvent(
+                                  job.id,
+                                  "customer_requested_exchange"
+                                )
+                              }
+                              disabled={isActionLoading(
+                                job.id,
+                                "customer_requested_exchange"
+                              )}
+                              style={smallSecondaryButton}
+                            >
+                              {isActionLoading(
+                                job.id,
+                                "customer_requested_exchange"
+                              )
+                                ? "Saving…"
+                                : "Customer Requested Exchange"}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                createJobEvent(job.id, "collected")
+                              }
+                              disabled={isActionLoading(job.id, "collected")}
+                              style={smallPrimaryButton}
+                            >
+                              {isActionLoading(job.id, "collected")
+                                ? "Saving…"
+                                : "Mark Collected"}
+                            </button>
+                          </>
+                        )}
+
+                        {/* Awaiting collection: can mark collected */}
+                        {job.job_status === "awaiting_collection" && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              createJobEvent(job.id, "collected")
+                            }
+                            disabled={isActionLoading(job.id, "collected")}
+                            style={smallPrimaryButton}
+                          >
+                            {isActionLoading(job.id, "collected")
+                              ? "Saving…"
+                              : "Mark Collected"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -281,7 +451,30 @@ const thStyle = {
 };
 
 const tdStyle = {
-  borderBottom: "1px solid #eee",
+  borderBottom: "1px solid "#eee",
   padding: "6px",
   fontSize: 12,
+};
+
+const baseSmallButton = {
+  padding: "4px 8px",
+  fontSize: 11,
+  borderRadius: 4,
+  border: "1px solid transparent",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+const smallPrimaryButton = {
+  ...baseSmallButton,
+  background: "#0070f3",
+  color: "#fff",
+  borderColor: "#0070f3",
+};
+
+const smallSecondaryButton = {
+  ...baseSmallButton,
+  background: "#f5f5f5",
+  color: "#333",
+  borderColor: "#ccc",
 };
