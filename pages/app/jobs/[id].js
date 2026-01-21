@@ -60,7 +60,6 @@ export default function JobDetailPage() {
   const [plannedDelivery, setPlannedDelivery] = useState(""); // jobs.scheduled_date
   const [plannedCollection, setPlannedCollection] = useState(""); // jobs.collection_date
   const [noteText, setNoteText] = useState("");
-  const [extensionDays, setExtensionDays] = useState(0);
 
   async function loadAll() {
     if (checking) return;
@@ -69,7 +68,6 @@ export default function JobDetailPage() {
     setLoading(true);
     setErrorMsg("");
 
-    // Load job
     const { data: j, error: jErr } = await supabase
       .from("jobs")
       .select(
@@ -106,7 +104,6 @@ export default function JobDetailPage() {
       return;
     }
 
-    // Load customer (for term exemption/override + display name)
     const { data: c, error: cErr } = await supabase
       .from("customers")
       .select("id, first_name, last_name, company_name, term_hire_exempt, term_hire_days_override")
@@ -114,22 +111,15 @@ export default function JobDetailPage() {
       .eq("subscriber_id", subscriberId)
       .maybeSingle();
 
-    if (cErr) {
-      console.error(cErr);
-      // still allow page to load without customer
-    }
+    if (cErr) console.error(cErr);
 
-    // Load subscriber settings
     const { data: s, error: sErr } = await supabase
       .from("subscribers")
       .select("id, term_hire_days, term_hire_reminder_days_before")
       .eq("id", subscriberId)
       .maybeSingle();
 
-    if (sErr) {
-      console.error(sErr);
-      // still allow page to load without settings
-    }
+    if (sErr) console.error(sErr);
 
     setJob(j);
     setCustomer(c || null);
@@ -139,7 +129,6 @@ export default function JobDetailPage() {
     setSitePostcode(j.site_postcode || "");
     setPlannedDelivery(j.scheduled_date || "");
     setPlannedCollection(j.collection_date || "");
-    setExtensionDays(toInt(j.hire_extension_days, 0));
 
     setLoading(false);
   }
@@ -161,13 +150,12 @@ export default function JobDetailPage() {
     const override = customer?.term_hire_days_override;
     const exempt = !!customer?.term_hire_exempt;
 
-    if (exempt) return null; // no term applies
+    if (exempt) return null;
     if (override != null && String(override) !== "") return toInt(override, subDefault);
     return subDefault;
   }, [subscriberSettings, customer]);
 
   const reminderDay = useMemo(() => {
-    // For term 14 and reminder_before 4 -> reminder on day 10 after delivery actual.
     const before = toInt(subscriberSettings?.term_hire_reminder_days_before, 4);
     const term = termHireDays;
     if (!term) return null;
@@ -175,7 +163,6 @@ export default function JobDetailPage() {
   }, [subscriberSettings, termHireDays]);
 
   const deliveryAnchor = useMemo(() => {
-    // Use actual delivery if present; otherwise planned delivery as a fallback for visibility.
     return job?.delivery_actual_date || job?.scheduled_date || null;
   }, [job]);
 
@@ -199,6 +186,14 @@ export default function JobDetailPage() {
     if (daysRemaining === 0) return "Due today";
     return `${daysRemaining} day(s) remaining`;
   }, [termHireDays, deliveryAnchor, daysRemaining]);
+
+  // Status helpers (YOUR statuses)
+  const status = job?.job_status || "";
+  const canMarkDelivered = status === "booked";
+  const canUndoDelivered = status === "delivered" || !!job?.delivery_actual_date;
+  const canRequestCollection = status === "delivered";
+  const canMarkCollected = status === "delivered" || status === "awaiting_collection";
+  const canUndoCollected = status === "collected" || !!job?.collection_actual_date;
 
   async function saveJobEdits() {
     if (!job?.id) return;
@@ -312,7 +307,6 @@ export default function JobDetailPage() {
       return;
     }
 
-    // Log an event for audit trail
     const { error: eErr } = await supabase.rpc("create_job_event", {
       _job_id: job.id,
       _subscriber_id: subscriberId,
@@ -347,9 +341,7 @@ export default function JobDetailPage() {
       <main style={pageStyle}>
         <h1>Job</h1>
         <p>You must be signed in.</p>
-        <button onClick={() => router.push("/login")} style={btnSecondary}>
-          Go to login
-        </button>
+        <button onClick={() => router.push("/login")} style={btnSecondary}>Go to login</button>
       </main>
     );
   }
@@ -358,7 +350,7 @@ export default function JobDetailPage() {
     <main style={pageStyle}>
       <header style={headerStyle}>
         <div>
-          <Link href="/app/jobs" style={linkStyle}>← Back to Jobs</Link>
+          <Link href="/app/jobs" style={linkStyle}>← Back to jobs list</Link>
           <h1 style={{ margin: "10px 0 6px" }}>{job.job_number ? `Job ${job.job_number}` : "Job"}</h1>
           <div style={{ color: "#555", fontSize: 13 }}>
             <div><b>Status:</b> {job.job_status || "—"}</div>
@@ -376,12 +368,8 @@ export default function JobDetailPage() {
 
       {(authError || errorMsg || successMsg) && (
         <div style={{ marginBottom: 14 }}>
-          {(authError || errorMsg) ? (
-            <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p>
-          ) : null}
-          {successMsg ? (
-            <p style={{ color: "green", margin: 0 }}>{successMsg}</p>
-          ) : null}
+          {(authError || errorMsg) ? <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p> : null}
+          {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
         </div>
       )}
 
@@ -412,7 +400,6 @@ export default function JobDetailPage() {
 
         <section style={cardStyle}>
           <h2 style={h2Style}>Hire terms</h2>
-
           <div style={{ fontSize: 13, color: "#333" }}>
             <div style={{ marginBottom: 6 }}><b>{hireStateLabel}</b></div>
 
@@ -434,21 +421,10 @@ export default function JobDetailPage() {
                 </p>
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    style={btnSecondary}
-                    disabled={acting === "extend_7"}
-                    onClick={() => extendHire(7)}
-                    title="Adds 7 days to hire extension"
-                  >
+                  <button style={btnSecondary} disabled={acting === "extend_7"} onClick={() => extendHire(7)}>
                     {acting === "extend_7" ? "Working…" : "Extend +7 days"}
                   </button>
-
-                  <button
-                    style={btnSecondary}
-                    disabled={acting === "extend_14"}
-                    onClick={() => extendHire(14)}
-                    title="Adds 14 days to hire extension"
-                  >
+                  <button style={btnSecondary} disabled={acting === "extend_14"} onClick={() => extendHire(14)}>
                     {acting === "extend_14" ? "Working…" : "Extend +14 days"}
                   </button>
                 </div>
@@ -462,37 +438,33 @@ export default function JobDetailPage() {
         <h2 style={h2Style}>Actions</h2>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {job.job_status === "booked" && (
+          {canMarkDelivered && (
             <button style={btnPrimary} disabled={acting === "delivered"} onClick={() => runAction("delivered")}>
               {acting === "delivered" ? "Working…" : "Mark Delivered"}
             </button>
           )}
 
-          {job.job_status === "on_hire" && (
+          {canUndoDelivered && (
             <button style={btnDanger} disabled={acting === "undo_delivered"} onClick={() => runAction("undo_delivered")}>
               {acting === "undo_delivered" ? "Working…" : "Undo Delivered"}
             </button>
           )}
 
-          {(job.job_status === "on_hire" || job.job_status === "awaiting_collection") && (
+          {canRequestCollection && (
+            <button style={btnSecondary} disabled={acting === "customer_requested_collection"} onClick={() => runAction("customer_requested_collection")}>
+              {acting === "customer_requested_collection" ? "Working…" : "Customer Requested Collection"}
+            </button>
+          )}
+
+          {canMarkCollected && (
             <button style={btnPrimary} disabled={acting === "collected"} onClick={() => runAction("collected")}>
               {acting === "collected" ? "Working…" : "Mark Collected"}
             </button>
           )}
 
-          {job.job_status === "collected" && (
+          {canUndoCollected && (
             <button style={btnDanger} disabled={acting === "undo_collected"} onClick={() => runAction("undo_collected")}>
               {acting === "undo_collected" ? "Working…" : "Undo Collected"}
-            </button>
-          )}
-
-          {(job.job_status === "on_hire") && (
-            <button
-              style={btnSecondary}
-              disabled={acting === "customer_requested_collection"}
-              onClick={() => runAction("customer_requested_collection")}
-            >
-              {acting === "customer_requested_collection" ? "Working…" : "Customer Requested Collection"}
             </button>
           )}
         </div>
