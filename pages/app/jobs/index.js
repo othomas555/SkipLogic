@@ -6,18 +6,18 @@ import { useAuthProfile } from "../../../lib/useAuthProfile";
 
 export default function JobsPage() {
   const router = useRouter();
-  const { checking, user, subscriberId, errorMsg: authError } =
-    useAuthProfile();
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
   const [customers, setCustomers] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(true);
+
+  const [loading, setLoading] = useState(true);      // only for first load
+  const [refreshing, setRefreshing] = useState(false); // for background refresh
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [actionLoadingKey, setActionLoadingKey] = useState(null); // jobId:eventType
 
-  // -------- Load jobs + customers ----------
-  async function loadData() {
+  async function loadData({ initial = false } = {}) {
     if (checking) return;
 
     if (!user) {
@@ -31,11 +31,10 @@ export default function JobsPage() {
       return;
     }
 
-    setErrorMsg("");
-    setSuccessMsg("");
-    setLoading(true);
+    if (initial) setLoading(true);
+    else setRefreshing(true);
 
-    // 1) Load customers for name lookup
+    // Customers
     const { data: customerData, error: customersError } = await supabase
       .from("customers")
       .select("id, first_name, last_name, company_name")
@@ -46,11 +45,12 @@ export default function JobsPage() {
       console.error("Customers error:", customersError);
       setErrorMsg("Could not load customers.");
       setLoading(false);
+      setRefreshing(false);
       return;
     }
     setCustomers(customerData || []);
 
-    // 2) Load jobs for this subscriber
+    // Jobs
     const { data: jobData, error: jobsError } = await supabase
       .from("jobs")
       .select(
@@ -74,24 +74,25 @@ export default function JobsPage() {
       console.error("Jobs error:", jobsError);
       setErrorMsg("Could not load jobs.");
       setLoading(false);
+      setRefreshing(false);
       return;
     }
 
     setJobs(jobData || []);
     setLoading(false);
+    setRefreshing(false);
   }
 
   useEffect(() => {
-    loadData();
+    loadData({ initial: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, user, subscriberId]);
 
   function findCustomerNameById(customerId) {
     const c = customers.find((cust) => cust.id === customerId);
     if (!c) return "Unknown customer";
     const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
-    if (c.company_name) {
-      return `${c.company_name} – ${baseName || "Unknown contact"}`;
-    }
+    if (c.company_name) return `${c.company_name} – ${baseName || "Unknown contact"}`;
     return baseName || "Unknown customer";
   }
 
@@ -114,21 +115,21 @@ export default function JobsPage() {
     return actionLoadingKey === `${jobId}:${eventType}`;
   }
 
-  // --------- Create job event helper ----------
-  async function createJobEvent(jobId, eventType) {
+  async function createJobEvent(jobId, eventType, { confirmText } = {}) {
     if (!subscriberId) {
       setErrorMsg("No subscriber found for this user.");
       return;
+    }
+
+    if (confirmText) {
+      const ok = window.confirm(confirmText);
+      if (!ok) return;
     }
 
     setErrorMsg("");
     setSuccessMsg("");
     setActionLoadingKey(`${jobId}:${eventType}`);
 
-    // ⚠️ IMPORTANT:
-    // These argument names (_job_id, _subscriber_id, etc.) MUST match
-    // your Postgres function definition for create_job_event.
-    // If your function uses different names, just change them here.
     const { error } = await supabase.rpc("create_job_event", {
       _job_id: jobId,
       _subscriber_id: subscriberId,
@@ -142,31 +143,20 @@ export default function JobsPage() {
 
     if (error) {
       console.error("create_job_event error:", error);
-      setErrorMsg(
-        "Could not update job: " + (error.message || "Unknown error")
-      );
+      setErrorMsg("Could not update job: " + (error.message || "Unknown error"));
       return;
     }
 
-    // Nice friendly message
-    const label = eventType.replace(/_/g, " ");
-    setSuccessMsg(`Job updated: ${label}`);
+    // Background refresh without flicker
+    await loadData({ initial: false });
 
-    // Refresh list so status / dates update
-    await loadData();
+    // Keep success message visible
+    setSuccessMsg(`Updated job: ${eventType.replace(/_/g, " ")}`);
   }
 
   if (checking || loading) {
     return (
-      <main
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
+      <main style={centerStyle}>
         <p>Loading jobs…</p>
       </main>
     );
@@ -174,27 +164,10 @@ export default function JobsPage() {
 
   if (!user) {
     return (
-      <main
-        style={{
-          minHeight: "100vh",
-          padding: 24,
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
+      <main style={{ minHeight: "100vh", padding: 24, fontFamily: "system-ui, sans-serif" }}>
         <h1>Jobs</h1>
         <p>You must be signed in to view jobs.</p>
-        <button
-          type="button"
-          onClick={() => router.push("/login")}
-          style={{
-            marginTop: 8,
-            padding: "8px 12px",
-            borderRadius: 4,
-            border: "1px solid #ccc",
-            background: "#f5f5f5",
-            cursor: "pointer",
-          }}
-        >
+        <button type="button" onClick={() => router.push("/login")} style={btnSecondary}>
           Go to login
         </button>
       </main>
@@ -202,57 +175,20 @@ export default function JobsPage() {
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        padding: 24,
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      <header
-        style={{
-          marginBottom: 16,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
+    <main style={{ minHeight: "100vh", padding: 24, fontFamily: "system-ui, sans-serif" }}>
+      <header style={headerStyle}>
         <div>
           <h1 style={{ fontSize: 24, marginBottom: 4 }}>Jobs</h1>
           <p style={{ fontSize: 14, color: "#555", margin: 0 }}>
             Signed in as {user.email}
+            {refreshing ? " (refreshing…)" : ""}
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button
-            type="button"
-            onClick={() => router.push("/app")}
-            style={{
-              padding: "8px 12px",
-              borderRadius: 4,
-              border: "1px solid #ccc",
-              background: "#f5f5f5",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
-          >
+          <button type="button" onClick={() => router.push("/app")} style={btnSecondary}>
             ← Back to dashboard
           </button>
-          <button
-            type="button"
-            onClick={() => router.push("/app/jobs/book")}
-            style={{
-              padding: "8px 12px",
-              borderRadius: 4,
-              border: "none",
-              background: "#0070f3",
-              color: "#fff",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
-          >
+          <button type="button" onClick={() => router.push("/app/jobs/book")} style={btnPrimary}>
             + Book new job
           </button>
         </div>
@@ -260,14 +196,10 @@ export default function JobsPage() {
 
       {(authError || errorMsg || successMsg) && (
         <div style={{ marginBottom: 16 }}>
-          {authError || errorMsg ? (
-            <p style={{ color: "red", margin: 0 }}>
-              {authError || errorMsg}
-            </p>
+          {(authError || errorMsg) ? (
+            <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p>
           ) : null}
-          {successMsg ? (
-            <p style={{ color: "green", margin: 0 }}>{successMsg}</p>
-          ) : null}
+          {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
         </div>
       )}
 
@@ -275,13 +207,7 @@ export default function JobsPage() {
         <p>No jobs found yet.</p>
       ) : (
         <div style={{ overflowX: "auto" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              minWidth: 900,
-            }}
-          >
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead>
               <tr>
                 <th style={thStyle}>Job #</th>
@@ -298,135 +224,48 @@ export default function JobsPage() {
               {jobs.map((job) => (
                 <tr key={job.id}>
                   <td style={tdStyle}>{job.job_number || job.id}</td>
-                  <td style={tdStyle}>
-                    {findCustomerNameById(job.customer_id)}
-                  </td>
+                  <td style={tdStyle}>{findCustomerNameById(job.customer_id)}</td>
                   <td style={tdStyle}>{formatJobStatus(job.job_status)}</td>
                   <td style={tdStyle}>{job.scheduled_date || ""}</td>
                   <td style={tdStyle}>{job.collection_date || ""}</td>
                   <td style={tdStyle}>
-                    {job.site_name
-                      ? `${job.site_name}, ${job.site_postcode || ""}`
-                      : job.site_postcode || ""}
+                    {job.site_name ? `${job.site_name}, ${job.site_postcode || ""}` : job.site_postcode || ""}
                   </td>
                   <td style={tdStyle}>{job.payment_type || ""}</td>
                   <td style={tdStyle}>
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 4,
-                      }}
-                    >
-                      <a
-                        href={`/app/jobs/${job.id}`}
-                        style={{
-                          fontSize: 12,
-                          textDecoration: "underline",
-                          marginBottom: 4,
-                        }}
-                      >
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <a href={`/app/jobs/${job.id}`} style={{ fontSize: 12, textDecoration: "underline" }}>
                         View / Edit
                       </a>
 
-                      <div
-                        style={{
-                          display: "flex",
-                          flexWrap: "wrap",
-                          gap: 4,
-                        }}
-                      >
-                        {/* Mark Delivered: when booked */}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                         {job.job_status === "booked" && (
                           <button
                             type="button"
                             onClick={() =>
-                              createJobEvent(job.id, "delivered")
+                              createJobEvent(job.id, "delivered", {
+                                confirmText: `Mark job ${job.job_number || ""} as DELIVERED?`,
+                              })
                             }
                             disabled={isActionLoading(job.id, "delivered")}
                             style={smallPrimaryButton}
                           >
-                            {isActionLoading(job.id, "delivered")
-                              ? "Saving…"
-                              : "Mark Delivered"}
+                            {isActionLoading(job.id, "delivered") ? "Saving…" : "Mark Delivered"}
                           </button>
                         )}
 
-                        {/* On hire: can request collection, exchange, or mark collected */}
                         {job.job_status === "on_hire" && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                createJobEvent(
-                                  job.id,
-                                  "customer_requested_collection"
-                                )
-                              }
-                              disabled={isActionLoading(
-                                job.id,
-                                "customer_requested_collection"
-                              )}
-                              style={smallSecondaryButton}
-                            >
-                              {isActionLoading(
-                                job.id,
-                                "customer_requested_collection"
-                              )
-                                ? "Saving…"
-                                : "Customer Requested Collection"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() =>
-                                createJobEvent(
-                                  job.id,
-                                  "customer_requested_exchange"
-                                )
-                              }
-                              disabled={isActionLoading(
-                                job.id,
-                                "customer_requested_exchange"
-                              )}
-                              style={smallSecondaryButton}
-                            >
-                              {isActionLoading(
-                                job.id,
-                                "customer_requested_exchange"
-                              )
-                                ? "Saving…"
-                                : "Customer Requested Exchange"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() =>
-                                createJobEvent(job.id, "collected")
-                              }
-                              disabled={isActionLoading(job.id, "collected")}
-                              style={smallPrimaryButton}
-                            >
-                              {isActionLoading(job.id, "collected")
-                                ? "Saving…"
-                                : "Mark Collected"}
-                            </button>
-                          </>
-                        )}
-
-                        {/* Awaiting collection: can mark collected */}
-                        {job.job_status === "awaiting_collection" && (
                           <button
                             type="button"
                             onClick={() =>
-                              createJobEvent(job.id, "collected")
+                              createJobEvent(job.id, "undo_delivered", {
+                                confirmText: `Undo delivered (back to BOOKED) for job ${job.job_number || ""}?`,
+                              })
                             }
-                            disabled={isActionLoading(job.id, "collected")}
-                            style={smallPrimaryButton}
+                            disabled={isActionLoading(job.id, "undo_delivered")}
+                            style={smallDangerButton}
                           >
-                            {isActionLoading(job.id, "collected")
-                              ? "Saving…"
-                              : "Mark Collected"}
+                            {isActionLoading(job.id, "undo_delivered") ? "Saving…" : "Undo Delivered"}
                           </button>
                         )}
                       </div>
@@ -442,6 +281,23 @@ export default function JobsPage() {
   );
 }
 
+const centerStyle = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontFamily: "system-ui, sans-serif",
+};
+
+const headerStyle = {
+  marginBottom: 16,
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 12,
+  flexWrap: "wrap",
+};
+
 const thStyle = {
   textAlign: "left",
   borderBottom: "1px solid #ddd",
@@ -454,6 +310,25 @@ const tdStyle = {
   borderBottom: "1px solid #eee",
   padding: "6px",
   fontSize: 12,
+};
+
+const btnPrimary = {
+  padding: "8px 12px",
+  borderRadius: 4,
+  border: "none",
+  background: "#0070f3",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnSecondary = {
+  padding: "8px 12px",
+  borderRadius: 4,
+  border: "1px solid #ccc",
+  background: "#f5f5f5",
+  cursor: "pointer",
+  fontSize: 13,
 };
 
 const baseSmallButton = {
@@ -472,9 +347,9 @@ const smallPrimaryButton = {
   borderColor: "#0070f3",
 };
 
-const smallSecondaryButton = {
+const smallDangerButton = {
   ...baseSmallButton,
-  background: "#f5f5f5",
-  color: "#333",
-  borderColor: "#ccc",
+  background: "#fff5f5",
+  color: "#8a1f1f",
+  borderColor: "#f0b4b4",
 };
