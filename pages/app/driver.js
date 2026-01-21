@@ -10,13 +10,6 @@ function todayYMD() {
   return d.toISOString().slice(0, 10);
 }
 
-function fmtTime(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
 function jobTypeForDay(job, selectedDate) {
   const isDelivery = job.scheduled_date === selectedDate;
   const isCollection = job.collection_date === selectedDate;
@@ -33,26 +26,25 @@ function typeColor(type) {
   return "#595959";
 }
 
-// Keep this aligned with your scheduler “actionable” rules
+// Keep aligned with scheduler “actionable” rules
 function isActionableForDay(job, selectedDate) {
   const type = jobTypeForDay(job, selectedDate);
   const status = String(job.job_status || "").toLowerCase();
 
-  // collection tasks: must NOT already be collected
+  // Hide non-day jobs
+  if (type === "Other") return false;
+
+  // Collection tasks must NOT already be collected
   if (type === "Collection" || type === "Delivery & Collection") {
     if (status === "collected") return false;
-    // If you use a separate actual date field and it exists, it also blocks
-    if (job.collection_actual_date) return false;
+    if (job.collection_actual_date) return false; // if column exists
   }
 
-  // delivery tasks: must NOT already be delivered/collected
+  // Delivery tasks must NOT already be delivered/collected
   if (type === "Delivery" || type === "Delivery & Collection") {
     if (status === "delivered" || status === "collected") return false;
-    if (job.delivery_actual_date) return false;
+    if (job.delivery_actual_date) return false; // if column exists
   }
-
-  // For “other” we don’t show it on driver page
-  if (type === "Other") return false;
 
   return true;
 }
@@ -68,11 +60,12 @@ export default function DriverDayPage() {
 
   const [drivers, setDrivers] = useState([]);
   const [selectedDriverId, setSelectedDriverId] = useState("");
+  const [driverLocked, setDriverLocked] = useState(false);
 
   const [skipTypeNameById, setSkipTypeNameById] = useState({});
   const [jobs, setJobs] = useState([]);
 
-  // Load drivers + skip types once subscriber is known
+  // Load drivers + skip types
   useEffect(() => {
     if (checking) return;
     if (!subscriberId) return;
@@ -93,31 +86,36 @@ export default function DriverDayPage() {
         console.error(dErr);
         setErrorMsg("Could not load drivers.");
         setDrivers([]);
+        setSelectedDriverId("");
+        setDriverLocked(false);
       } else {
         const list = Array.isArray(driverRows) ? driverRows : [];
         setDrivers(list);
 
-        // Try auto-pick:
-        // 1) localStorage
-        // 2) match by email
-        let chosen = "";
-        try {
-          chosen = localStorage.getItem("skiplogic_driver_selected_id") || "";
-        } catch {}
+        const userEmail = String(user?.email || "").trim().toLowerCase();
 
-        const email = String(user?.email || "").trim().toLowerCase();
-        if (!chosen && email) {
-          const match = list.find((d) => String(d.email || "").trim().toLowerCase() === email);
-          if (match?.id) chosen = match.id;
+        // If a driver email matches the signed-in email, LOCK to that driver.
+        const match =
+          userEmail && list.find((d) => String(d.email || "").trim().toLowerCase() === userEmail);
+
+        if (match?.id) {
+          setSelectedDriverId(match.id);
+          setDriverLocked(true);
+        } else {
+          // Office/staff fallback: allow selecting driver, remember last selection
+          let chosen = "";
+          try {
+            chosen = localStorage.getItem("skiplogic_driver_selected_id") || "";
+          } catch {}
+
+          if (!chosen && list[0]?.id) chosen = list[0].id;
+
+          setSelectedDriverId(chosen);
+          setDriverLocked(false);
         }
-
-        // If still none, choose first driver
-        if (!chosen && list[0]?.id) chosen = list[0].id;
-
-        setSelectedDriverId(chosen);
       }
 
-      // Skip types
+      // Skip types (for display)
       const { data: stRows, error: stErr } = await supabase
         .from("skip_types")
         .select("id, name")
@@ -141,15 +139,27 @@ export default function DriverDayPage() {
     loadBase();
   }, [checking, subscriberId, user?.email]);
 
-  // Persist driver selection
+  // Persist driver selection ONLY if not locked
   useEffect(() => {
     if (!selectedDriverId) return;
+    if (driverLocked) return;
     try {
       localStorage.setItem("skiplogic_driver_selected_id", selectedDriverId);
     } catch {}
-  }, [selectedDriverId]);
+  }, [selectedDriverId, driverLocked]);
 
-  // Load jobs for the chosen driver + date
+  // Safety: if locked, prevent any external change from sticking
+  useEffect(() => {
+    if (!driverLocked) return;
+    const userEmail = String(user?.email || "").trim().toLowerCase();
+    if (!userEmail) return;
+    const match = drivers.find((d) => String(d.email || "").trim().toLowerCase() === userEmail);
+    if (match?.id && selectedDriverId && selectedDriverId !== match.id) {
+      setSelectedDriverId(match.id);
+    }
+  }, [driverLocked, drivers, user?.email, selectedDriverId]);
+
+  // Load jobs for chosen driver + date
   useEffect(() => {
     if (checking) return;
     if (!subscriberId) return;
@@ -176,7 +186,6 @@ export default function DriverDayPage() {
       }
 
       const rows = Array.isArray(data) ? data : [];
-      // Only show actionable work for that day
       const actionable = rows.filter((j) => isActionableForDay(j, selectedDate));
       setJobs(actionable);
     }
@@ -216,6 +225,7 @@ export default function DriverDayPage() {
           <div style={{ marginTop: 6, fontSize: 13, color: "#444" }}>
             Signed in as <b>{user.email}</b>
           </div>
+
           <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Link href="/app" style={btnSecondaryLink}>
               ← Back to dashboard
@@ -224,6 +234,12 @@ export default function DriverDayPage() {
               Open scheduler
             </Link>
           </div>
+
+          {driverLocked && selectedDriver ? (
+            <div style={{ marginTop: 10, fontSize: 12, color: "#1f6b2a" }}>
+              Viewing as driver: <b>{selectedDriver.callsign || selectedDriver.name}</b>
+            </div>
+          ) : null}
         </div>
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -237,20 +253,22 @@ export default function DriverDayPage() {
             />
           </div>
 
-          <div>
-            <label style={labelStyle}>Driver</label>
-            <select
-              value={selectedDriverId}
-              onChange={(e) => setSelectedDriverId(e.target.value)}
-              style={inputStyle}
-            >
-              {drivers.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {(d.callsign || d.name || "Driver") + (d.email ? ` (${d.email})` : "")}
-                </option>
-              ))}
-            </select>
-          </div>
+          {!driverLocked && (
+            <div>
+              <label style={labelStyle}>Driver</label>
+              <select
+                value={selectedDriverId}
+                onChange={(e) => setSelectedDriverId(e.target.value)}
+                style={inputStyle}
+              >
+                {drivers.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {(d.callsign || d.name || "Driver") + (d.email ? ` (${d.email})` : "")}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </header>
 
@@ -264,10 +282,10 @@ export default function DriverDayPage() {
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 16 }}>
-              {selectedDriver ? (selectedDriver.callsign || selectedDriver.name) : "Driver"} — Jobs
+              {(selectedDriver?.callsign || selectedDriver?.name || "Driver")} — Jobs
             </h2>
             <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-              Showing actionable deliveries/collections for <b>{selectedDate}</b>
+              Actionable deliveries/collections for <b>{selectedDate}</b>
             </div>
           </div>
           <div style={{ fontSize: 12, color: "#666", alignSelf: "flex-end" }}>
@@ -283,14 +301,12 @@ export default function DriverDayPage() {
           <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
             {jobs.map((job) => {
               const type = jobTypeForDay(job, selectedDate);
-              const skipName =
-                (job.skip_type_id && skipTypeNameById[job.skip_type_id]) || "";
+              const skipName = (job.skip_type_id && skipTypeNameById[job.skip_type_id]) || "";
+
               return (
                 <div key={job.id} style={jobCard}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <div style={{ fontWeight: 800 }}>
-                      {job.job_number || job.id}
-                    </div>
+                    <div style={{ fontWeight: 800 }}>{job.job_number || job.id}</div>
                     <div
                       style={{
                         fontSize: 11,
@@ -311,7 +327,9 @@ export default function DriverDayPage() {
 
                   <div style={{ marginTop: 3, color: "#555", fontSize: 12 }}>
                     {job.site_address_line1 ? job.site_address_line1 : ""}
-                    {job.site_postcode ? `${job.site_address_line1 ? ", " : ""}${job.site_postcode}` : ""}
+                    {job.site_postcode
+                      ? `${job.site_address_line1 ? ", " : ""}${job.site_postcode}`
+                      : ""}
                   </div>
 
                   <div style={{ marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap" }}>
