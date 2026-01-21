@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import bcrypt from "bcryptjs";
 import { supabase } from "../../lib/supabaseClient";
 import { useAuthProfile } from "../../lib/useAuthProfile";
 
@@ -52,7 +51,7 @@ export default function DriversPage() {
   // Inline edit state per driver: { [id]: {field: value, ...} }
   const [edits, setEdits] = useState({});
 
-  // Password UI state per driver (kept separate from edits so it never gets saved accidentally)
+  // Password UI state per driver
   const [pwEdits, setPwEdits] = useState({}); // { [driverId]: { pw1: "", pw2: "" } }
 
   async function loadDrivers() {
@@ -109,7 +108,7 @@ export default function DriversPage() {
     const rows = Array.isArray(data) ? data : [];
     setDrivers(rows);
 
-    // Seed edits with current values (so inputs always show something)
+    // Seed edits with current values
     const nextEdits = {};
     const nextPw = {};
     for (const d of rows) {
@@ -297,29 +296,21 @@ export default function DriversPage() {
     setActingId(driver.id);
 
     try {
-      const hash = await bcrypt.hash(pw1, 10);
+      const res = await fetch("/api/admin/drivers/set-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ driver_id: driver.id, password: pw1 }),
+      });
 
-      const patch = {
-        password_hash: hash,
-        password_set_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
-      const { error } = await supabase
-        .from("drivers")
-        .update(patch)
-        .eq("id", driver.id)
-        .eq("subscriber_id", subscriberId);
+      const json = await res.json().catch(() => ({}));
 
       setActingId("");
 
-      if (error) {
-        console.error(error);
-        setErrorMsg("Could not set password: " + (error.message || "Unknown error"));
+      if (!res.ok || !json.ok) {
+        setErrorMsg(json?.error || "Could not set password.");
         return;
       }
 
-      // Clear inputs
       setPwEdits((prev) => ({
         ...prev,
         [driver.id]: { pw1: "", pw2: "" },
@@ -641,7 +632,7 @@ export default function DriversPage() {
                       />
                     </label>
 
-                    {/* Driver password (separate UI) */}
+                    {/* Driver password */}
                     <div style={{ gridColumn: "1 / -1", borderTop: "1px solid #eee", paddingTop: 10 }}>
                       <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Driver portal password</div>
 
