@@ -1,5 +1,5 @@
 // pages/app/jobs/scheduler.js
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
@@ -52,6 +52,56 @@ export default function SchedulerPage() {
    * }
    */
   const [columnLayout, setColumnLayout] = useState(null);
+
+  // -------------------- ACTIONABLE JOB RULES --------------------
+
+  function normStatus(s) {
+    return String(s || "").trim().toLowerCase();
+  }
+
+  function getJobTypeForDay(job) {
+    const isDelivery = job?.scheduled_date === selectedDate;
+    const isCollection = job?.collection_date === selectedDate;
+
+    if (isDelivery && isCollection) return "Delivery & Collection";
+    if (isDelivery) return "Delivery";
+    if (isCollection) return "Collection";
+    return "Other";
+  }
+
+  // Delivery is only actionable if it’s scheduled today AND not already delivered/on-hire/collected/etc.
+  function isDeliveryActionable(job) {
+    if (!job || job.scheduled_date !== selectedDate) return false;
+    const st = normStatus(job.job_status);
+
+    // If it’s delivered, it should not appear as “unassigned delivery”.
+    // on_hire + awaiting_collection also indicate the delivery has happened.
+    const blocked = new Set([
+      "delivered",
+      "on_hire",
+      "awaiting_collection",
+      "collected",
+      "completed",
+      "cancelled",
+      "canceled",
+    ]);
+
+    return !blocked.has(st);
+  }
+
+  // Collection is only actionable if it’s due today AND not already collected/completed/cancelled.
+  function isCollectionActionable(job) {
+    if (!job || job.collection_date !== selectedDate) return false;
+    const st = normStatus(job.job_status);
+
+    const blocked = new Set(["collected", "completed", "cancelled", "canceled"]);
+    return !blocked.has(st);
+  }
+
+  function isJobActionableForSelectedDay(job) {
+    // If both dates match, allow if either side is actionable.
+    return isDeliveryActionable(job) || isCollectionActionable(job);
+  }
 
   // -------------------- DATA LOADING --------------------
 
@@ -130,26 +180,14 @@ export default function SchedulerPage() {
       }
 
       // 4) Jobs – deliveries OR collections on selectedDate
+      // IMPORTANT: your pasted file had broken select syntax. It must be a string.
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
-          
-          id,
-          job_number,
-          customer_id,
-          job_status,
-          scheduled_date,
-          collection_date,
-          site_name,
-          site_postcode,
-          payment_type,
-          assigned_driver_id
-        
+          "id, job_number, customer_id, job_status, scheduled_date, collection_date, site_name, site_postcode, payment_type, assigned_driver_id, created_at"
         )
         .eq("subscriber_id", subscriberId)
-        .or(
-          scheduled_date.eq.${selectedDate},collection_date.eq.${selectedDate}
-        )
+        .or(`scheduled_date.eq.${selectedDate},collection_date.eq.${selectedDate}`)
         .order("created_at", { ascending: true });
 
       if (jobsError) {
@@ -159,8 +197,10 @@ export default function SchedulerPage() {
         return;
       }
 
-      const list = jobData || [];
-      setJobs(list);
+      // Targeted fix: remove non-actionable (delivered/on_hire/collected/etc) from scheduler entirely
+      const actionableList = (jobData || []).filter(isJobActionableForSelectedDay);
+
+      setJobs(actionableList);
 
       // 5) Column layout: base it on assigned_driver_id
       const initialLayout = {
@@ -171,7 +211,7 @@ export default function SchedulerPage() {
         initialLayout[d.id] = [];
       });
 
-      for (const job of list) {
+      for (const job of actionableList) {
         if (job.assigned_driver_id && initialLayout[job.assigned_driver_id]) {
           initialLayout[job.assigned_driver_id].push(job.id);
         } else {
@@ -195,36 +235,33 @@ export default function SchedulerPage() {
   function findCustomerNameById(customerId) {
     const c = customers.find((cust) => cust.id === customerId);
     if (!c) return "Unknown customer";
-    const baseName = ${c.first_name ?? ""} ${c.last_name ?? ""}.trim();
+    const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
     if (c.company_name) {
-      return ${c.company_name} – ${baseName || "Unknown contact"};
+      return `${c.company_name} – ${baseName || "Unknown contact"}`;
     }
     return baseName || "Unknown customer";
   }
 
   function formatJobStatus(status) {
-    switch (status) {
+    switch (normStatus(status)) {
       case "booked":
         return "Booked";
       case "on_hire":
         return "On hire";
       case "awaiting_collection":
         return "Awaiting collection";
+      case "delivered":
+        return "Delivered";
       case "collected":
         return "Collected";
+      case "completed":
+        return "Completed";
+      case "cancelled":
+      case "canceled":
+        return "Cancelled";
       default:
         return status || "Unknown";
     }
-  }
-
-  function getJobTypeForDay(job) {
-    const isDelivery = job.scheduled_date === selectedDate;
-    const isCollection = job.collection_date === selectedDate;
-
-    if (isDelivery && isCollection) return "Delivery & Collection";
-    if (isDelivery) return "Delivery";
-    if (isCollection) return "Collection";
-    return "Other";
   }
 
   function getJobTypeColor(job) {
@@ -252,8 +289,7 @@ export default function SchedulerPage() {
       d.setHours(h, m, 0, 0);
       return d;
     } catch {
-      const d = new Date(dateStr + "T08:00:00");
-      return d;
+      return new Date(dateStr + "T08:00:00");
     }
   }
 
@@ -267,7 +303,7 @@ export default function SchedulerPage() {
   }
 
   function travelKey(from, to) {
-    return ${from || "yard"}|||${to || "yard"};
+    return `${from || "yard"}|||${to || "yard"}`;
   }
 
   function formatEta(etaIso) {
@@ -277,10 +313,22 @@ export default function SchedulerPage() {
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  const jobsForDay = jobs;
-  const unassignedJobs = (columnLayout?.unassigned || [])
-    .map((id) => findJobById(id))
-    .filter(Boolean);
+  // Build the unassigned jobs list from layout (defensive: only include jobs that exist)
+  const unassignedJobs = useMemo(() => {
+    return (columnLayout?.unassigned || []).map((id) => findJobById(id)).filter(Boolean);
+  }, [columnLayout, jobs]);
+
+  // Split unassigned into deliveries vs collections for the selected day
+  const unassignedDeliveries = useMemo(() => {
+    return unassignedJobs.filter((j) => {
+      const t = getJobTypeForDay(j);
+      return t === "Delivery" || t === "Delivery & Collection";
+    });
+  }, [unassignedJobs, selectedDate]);
+
+  const unassignedCollections = useMemo(() => {
+    return unassignedJobs.filter((j) => getJobTypeForDay(j) === "Collection");
+  }, [unassignedJobs, selectedDate]);
 
   function itemsForDriver(driverId) {
     return columnLayout?.[driverId] || [];
@@ -312,6 +360,7 @@ export default function SchedulerPage() {
   }
 
   // -------------------- TIMING ENGINE --------------------
+  // (continues in chunk 2)
 
   async function calculateTimings() {
     if (!columnLayout) return;
@@ -387,9 +436,7 @@ export default function SchedulerPage() {
     function getTravelMinutes(fromLoc, toLoc, direction) {
       const key = travelKey(fromLoc, toLoc);
       const cached =
-        newTravelTimes[key] !== undefined
-          ? newTravelTimes[key]
-          : travelTimes[key];
+        newTravelTimes[key] !== undefined ? newTravelTimes[key] : travelTimes[key];
 
       if (cached !== undefined) return cached;
 
@@ -422,11 +469,7 @@ export default function SchedulerPage() {
           }
 
           if (currentLocation !== yardLoc) {
-            const mins = getTravelMinutes(
-              currentLocation,
-              yardLoc,
-              "job->yard"
-            );
+            const mins = getTravelMinutes(currentLocation, yardLoc, "job->yard");
             currentTime = addMinutes(currentTime, mins);
           }
 
@@ -437,10 +480,7 @@ export default function SchedulerPage() {
         }
 
         // Driver break
-        if (
-          typeof itemKey === "string" &&
-          itemKey.startsWith("driverbreak:")
-        ) {
+        if (typeof itemKey === "string" && itemKey.startsWith("driverbreak:")) {
           if (!preTripApplied) {
             currentTime = addMinutes(currentTime, preTrip);
             preTripApplied = true;
@@ -486,9 +526,22 @@ export default function SchedulerPage() {
     setTimingsByJobId(timings);
   }
 
+  // (rest continues in chunk 2)
   // -------------------- DRAG & BREAK HANDLERS --------------------
 
   function handleDragStart(e, jobId) {
+    const job = findJobById(jobId);
+    if (!job) {
+      e.preventDefault();
+      return;
+    }
+
+    // Safety: never allow dragging jobs that are not actionable for this day
+    if (!isJobActionableForSelectedDay(job)) {
+      e.preventDefault();
+      return;
+    }
+
     e.dataTransfer.setData("text/plain", jobId);
     e.dataTransfer.effectAllowed = "move";
   }
@@ -499,6 +552,15 @@ export default function SchedulerPage() {
   }
 
   async function moveJobToColumn(jobId, targetColumnId) {
+    const job = findJobById(jobId);
+    if (!job) return;
+
+    // Safety: never persist an assignment for a non-actionable job
+    if (!isJobActionableForSelectedDay(job)) {
+      setErrorMsg("That job is not actionable for this day, so it can’t be assigned.");
+      return;
+    }
+
     setColumnLayout((prev) => {
       if (!prev) return prev;
       const next = { ...prev };
@@ -666,6 +728,8 @@ export default function SchedulerPage() {
     );
   }
 
+  const jobsForDay = jobs;
+
   return (
     <main
       style={{
@@ -687,9 +751,7 @@ export default function SchedulerPage() {
         <div>
           <h1 style={{ fontSize: 24, marginBottom: 8 }}>Skip hire scheduler</h1>
           {user?.email && (
-            <p style={{ fontSize: 14, color: "#555" }}>
-              Signed in as {user.email}
-            </p>
+            <p style={{ fontSize: 14, color: "#555" }}>Signed in as {user.email}</p>
           )}
           <p style={{ marginTop: 8 }}>
             <a href="/app/jobs" style={{ fontSize: 14 }}>
@@ -698,13 +760,7 @@ export default function SchedulerPage() {
           </p>
         </div>
         <div>
-          <label
-            style={{
-              display: "block",
-              fontSize: 14,
-              marginBottom: 4,
-            }}
-          >
+          <label style={{ display: "block", fontSize: 14, marginBottom: 4 }}>
             Day to plan
           </label>
           <input
@@ -721,9 +777,7 @@ export default function SchedulerPage() {
       </header>
 
       {(authError || errorMsg) && (
-        <p style={{ color: "red", marginBottom: 16 }}>
-          {authError || errorMsg}
-        </p>
+        <p style={{ color: "red", marginBottom: 16 }}>{authError || errorMsg}</p>
       )}
 
       {/* Holiday banner */}
@@ -739,8 +793,7 @@ export default function SchedulerPage() {
           }}
         >
           <strong>Heads up:</strong> one or more drivers are on holiday for{" "}
-          {selectedDate}. They’re shown in red and cannot be assigned jobs for
-          this day.
+          {selectedDate}. They’re shown in red and cannot be assigned jobs for this day.
         </div>
       )}
 
@@ -758,28 +811,15 @@ export default function SchedulerPage() {
         <h2 style={{ fontSize: 16, margin: 0, marginBottom: 8 }}>
           Run timing settings
         </h2>
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 12,
-            marginBottom: 8,
-          }}
-        >
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 8 }}>
           <div>
-            <label style={{ display: "block", marginBottom: 2 }}>
-              Yard postcode
-            </label>
+            <label style={{ display: "block", marginBottom: 2 }}>Yard postcode</label>
             <input
               type="text"
               value={yardPostcode}
               onChange={(e) => setYardPostcode(e.target.value)}
               placeholder="CFxx xxx"
-              style={{
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ padding: 6, borderRadius: 4, border: "1px solid #ccc" }}
             />
           </div>
 
@@ -791,11 +831,7 @@ export default function SchedulerPage() {
               type="time"
               value={startTime}
               onChange={(e) => setStartTime(e.target.value)}
-              style={{
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ padding: 6, borderRadius: 4, border: "1px solid #ccc" }}
             />
           </div>
 
@@ -807,12 +843,7 @@ export default function SchedulerPage() {
               type="number"
               value={preTripMinutes}
               onChange={(e) => setPreTripMinutes(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ width: 70, padding: 6, borderRadius: 4, border: "1px solid #ccc" }}
             />
           </div>
 
@@ -824,12 +855,7 @@ export default function SchedulerPage() {
               type="number"
               value={serviceMinutesDelivery}
               onChange={(e) => setServiceMinutesDelivery(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ width: 70, padding: 6, borderRadius: 4, border: "1px solid #ccc" }}
             />
           </div>
 
@@ -841,12 +867,7 @@ export default function SchedulerPage() {
               type="number"
               value={serviceMinutesCollection}
               onChange={(e) => setServiceMinutesCollection(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ width: 70, padding: 6, borderRadius: 4, border: "1px solid #ccc" }}
             />
           </div>
 
@@ -858,12 +879,7 @@ export default function SchedulerPage() {
               type="number"
               value={serviceMinutesTipReturn}
               onChange={(e) => setServiceMinutesTipReturn(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ width: 70, padding: 6, borderRadius: 4, border: "1px solid #ccc" }}
             />
           </div>
 
@@ -875,12 +891,7 @@ export default function SchedulerPage() {
               type="number"
               value={driverBreakMinutes}
               onChange={(e) => setDriverBreakMinutes(e.target.value)}
-              style={{
-                width: 70,
-                padding: 6,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ width: 70, padding: 6, borderRadius: 4, border: "1px solid #ccc" }}
             />
           </div>
         </div>
@@ -910,19 +921,13 @@ export default function SchedulerPage() {
       {jobsForDay.length === 0 ? (
         <p>No deliveries or collections for this date.</p>
       ) : (
-        <div
-          style={{
-            display: "flex",
-            gap: 12,
-            alignItems: "flex-start",
-          }}
-        >
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
           {/* Left: unassigned jobs */}
           <div
             onDragOver={handleDragOver}
             onDrop={handleDropOnUnassigned}
             style={{
-              width: 280,
+              width: 320,
               minHeight: 200,
               border: "1px solid #ddd",
               borderRadius: 8,
@@ -930,17 +935,11 @@ export default function SchedulerPage() {
               background: "#fafafa",
             }}
           >
-            <h2
-              style={{
-                fontSize: 16,
-                margin: 0,
-                marginBottom: 8,
-              }}
-            >
+            <h2 style={{ fontSize: 16, margin: 0, marginBottom: 8 }}>
               Unassigned jobs
             </h2>
             <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
-              Deliveries & collections for {selectedDate}
+              For {selectedDate} (actionable only)
             </p>
 
             {/* Move unassigned jobs control */}
@@ -952,13 +951,7 @@ export default function SchedulerPage() {
                 borderTop: "1px solid #e5e5e5",
               }}
             >
-              <label
-                style={{
-                  display: "block",
-                  fontSize: 12,
-                  marginBottom: 4,
-                }}
-              >
+              <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>
                 Move all unassigned jobs to date:
               </label>
               <div
@@ -1001,8 +994,7 @@ export default function SchedulerPage() {
                 </button>
               </div>
               <div style={{ fontSize: 11, color: "#777" }}>
-                Useful if you need to roll collections or deliveries to another
-                day.
+                Useful if you need to roll collections or deliveries to another day.
               </div>
             </div>
 
@@ -1011,36 +1003,64 @@ export default function SchedulerPage() {
                 All jobs assigned to drivers.
               </p>
             ) : (
-              unassignedJobs.map((j) => (
-                <JobCard
-                  key={j.id}
-                  job={j}
-                  customerName={findCustomerNameById(j.customer_id)}
-                  formatJobStatus={formatJobStatus}
-                  getJobTypeForDay={getJobTypeForDay}
-                  getJobTypeColor={getJobTypeColor}
-                  onDragStart={handleDragStart}
-                  eta={timingsByJobId[j.id]?.eta}
-                  formatEta={formatEta}
-                />
-              ))
+              <>
+                {/* Deliveries */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+                    Deliveries ({unassignedDeliveries.length})
+                  </div>
+                  {unassignedDeliveries.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#999" }}>None</div>
+                  ) : (
+                    unassignedDeliveries.map((j) => (
+                      <JobCard
+                        key={j.id}
+                        job={j}
+                        customerName={findCustomerNameById(j.customer_id)}
+                        formatJobStatus={formatJobStatus}
+                        getJobTypeForDay={getJobTypeForDay}
+                        getJobTypeColor={getJobTypeColor}
+                        onDragStart={handleDragStart}
+                        eta={timingsByJobId[j.id]?.eta}
+                        formatEta={formatEta}
+                      />
+                    ))
+                  )}
+                </div>
+
+                {/* Collections */}
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+                    Collections ({unassignedCollections.length})
+                  </div>
+                  {unassignedCollections.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#999" }}>None</div>
+                  ) : (
+                    unassignedCollections.map((j) => (
+                      <JobCard
+                        key={j.id}
+                        job={j}
+                        customerName={findCustomerNameById(j.customer_id)}
+                        formatJobStatus={formatJobStatus}
+                        getJobTypeForDay={getJobTypeForDay}
+                        getJobTypeColor={getJobTypeColor}
+                        onDragStart={handleDragStart}
+                        eta={timingsByJobId[j.id]?.eta}
+                        formatEta={formatEta}
+                      />
+                    ))
+                  )}
+                </div>
+              </>
             )}
           </div>
 
           {/* Driver columns */}
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              flex: 1,
-              overflowX: "auto",
-            }}
-          >
+          <div style={{ display: "flex", gap: 12, flex: 1, overflowX: "auto" }}>
             {drivers.length === 0 ? (
               <div style={{ padding: 8, fontSize: 12, color: "#777" }}>
                 No active drivers found. Add drivers on the{" "}
-                <a href="/app/drivers">Drivers page</a> and refresh this
-                scheduler.
+                <a href="/app/drivers">Drivers page</a> and refresh this scheduler.
               </div>
             ) : (
               drivers.map((driver) => {
@@ -1076,13 +1096,7 @@ export default function SchedulerPage() {
                         marginBottom: 4,
                       }}
                     >
-                      <h2
-                        style={{
-                          fontSize: 16,
-                          margin: 0,
-                          marginBottom: 4,
-                        }}
-                      >
+                      <h2 style={{ fontSize: 16, margin: 0, marginBottom: 4 }}>
                         {driverLabel}
                       </h2>
                       {onHoliday && (
@@ -1112,14 +1126,7 @@ export default function SchedulerPage() {
                       )}
                     </p>
 
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 4,
-                        marginBottom: 8,
-                        flexWrap: "wrap",
-                      }}
-                    >
+                    <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
                       <button
                         type="button"
                         onClick={() => handleAddYardBreak(driver.id)}
@@ -1154,9 +1161,7 @@ export default function SchedulerPage() {
                     </div>
 
                     {items.length === 0 ? (
-                      <p
-                        style={{ fontSize: 12, color: "#999", marginTop: 8 }}
-                      >
+                      <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
                         No jobs assigned.
                       </p>
                     ) : (
@@ -1164,8 +1169,7 @@ export default function SchedulerPage() {
                         // Yard break marker
                         if (
                           typeof itemKey === "string" &&
-                          (itemKey.startsWith("yardbreak:") ||
-                            itemKey.startsWith("break:"))
+                          (itemKey.startsWith("yardbreak:") || itemKey.startsWith("break:"))
                         ) {
                           return (
                             <div
@@ -1187,9 +1191,7 @@ export default function SchedulerPage() {
                               <span>Return to yard / Tip & new run</span>
                               <button
                                 type="button"
-                                onClick={() =>
-                                  handleRemoveBreak(driver.id, itemKey)
-                                }
+                                onClick={() => handleRemoveBreak(driver.id, itemKey)}
                                 style={{
                                   border: "none",
                                   background: "transparent",
@@ -1206,10 +1208,7 @@ export default function SchedulerPage() {
                         }
 
                         // Driver break marker
-                        if (
-                          typeof itemKey === "string" &&
-                          itemKey.startsWith("driverbreak:")
-                        ) {
+                        if (typeof itemKey === "string" && itemKey.startsWith("driverbreak:")) {
                           return (
                             <div
                               key={itemKey}
@@ -1227,14 +1226,10 @@ export default function SchedulerPage() {
                                 gap: 8,
                               }}
                             >
-                              <span>
-                                Driver break ({driverBreakMinutes} mins)
-                              </span>
+                              <span>Driver break ({driverBreakMinutes} mins)</span>
                               <button
                                 type="button"
-                                onClick={() =>
-                                  handleRemoveBreak(driver.id, itemKey)
-                                }
+                                onClick={() => handleRemoveBreak(driver.id, itemKey)}
                                 style={{
                                   border: "none",
                                   background: "transparent",
@@ -1318,12 +1313,7 @@ function JobCard({
           gap: 8,
         }}
       >
-        <span
-          style={{
-            fontWeight: 600,
-            fontSize: 12,
-          }}
-        >
+        <span style={{ fontWeight: 600, fontSize: 12 }}>
           {job.job_number || job.id}
         </span>
         <span
@@ -1339,25 +1329,29 @@ function JobCard({
           {type}
         </span>
       </div>
+
       <div style={{ marginBottom: 2 }}>{customerName}</div>
+
       <div style={{ marginBottom: 2, color: "#555" }}>
-        {job.site_name
-          ? ${job.site_name}, ${job.site_postcode || ""}
-          : job.site_postcode || ""}
+        {job.site_name ? `${job.site_name}, ${job.site_postcode || ""}` : job.site_postcode || ""}
       </div>
+
       <div style={{ marginBottom: 2, color: "#777" }}>
         Status: {formatJobStatus(job.job_status)}
       </div>
+
       <div style={{ marginBottom: 4, color: "#777" }}>
         Payment: {job.payment_type || "Unknown"}
       </div>
+
       {etaLabel && (
         <div style={{ marginBottom: 4, color: "#333", fontWeight: 600 }}>
           ETA: {etaLabel}
         </div>
       )}
+
       <a
-        href={/app/jobs/${job.id}}
+        href={`/app/jobs/${job.id}`}
         style={{ fontSize: 11, textDecoration: "underline" }}
       >
         View / Edit job
