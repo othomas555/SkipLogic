@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 
 function requireCronAuth(req) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return { ok: true };
+  if (!secret) return { ok: true }; // allow if you haven't set one yet
 
   const viaHeader =
     req.headers["x-cron-secret"] ||
@@ -16,45 +16,15 @@ function requireCronAuth(req) {
 }
 
 function getSupabaseAdminClient() {
-  const url =
-    process.env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_URL;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  const serviceKey =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE;
-
-  if (!url) throw new Error("Missing SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL)");
+  if (!url) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL)");
   if (!serviceKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
 
   return createClient(url, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-}
-
-async function sendResendEmail({ to, subject, html }) {
-  const key = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM || "SkipLogic <no-reply@skiplogic.co.uk>";
-
-  if (!key) return { ok: false, skipped: true, reason: "Missing RESEND_API_KEY" };
-
-  let Resend;
-  try {
-    // Runtime require avoids build-time issues
-    Resend = require("resend").Resend;
-  } catch (e) {
-    return { ok: false, skipped: true, reason: "Resend package not installed" };
-  }
-
-  try {
-    const resend = new Resend(key);
-    const resp = await resend.emails.send({ from, to, subject, html });
-    return { ok: true, resp };
-  } catch (e) {
-    return { ok: false, error: e };
-  }
 }
 
 function ymdTodayUTC() {
@@ -91,19 +61,63 @@ function buildEmailHtml({
   daysTotal,
 }) {
   return `
-  <div style="font-family:system-ui;line-height:1.5">
-    <h2>Skip hire reminder</h2>
-    <p>Hi ${escapeHtml(customerName || "there")},</p>
-    <p>Your skip hire is nearing the end of its agreed period.</p>
-    <ul>
-      <li><b>Job:</b> ${escapeHtml(jobNumber)}</li>
-      <li><b>Postcode:</b> ${escapeHtml(sitePostcode)}</li>
-      <li><b>Delivered:</b> ${escapeHtml(deliveredYmd)}</li>
-      <li><b>Hire term:</b> ${escapeHtml(String(daysTotal))} days</li>
-      <li><b>Ends:</b> ${escapeHtml(termEndYmd)}</li>
-    </ul>
-    <p>Please reply to arrange collection or request an extension.</p>
+  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111">
+    <h2 style="margin:0 0 10px;">Skip hire reminder</h2>
+    <p style="margin:0 0 12px;">Hi ${escapeHtml(customerName || "there")},</p>
+    <p style="margin:0 0 12px;">
+      This is a friendly reminder that your skip hire is approaching the end of its agreed period.
+    </p>
+
+    <div style="padding:12px;border:1px solid #eee;border-radius:10px;background:#fafafa;margin:0 0 12px;">
+      <div><b>Job:</b> ${escapeHtml(jobNumber)}</div>
+      <div><b>Site postcode:</b> ${escapeHtml(sitePostcode)}</div>
+      <div><b>Delivered:</b> ${escapeHtml(deliveredYmd)}</div>
+      <div><b>Hire term:</b> ${escapeHtml(String(daysTotal))} days</div>
+      <div><b>Term ends:</b> ${escapeHtml(termEndYmd)}</div>
+    </div>
+
+    <p style="margin:0 0 12px;">
+      Please reply to this email (or contact us) to book collection, or if you need to extend the hire.
+    </p>
+
+    <p style="margin:0;color:#666;font-size:12px;">(Automated reminder)</p>
   </div>`;
+}
+
+async function sendSendGridEmail({ to, subject, html }) {
+  const key = process.env.SENDGRID_API_KEY;
+  const fromEmail = process.env.SENDGRID_FROM_EMAIL;
+
+  if (!key) return { ok: false, reason: "Missing SENDGRID_API_KEY" };
+  if (!fromEmail) return { ok: false, reason: "Missing SENDGRID_FROM_EMAIL" };
+
+  // SAFETY OVERRIDE:
+  // If SENDGRID_TO_EMAIL is set, we send ALL emails to that address (useful for testing).
+  const overrideTo = String(process.env.SENDGRID_TO_EMAIL || "").trim();
+  const finalTo = overrideTo || to;
+
+  const payload = {
+    personalizations: [{ to: [{ email: finalTo }] }],
+    from: { email: fromEmail },
+    subject,
+    content: [{ type: "text/html", value: html }],
+  };
+
+  const resp = await fetch("https://api.sendgrid.com/v3/mail/send", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (resp.status >= 200 && resp.status < 300) {
+    return { ok: true, overridden: !!overrideTo, to: finalTo };
+  }
+
+  const text = await resp.text().catch(() => "");
+  return { ok: false, reason: `SendGrid error ${resp.status}`, body: text };
 }
 
 export default async function handler(req, res) {
@@ -118,12 +132,21 @@ export default async function handler(req, res) {
     const supabase = getSupabaseAdminClient();
     const today = ymdTodayUTC();
 
+    // IMPORTANT:
+    // We are NOT reading subscriber-level settings here to avoid guessing columns.
+    // Defaults:
+    // - term hire days: 14
+    // - reminder days before end: 4  (so reminder on day 10 of a 14-day term)
+    const DEFAULT_TERM_DAYS = 14;
+    const DEFAULT_REMINDER_DAYS_BEFORE = 4;
+
     const { data: jobs, error } = await supabase
       .from("jobs")
       .select(
         `
         id,
         subscriber_id,
+        customer_id,
         job_number,
         site_postcode,
         delivery_actual_date,
@@ -136,10 +159,6 @@ export default async function handler(req, res) {
           email,
           term_hire_exempt,
           term_hire_days_override
-        ),
-        subscribers:subscriber_id (
-          term_hire_days,
-          term_hire_reminder_days_before
         )
       `
       )
@@ -151,24 +170,29 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: error.message || "Query failed" });
     }
 
+    let considered = 0;
+    let eligible = 0;
     let sent = 0;
-    let skipped = 0;
-    let skippedNoEmail = 0;
     let skippedExempt = 0;
+    let skippedNoEmail = 0;
     let skippedNotDue = 0;
+    let skippedAlreadySent = 0;
     let failed = 0;
 
+    const details = [];
+
     for (const j of jobs || []) {
+      considered++;
+
       const cust = j.customers || {};
-      const sub = j.subscribers || {};
 
       if (cust.term_hire_exempt) {
         skippedExempt++;
         continue;
       }
 
-      const email = String(cust.email || "").trim();
-      if (!email) {
+      const to = String(cust.email || "").trim();
+      if (!to) {
         skippedNoEmail++;
         continue;
       }
@@ -179,19 +203,41 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const baseDays =
+      const baseTermDays =
         cust.term_hire_days_override != null
           ? clampInt(cust.term_hire_days_override, 1, 365)
-          : clampInt(sub.term_hire_days ?? 14, 1, 365);
+          : DEFAULT_TERM_DAYS;
 
       const extDays = clampInt(j.hire_extension_days ?? 0, 0, 3650);
-      const totalDays = baseDays + extDays;
+      const totalDays = baseTermDays + extDays;
 
-      const reminderBefore = clampInt(sub.term_hire_reminder_days_before ?? 4, 0, 365);
+      const reminderBefore = DEFAULT_REMINDER_DAYS_BEFORE;
       const reminderDate = addDaysYMD(delivered, Math.max(0, totalDays - reminderBefore));
 
       if (reminderDate !== today) {
         skippedNotDue++;
+        continue;
+      }
+
+      eligible++;
+
+      // Deduplicate using term_hire_reminder_log
+      const { data: existing, error: logErr } = await supabase
+        .from("term_hire_reminder_log")
+        .select("id")
+        .eq("subscriber_id", j.subscriber_id)
+        .eq("job_id", j.id)
+        .eq("reminder_date", reminderDate)
+        .limit(1);
+
+      if (logErr) {
+        failed++;
+        details.push({ job_id: j.id, ok: false, stage: "log_lookup", error: logErr.message });
+        continue;
+      }
+
+      if (existing && existing.length) {
+        skippedAlreadySent++;
         continue;
       }
 
@@ -202,38 +248,62 @@ export default async function handler(req, res) {
         `${cust.first_name || ""} ${cust.last_name || ""}`.trim() ||
         "there";
 
-      const result = await sendResendEmail({
-        to: email,
-        subject: "Skip hire reminder – please book collection",
-        html: buildEmailHtml({
-          customerName: name,
-          jobNumber: j.job_number || j.id,
-          sitePostcode: j.site_postcode || "",
-          deliveredYmd: delivered,
-          termEndYmd: termEnd,
-          daysTotal: totalDays,
-        }),
+      const subject = "Skip hire reminder – please book collection";
+      const html = buildEmailHtml({
+        customerName: name,
+        jobNumber: j.job_number || j.id,
+        sitePostcode: j.site_postcode || "",
+        deliveredYmd: delivered,
+        termEndYmd: termEnd,
+        daysTotal: totalDays,
       });
 
-      if (result.ok) {
-        sent++;
-      } else {
+      const mail = await sendSendGridEmail({ to, subject, html });
+
+      if (!mail.ok) {
         failed++;
-        skipped++;
+        details.push({ job_id: j.id, ok: false, stage: "send_email", reason: mail.reason, body: mail.body });
+        continue;
       }
+
+      // Log it so we never send twice for the same reminder day
+      const { error: insErr } = await supabase.from("term_hire_reminder_log").insert({
+        subscriber_id: j.subscriber_id,
+        job_id: j.id,
+        reminder_date: reminderDate,
+        sent_to: mail.to,
+      });
+
+      if (insErr) {
+        // Email sent, but logging failed. Surface it.
+        sent++;
+        failed++;
+        details.push({ job_id: j.id, ok: true, stage: "sent_but_log_failed", error: insErr.message });
+        continue;
+      }
+
+      sent++;
+      details.push({ job_id: j.id, ok: true, to: mail.to, overridden: mail.overridden });
     }
 
-    return res.json({
+    return res.status(200).json({
       ok: true,
       today,
+      considered,
+      eligible,
       sent,
       failed,
-      skipped,
-      skipped_breakdown: {
+      skipped: {
         exempt: skippedExempt,
         no_email: skippedNoEmail,
         not_due: skippedNotDue,
+        already_sent: skippedAlreadySent,
       },
+      defaults: {
+        term_days: 14,
+        reminder_days_before: 4,
+      },
+      details,
     });
   } catch (e) {
     console.error(e);
