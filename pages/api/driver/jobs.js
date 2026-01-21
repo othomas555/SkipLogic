@@ -19,9 +19,8 @@ export default async function handler(req, res) {
 
   const date = typeof req.query.date === "string" && req.query.date ? req.query.date : ymd(new Date());
 
-  // Minimal safe fields for driver UI
-  // NOTE: we use OR filter to include both deliveries + collections for the day
-  let q = supabase
+  // Deliveries + collections for the day:
+  const { data, error } = await supabase
     .from("jobs")
     .select(
       [
@@ -39,16 +38,10 @@ export default async function handler(req, res) {
         "price_inc_vat",
       ].join(",")
     )
+    .eq("subscriber_id", driver.subscriber_id)
     .eq("assigned_driver_id", driver.id)
     .or(`scheduled_date.eq.${date},collection_date.eq.${date}`)
     .order("job_number", { ascending: true });
-
-  // If drivers has subscriber_id, enforce tenant boundary too (extra safety)
-  if (driver.subscriber_id) {
-    q = q.eq("subscriber_id", driver.subscriber_id);
-  }
-
-  const { data, error } = await q;
 
   if (error) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
 
