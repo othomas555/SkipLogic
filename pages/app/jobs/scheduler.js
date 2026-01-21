@@ -9,6 +9,7 @@ export default function SchedulerPage() {
   const [customers, setCustomers] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [skipTypeNameById, setSkipTypeNameById] = useState({});
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -145,6 +146,25 @@ export default function SchedulerPage() {
       const activeDrivers = driverData || [];
       setDrivers(activeDrivers);
 
+      // 2b) Skip types (for display on job cards)
+const { data: skipTypeRows, error: skipTypesError } = await supabase
+  .from("skip_types")
+  .select("id, name")
+  .eq("subscriber_id", subscriberId)
+  .order("name", { ascending: true });
+
+if (skipTypesError) {
+  console.error("Skip types error:", skipTypesError);
+  setSkipTypeNameById({});
+} else {
+  const map = {};
+  (skipTypeRows || []).forEach((r) => {
+    map[r.id] = r.name;
+  });
+  setSkipTypeNameById(map);
+}
+
+
       // 3) Holidays – approved and covering selectedDate
       const dateStr = selectedDate;
       try {
@@ -184,7 +204,7 @@ export default function SchedulerPage() {
       const { data: jobData, error: jobsError } = await supabase
         .from("jobs")
         .select(
-          "id, job_number, customer_id, job_status, scheduled_date, collection_date, site_name, site_postcode, payment_type, assigned_driver_id, created_at"
+          "id, job_number, customer_id, job_status, scheduled_date,site_address_line1, skip_type_id, collection_date, site_name, site_postcode, payment_type, assigned_driver_id, created_at"
         )
         .eq("subscriber_id", subscriberId)
         .or(`scheduled_date.eq.${selectedDate},collection_date.eq.${selectedDate}`)
@@ -1023,6 +1043,8 @@ export default function SchedulerPage() {
                         onDragStart={handleDragStart}
                         eta={timingsByJobId[j.id]?.eta}
                         formatEta={formatEta}
+                          skipTypeNameById={skipTypeNameById}
+
                       />
                     ))
                   )}
@@ -1047,6 +1069,8 @@ export default function SchedulerPage() {
                         onDragStart={handleDragStart}
                         eta={timingsByJobId[j.id]?.eta}
                         formatEta={formatEta}
+                          skipTypeNameById={skipTypeNameById}
+
                       />
                     ))
                   )}
@@ -1258,7 +1282,8 @@ export default function SchedulerPage() {
                             getJobTypeColor={getJobTypeColor}
                             onDragStart={handleDragStart}
                             eta={timingsByJobId[job.id]?.eta}
-                            formatEta={formatEta}
+                            formatEta={formatEta}skipTypeNameById={skipTypeNameById}
+
                           />
                         );
                       })
@@ -1285,10 +1310,13 @@ function JobCard({
   onDragStart,
   eta,
   formatEta,
+  skipTypeNameById,
 }) {
   const type = getJobTypeForDay(job);
   const typeColor = getJobTypeColor(job);
   const etaLabel = eta ? formatEta(eta) : null;
+  const skipName =
+  (job.skip_type_id && skipTypeNameById && skipTypeNameById[job.skip_type_id]) || "";
 
   return (
     <div
@@ -1333,8 +1361,12 @@ function JobCard({
       <div style={{ marginBottom: 2 }}>{customerName}</div>
 
       <div style={{ marginBottom: 2, color: "#555" }}>
-        {job.site_name ? `${job.site_name}, ${job.site_postcode || ""}` : job.site_postcode || ""}
-      </div>
+  {job.site_name ? `${job.site_name}` : ""}
+  {job.site_address_line1 ? `${job.site_name ? " — " : ""}${job.site_address_line1}` : ""}
+  {job.site_postcode
+    ? `${(job.site_name || job.site_address_line1) ? ", " : ""}${job.site_postcode}`
+    : ""}
+</div>
 
       <div style={{ marginBottom: 2, color: "#777" }}>
         Status: {formatJobStatus(job.job_status)}
@@ -1343,6 +1375,12 @@ function JobCard({
       <div style={{ marginBottom: 4, color: "#777" }}>
         Payment: {job.payment_type || "Unknown"}
       </div>
+{skipName && (
+  <div style={{ marginBottom: 4, color: "#777" }}>
+    Skip: {skipName}
+  </div>
+)}
+
 
       {etaLabel && (
         <div style={{ marginBottom: 4, color: "#333", fontWeight: 600 }}>
