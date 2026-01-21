@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
+import bcrypt from "bcryptjs";
 import { supabase } from "../../lib/supabaseClient";
 import { useAuthProfile } from "../../lib/useAuthProfile";
 
@@ -24,10 +25,6 @@ function toInt(x, fallback = 0) {
 
 function fmtDate(d) {
   return d ? String(d).slice(0, 10) : "";
-}
-
-function boolLabel(b) {
-  return b ? "Yes" : "No";
 }
 
 export default function DriversPage() {
@@ -54,6 +51,9 @@ export default function DriversPage() {
 
   // Inline edit state per driver: { [id]: {field: value, ...} }
   const [edits, setEdits] = useState({});
+
+  // Password UI state per driver (kept separate from edits so it never gets saved accidentally)
+  const [pwEdits, setPwEdits] = useState({}); // { [driverId]: { pw1: "", pw2: "" } }
 
   async function loadDrivers() {
     if (checking) return;
@@ -84,7 +84,8 @@ export default function DriversPage() {
         updated_at,
         expiry_notifications_enabled,
         expiry_warning_days,
-        staff_id
+        staff_id,
+        password_set_at
       `
       )
       .eq("subscriber_id", subscriberId)
@@ -110,6 +111,7 @@ export default function DriversPage() {
 
     // Seed edits with current values (so inputs always show something)
     const nextEdits = {};
+    const nextPw = {};
     for (const d of rows) {
       nextEdits[d.id] = {
         name: d.name ?? "",
@@ -127,8 +129,10 @@ export default function DriversPage() {
         expiry_warning_days: toInt(d.expiry_warning_days, 30),
         staff_id: d.staff_id ?? "",
       };
+      nextPw[d.id] = { pw1: "", pw2: "" };
     }
     setEdits(nextEdits);
+    setPwEdits(nextPw);
 
     setLoading(false);
   }
@@ -147,6 +151,16 @@ export default function DriversPage() {
       ...prev,
       [driverId]: {
         ...(prev[driverId] || {}),
+        [key]: value,
+      },
+    }));
+  }
+
+  function setPw(driverId, key, value) {
+    setPwEdits((prev) => ({
+      ...prev,
+      [driverId]: {
+        ...(prev[driverId] || { pw1: "", pw2: "" }),
         [key]: value,
       },
     }));
@@ -249,6 +263,75 @@ export default function DriversPage() {
 
     setSuccessMsg("Driver saved.");
     await loadDrivers();
+  }
+
+  async function setDriverPassword(driver) {
+    if (!driver?.id) return;
+    if (!subscriberId) return;
+
+    const pw = pwEdits[driver.id] || { pw1: "", pw2: "" };
+    const pw1 = String(pw.pw1 || "");
+    const pw2 = String(pw.pw2 || "");
+
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    if (!driver.email) {
+      setErrorMsg("Driver must have an email set before you can set a password.");
+      return;
+    }
+
+    if (pw1.length < 6) {
+      setErrorMsg("Password must be at least 6 characters.");
+      return;
+    }
+
+    if (pw1 !== pw2) {
+      setErrorMsg("Password and confirmation do not match.");
+      return;
+    }
+
+    const ok = confirm(`Set a new password for "${driver.name}" (${driver.email})?`);
+    if (!ok) return;
+
+    setActingId(driver.id);
+
+    try {
+      const hash = await bcrypt.hash(pw1, 10);
+
+      const patch = {
+        password_hash: hash,
+        password_set_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from("drivers")
+        .update(patch)
+        .eq("id", driver.id)
+        .eq("subscriber_id", subscriberId);
+
+      setActingId("");
+
+      if (error) {
+        console.error(error);
+        setErrorMsg("Could not set password: " + (error.message || "Unknown error"));
+        return;
+      }
+
+      // Clear inputs
+      setPwEdits((prev) => ({
+        ...prev,
+        [driver.id]: { pw1: "", pw2: "" },
+      }));
+
+      setSuccessMsg("Driver password set.");
+      await loadDrivers();
+    } catch (e) {
+      console.error(e);
+      setActingId("");
+      setErrorMsg("Could not set password.");
+    }
   }
 
   async function deactivateDriver(driver) {
@@ -433,6 +516,7 @@ export default function DriversPage() {
               const inactive = d.is_active === false;
               const busy = actingId === d.id;
               const row = edits[d.id] || {};
+              const pw = pwEdits[d.id] || { pw1: "", pw2: "" };
 
               return (
                 <div key={d.id} style={driverCard}>
@@ -447,6 +531,8 @@ export default function DriversPage() {
                         <span>Created: {String(d.created_at || "").slice(0, 10) || "—"}</span>
                         {"  "}•{"  "}
                         <span>Updated: {String(d.updated_at || "").slice(0, 10) || "—"}</span>
+                        {"  "}•{"  "}
+                        <span>Password set: {d.password_set_at ? String(d.password_set_at).slice(0, 10) : "No"}</span>
                       </div>
                     </div>
 
@@ -554,6 +640,50 @@ export default function DriversPage() {
                         style={{ ...inputStyle, minHeight: 70 }}
                       />
                     </label>
+
+                    {/* Driver password (separate UI) */}
+                    <div style={{ gridColumn: "1 / -1", borderTop: "1px solid #eee", paddingTop: 10 }}>
+                      <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Driver portal password</div>
+
+                      <div style={gridForm}>
+                        <label style={labelStyle}>
+                          New password (min 6 chars)
+                          <input
+                            type="password"
+                            value={pw.pw1}
+                            onChange={(e) => setPw(d.id, "pw1", e.target.value)}
+                            style={inputStyle}
+                            placeholder="••••••"
+                          />
+                        </label>
+
+                        <label style={labelStyle}>
+                          Confirm password
+                          <input
+                            type="password"
+                            value={pw.pw2}
+                            onChange={(e) => setPw(d.id, "pw2", e.target.value)}
+                            style={inputStyle}
+                            placeholder="••••••"
+                          />
+                        </label>
+
+                        <div style={{ display: "flex", alignItems: "flex-end" }}>
+                          <button
+                            type="button"
+                            style={btnSecondary}
+                            disabled={busy}
+                            onClick={() => setDriverPassword(d)}
+                          >
+                            {busy ? "Working…" : "Set password"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
+                        Drivers will log in at <b>/driver</b> using their email + password. They won’t access <b>/app</b>.
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
