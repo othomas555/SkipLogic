@@ -1,4 +1,4 @@
-// pages/app/settings/index.js
+// pages/app/settings.js
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
