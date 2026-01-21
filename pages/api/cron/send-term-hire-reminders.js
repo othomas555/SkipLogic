@@ -1,5 +1,5 @@
 // pages/api/cron/send-term-hire-reminders.js
-import { getSupabaseAdmin } from "../../lib/supabaseAdmin";
+import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
 function requireCronAuth(req) {
   const secret = process.env.CRON_SECRET;
@@ -25,7 +25,7 @@ async function sendResendEmail({ to, subject, html }) {
 
   let Resend;
   try {
-    // runtime require so build does not fail
+    // runtime require so build does not fail if package isn't installed
     Resend = require("resend").Resend;
   } catch (e) {
     return { ok: false, skipped: true, reason: "Resend package not installed" };
@@ -66,7 +66,14 @@ function escapeHtml(s) {
     .replaceAll("'", "&#39;");
 }
 
-function buildEmailHtml({ customerName, jobNumber, sitePostcode, deliveredYmd, termEndYmd, daysTotal }) {
+function buildEmailHtml({
+  customerName,
+  jobNumber,
+  sitePostcode,
+  deliveredYmd,
+  termEndYmd,
+  daysTotal,
+}) {
   return `
   <div style="font-family:system-ui;line-height:1.5">
     <h2>Skip hire reminder</h2>
@@ -78,7 +85,7 @@ function buildEmailHtml({ customerName, jobNumber, sitePostcode, deliveredYmd, t
       <li><b>Job:</b> ${escapeHtml(jobNumber)}</li>
       <li><b>Postcode:</b> ${escapeHtml(sitePostcode)}</li>
       <li><b>Delivered:</b> ${escapeHtml(deliveredYmd)}</li>
-      <li><b>Hire term:</b> ${daysTotal} days</li>
+      <li><b>Hire term:</b> ${escapeHtml(String(daysTotal))} days</li>
       <li><b>Ends:</b> ${escapeHtml(termEndYmd)}</li>
     </ul>
 
@@ -99,7 +106,8 @@ export default async function handler(req, res) {
 
   const { data: jobs, error } = await supabase
     .from("jobs")
-    .select(`
+    .select(
+      `
       id,
       subscriber_id,
       job_number,
@@ -119,7 +127,8 @@ export default async function handler(req, res) {
         term_hire_days,
         term_hire_reminder_days_before
       )
-    `)
+    `
+    )
     .is("collection_actual_date", null)
     .not("delivery_actual_date", "is", null);
 
@@ -130,37 +139,53 @@ export default async function handler(req, res) {
 
   let sent = 0;
   let skipped = 0;
+  let skippedNoEmail = 0;
+  let skippedExempt = 0;
+  let skippedNotDue = 0;
 
   for (const j of jobs || []) {
     const cust = j.customers || {};
-    if (cust.term_hire_exempt) continue;
+    const sub = j.subscribers || {};
 
-    const email = String(cust.email || "").trim();
-    if (!email) continue;
-
-    const baseDays =
-      cust.term_hire_days_override ??
-      j.subscribers?.term_hire_days ??
-      14;
-
-    const totalDays = clampInt(baseDays + (j.hire_extension_days || 0), 1, 3650);
-    const reminderBefore = clampInt(j.subscribers?.term_hire_reminder_days_before ?? 4, 0, 365);
-
-    const reminderDate = addDaysYMD(
-      j.delivery_actual_date,
-      totalDays - reminderBefore
-    );
-
-    if (reminderDate !== today) {
-      skipped++;
+    if (cust.term_hire_exempt) {
+      skippedExempt++;
       continue;
     }
 
-    const termEnd = addDaysYMD(j.delivery_actual_date, totalDays);
+    const email = String(cust.email || "").trim();
+    if (!email) {
+      skippedNoEmail++;
+      continue;
+    }
+
+    const delivered = j.delivery_actual_date;
+    if (!delivered) {
+      skippedNotDue++;
+      continue;
+    }
+
+    const baseDays =
+      cust.term_hire_days_override != null
+        ? clampInt(cust.term_hire_days_override, 1, 365)
+        : clampInt(sub.term_hire_days ?? 14, 1, 365);
+
+    const extDays = clampInt(j.hire_extension_days ?? 0, 0, 3650);
+    const totalDays = baseDays + extDays;
+
+    const reminderBefore = clampInt(sub.term_hire_reminder_days_before ?? 4, 0, 365);
+    const reminderDate = addDaysYMD(delivered, Math.max(0, totalDays - reminderBefore));
+
+    if (reminderDate !== today) {
+      skippedNotDue++;
+      continue;
+    }
+
+    const termEnd = addDaysYMD(delivered, totalDays);
 
     const name =
       cust.company_name ||
-      `${cust.first_name || ""} ${cust.last_name || ""}`.trim();
+      `${cust.first_name || ""} ${cust.last_name || ""}`.trim() ||
+      "there";
 
     const result = await sendResendEmail({
       to: email,
@@ -169,14 +194,25 @@ export default async function handler(req, res) {
         customerName: name,
         jobNumber: j.job_number || j.id,
         sitePostcode: j.site_postcode || "",
-        deliveredYmd: j.delivery_actual_date,
+        deliveredYmd: delivered,
         termEndYmd: termEnd,
         daysTotal: totalDays,
       }),
     });
 
     if (result.ok) sent++;
+    else skipped++;
   }
 
-  return res.json({ ok: true, today, sent, skipped });
+  return res.json({
+    ok: true,
+    today,
+    sent,
+    skipped,
+    skipped_breakdown: {
+      exempt: skippedExempt,
+      no_email: skippedNoEmail,
+      not_due: skippedNotDue,
+    },
+  });
 }
