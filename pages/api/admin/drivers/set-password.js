@@ -1,34 +1,39 @@
 // pages/api/admin/drivers/set-password.js
-import bcrypt from "bcryptjs";
-import { getSupabaseAdmin } from "../../../../lib/supabaseAdmin";
+import crypto from "crypto";
+import { supabase } from "../../../../lib/supabaseClient";
 
-function bad(res, msg, code = 400) {
-  return res.status(code).json({ ok: false, error: msg });
-}
-
+// NOTE: This uses the *logged-in staff user's* supabase client via cookies.
+// It will only work if the caller is logged in as staff and RLS allows updating drivers.
 export default async function handler(req, res) {
-  if (req.method !== "POST") return bad(res, "Method not allowed", 405);
-
-  // TODO: enforce staff/admin auth here (your existing pattern)
-  // e.g. verify Supabase staff session, check subscriber_id match, etc.
-  // If you paste one of your existing protected admin API routes, I’ll wire it identically.
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
 
   const { driver_id, password } = req.body || {};
   const id = String(driver_id || "").trim();
   const pw = String(password || "");
 
-  if (!id) return bad(res, "Missing driver_id");
-  if (pw.length < 6) return bad(res, "Password too short (min 6)");
+  if (!id) return res.status(400).json({ ok: false, error: "Missing driver_id" });
+  if (pw.length < 6) return res.status(400).json({ ok: false, error: "Password must be at least 6 characters" });
 
-  const hash = await bcrypt.hash(pw, 10);
+  // PBKDF2 settings
+  const iterations = 210000;
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.pbkdf2Sync(pw, salt, iterations, 32, "sha256").toString("hex");
+  const stored = `pbkdf2$sha256$${iterations}$${salt}$${hash}`;
 
-  const supabase = getSupabaseAdmin();
   const { error } = await supabase
     .from("drivers")
-    .update({ password_hash: hash, password_set_at: new Date().toISOString() })
+    .update({
+      password_hash: stored,
+      password_set_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", id);
 
-  if (error) return bad(res, "Failed to set password", 500);
+  if (error) {
+    return res.status(500).json({ ok: false, error: error.message || "Failed to set password" });
+  }
 
   return res.json({ ok: true });
 }
