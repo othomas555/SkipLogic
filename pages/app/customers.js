@@ -1,580 +1,280 @@
 // pages/app/customers.js
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
+import { useAuthProfile } from "../../lib/useAuthProfile";
 
-// Helper: generate a human-friendly account code like COX-001, COX-002...
-async function generateAccountCode(rawName) {
-  let base = (rawName || "").trim();
+function norm(s) {
+  return String(s || "").trim().toLowerCase();
+}
 
-  if (!base) {
-    base = "Customer";
-  }
-
-  // Remove non-alphanumeric, take first 3 chars, uppercase
-  const cleaned = base.replace(/[^a-zA-Z0-9]/g, "");
-  const prefix =
-    cleaned.substring(0, 3).toUpperCase() || "CUS";
-
-  // Find existing codes with this prefix
-  const { data, error } = await supabase
-    .from("customers")
-    .select("account_code")
-    .ilike("account_code", `${prefix}-%`);
-
-  if (error) {
-    console.error("Error checking existing account codes:", error);
-    // Fall back to 001 if something goes wrong
-    return `${prefix}-001`;
-  }
-
-  // Determine the next number by looking at existing suffixes
-  let maxNumber = 0;
-
-  (data || []).forEach((row) => {
-    if (!row.account_code) return;
-    const code = row.account_code;
-    // Expecting PREFIX-XXX, so split on "-"
-    const parts = code.split("-");
-    if (parts.length !== 2) return;
-
-    const num = parseInt(parts[1], 10);
-    if (!isNaN(num) && num > maxNumber) {
-      maxNumber = num;
-    }
-  });
-
-  const nextNumber = maxNumber + 1;
-  const padded = String(nextNumber).padStart(3, "0");
-  return `${prefix}-${padded}`;
+function customerDisplayName(c) {
+  if (!c) return "—";
+  const base = `${c.first_name || ""} ${c.last_name || ""}`.trim();
+  if (c.company_name) return `${c.company_name}${base ? ` – ${base}` : ""}`;
+  return base || "—";
 }
 
 export default function CustomersPage() {
   const router = useRouter();
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
-  const [checking, setChecking] = useState(true);
-  const [userEmail, setUserEmail] = useState(null);
-
+  const [loading, setLoading] = useState(true);
   const [customers, setCustomers] = useState([]);
+
+  const [q, setQ] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
 
-  // Form state
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [companyName, setCompanyName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
-  const [addressLine1, setAddressLine1] = useState("");
-  const [addressLine2, setAddressLine2] = useState("");
-  const [addressLine3, setAddressLine3] = useState("");
-  const [postcode, setPostcode] = useState("");
-  const [creditAccount, setCreditAccount] = useState("no"); // "yes" | "no"
+  async function load() {
+    if (checking) return;
 
-  const [saving, setSaving] = useState(false);
-
-  // Store subscriber_id once we’ve looked it up
-  const [subscriberId, setSubscriberId] = useState(null);
-
-  // Search + pagination state
-  const [searchTerm, setSearchTerm] = useState("");
-  const [currentPage, setCurrentPage] = useState(0);
-  const PAGE_SIZE = 10;
-
-  useEffect(() => {
-    async function loadData() {
-      setChecking(true);
-      setErrorMsg("");
-
-      // 1) Check auth
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-
-      if (userError || !user) {
-        router.push("/login");
-        return;
-      }
-
-      setUserEmail(user.email);
-
-      // 2) Get profile → subscriber_id
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("subscriber_id")
-        .eq("id", user.id)
-        .single();
-
-      if (profileError) {
-        console.error(profileError);
-        setErrorMsg("Could not load profile / subscriber.");
-        setChecking(false);
-        return;
-      }
-
-      const subId = profile.subscriber_id;
-      setSubscriberId(subId);
-
-      // 3) Load customers for this subscriber
-      const { data: customerRows, error: customersError } = await supabase
-        .from("customers")
-        .select(
-          `
-          id,
-          first_name,
-          last_name,
-          company_name,
-          email,
-          phone,
-          address_line1,
-          address_line2,
-          address_line3,
-          postcode,
-          is_credit_account,
-          account_code,
-          created_at
-        `
-        )
-        .eq("subscriber_id", subId)
-        .order("created_at", { ascending: false });
-
-      if (customersError) {
-        console.error(customersError);
-        setErrorMsg("Could not load customers.");
-      } else {
-        setCustomers(customerRows || []);
-      }
-
-      setChecking(false);
+    if (!user) {
+      setLoading(false);
+      return;
     }
-
-    loadData();
-  }, [router]);
-
-  async function handleAddCustomer(e) {
-    e.preventDefault();
-    setErrorMsg("");
-    setSuccessMsg("");
 
     if (!subscriberId) {
-      setErrorMsg("Missing subscriber. Please refresh and try again.");
+      setErrorMsg("No subscriber found for this user.");
+      setLoading(false);
       return;
     }
 
-    // Basic required field check
-    if (
-      !firstName ||
-      !lastName ||
-      !email ||
-      !phone ||
-      !addressLine1 ||
-      !postcode
-    ) {
-      setErrorMsg("Please fill in all required fields.");
-      return;
-    }
-
-    setSaving(true);
-
-    // Only generate an account code if this is a credit account customer
-    let accountCode = null;
-    if (creditAccount === "yes") {
-      const nameForCode =
-        companyName.trim() ||
-        `${firstName.trim()} ${lastName.trim()}`;
-      accountCode = await generateAccountCode(nameForCode);
-    }
+    setLoading(true);
+    setErrorMsg("");
 
     const { data, error } = await supabase
       .from("customers")
-      .insert([
-        {
-          subscriber_id: subscriberId,
-          first_name: firstName.trim(),
-          last_name: lastName.trim(),
-          company_name: companyName.trim() || null,
-          email: email.trim(),
-          phone: phone.trim(),
-          address_line1: addressLine1.trim(),
-          address_line2: addressLine2.trim() || null,
-          address_line3: addressLine3.trim() || null,
-          postcode: postcode.trim().toUpperCase(),
-          is_credit_account: creditAccount === "yes",
-          account_code: accountCode, // may be null for non-credit customers
-        },
-      ])
-      .select(
-        `
-        id,
-        first_name,
-        last_name,
-        company_name,
-        email,
-        phone,
-        address_line1,
-        address_line2,
-        address_line3,
-        postcode,
-        is_credit_account,
-        account_code,
-        created_at
-      `
-      )
-      .single();
+      .select("id, first_name, last_name, company_name, term_hire_exempt, term_hire_days_override")
+      .eq("subscriber_id", subscriberId)
+      .order("company_name", { ascending: true });
 
     if (error) {
       console.error(error);
-      setErrorMsg("Could not save customer.");
-      setSaving(false);
+      setErrorMsg("Could not load customers.");
+      setLoading(false);
       return;
     }
 
-    // Prepend new customer to list
-    setCustomers((prev) => [data, ...prev]);
-
-    // Reset form
-    setFirstName("");
-    setLastName("");
-    setCompanyName("");
-    setEmail("");
-    setPhone("");
-    setAddressLine1("");
-    setAddressLine2("");
-    setAddressLine3("");
-    setPostcode("");
-    setCreditAccount("no");
-
-    setSaving(false);
-    setSuccessMsg("Customer Added");
-
-    // ✅ Fix: correct state setter name
-    setTimeout(() => setSuccessMsg(""), 3000);
+    setCustomers(data || []);
+    setLoading(false);
   }
 
-  // Filter + paginate customers
-  const filteredCustomers = customers.filter((c) => {
-    const haystack = `${c.first_name || ""} ${c.last_name || ""} ${
-      c.company_name || ""
-    } ${c.email || ""} ${c.postcode || ""}`
-      .toLowerCase()
-      .trim();
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking, user, subscriberId]);
 
-    if (!searchTerm.trim()) return true;
-    return haystack.includes(searchTerm.toLowerCase().trim());
-  });
+  const filtered = useMemo(() => {
+    const needle = norm(q);
+    if (!needle) return customers;
 
-  const totalFiltered = filteredCustomers.length;
-  const pageCount = Math.max(1, Math.ceil(totalFiltered / PAGE_SIZE));
-  const safePage = Math.min(currentPage, pageCount - 1);
-  const startIndex = safePage * PAGE_SIZE;
-  const pageCustomers = filteredCustomers.slice(
-    startIndex,
-    startIndex + PAGE_SIZE
-  );
+    return customers.filter((c) => {
+      const a = norm(c.company_name);
+      const b = norm(c.first_name);
+      const d = norm(c.last_name);
+      const name = norm(customerDisplayName(c));
+      return a.includes(needle) || b.includes(needle) || d.includes(needle) || name.includes(needle);
+    });
+  }, [customers, q]);
 
-  const showingFrom = totalFiltered === 0 ? 0 : startIndex + 1;
-  const showingTo = startIndex + pageCustomers.length;
-
-  function formatAddress(c) {
-    return [c.address_line1, c.address_line2, c.address_line3]
-      .filter(Boolean)
-      .join(", ");
+  if (checking || loading) {
+    return (
+      <main style={centerStyle}>
+        <p>Loading customers…</p>
+      </main>
+    );
   }
 
-  if (checking) {
-    return <p className="p-4">Checking session...</p>;
+  if (!user) {
+    return (
+      <main style={pageStyle}>
+        <h1>Customers</h1>
+        <p>You must be signed in.</p>
+        <button style={btnSecondary} onClick={() => router.push("/login")}>
+          Go to login
+        </button>
+      </main>
+    );
   }
 
   return (
-    <main className="p-4 max-w-6xl mx-auto font-sans">
-      <header className="mb-4">
-        <h1 className="text-2xl font-semibold mb-1">Customers</h1>
-        {userEmail && (
-          <p className="text-sm text-gray-600">Signed in as {userEmail}</p>
-        )}
-        <button
-          type="button"
-          className="mt-2 text-blue-600 underline text-sm"
-          onClick={() => router.push("/app")}
-        >
-          ← Back to dashboard
-        </button>
+    <main style={pageStyle}>
+      <header style={headerStyle}>
+        <div>
+          <Link href="/app" style={linkStyle}>
+            ← Back to dashboard
+          </Link>
+          <h1 style={{ margin: "10px 0 0" }}>Customers</h1>
+          <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
+            Manage term-hire applicability per customer.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={btnSecondary} onClick={load}>
+            Refresh
+          </button>
+          <button style={btnPrimary} onClick={() => router.push("/app/customers/new")}>
+            + Add customer
+          </button>
+        </div>
       </header>
 
-      {errorMsg && (
-        <div className="mb-4 p-3 border border-red-400 bg-red-50 text-red-700 text-sm rounded">
-          {errorMsg}
+      {(authError || errorMsg) && (
+        <div style={{ marginBottom: 14 }}>
+          <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p>
         </div>
       )}
 
-      {successMsg && (
-        <div className="mb-4 p-3 border border-green-400 bg-green-50 text-green-700 text-sm rounded">
-          {successMsg}
+      <section style={cardStyle}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search customers…"
+            style={{ ...inputStyle, minWidth: 260 }}
+          />
+          <div style={{ fontSize: 12, color: "#666" }}>
+            Showing <b>{filtered.length}</b> of <b>{customers.length}</b>
+          </div>
         </div>
-      )}
-
-      {/* Add customer form */}
-      <section className="mb-8 border rounded p-4">
-        <h2 className="text-lg font-semibold mb-3">Add customer</h2>
-
-        <form onSubmit={handleAddCustomer} className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm mb-1">First Name *</label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">Last Name *</label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Company Name{" "}
-                <span className="text-gray-400 text-xs">(optional)</span>
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={companyName}
-                onChange={(e) => setCompanyName(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">Customer Email *</label>
-              <input
-                type="email"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">Customer Phone *</label>
-              <input
-                type="tel"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">Address Line 1 *</label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={addressLine1}
-                onChange={(e) => setAddressLine1(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">Address Line 2 *</label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={addressLine2}
-                onChange={(e) => setAddressLine2(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Address Line 3{" "}
-                <span className="text-gray-400 text-xs">(optional)</span>
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={addressLine3}
-                onChange={(e) => setAddressLine3(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">Postcode *</label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={postcode}
-                onChange={(e) => setPostcode(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Credit Account Customer *
-              </label>
-              <select
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={creditAccount}
-                onChange={(e) => setCreditAccount(e.target.value)}
-              >
-                <option value="no">No</option>
-                <option value="yes">Yes</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="submit"
-              className="px-4 py-2 border rounded text-sm bg-black text-white disabled:opacity-60"
-              disabled={saving}
-            >
-              {saving ? "Saving..." : "Add customer"}
-            </button>
-
-            {successMsg && !saving && (
-              <span className="text-xs text-green-700">Saved ✓</span>
-            )}
-          </div>
-        </form>
       </section>
 
-      {/* Customers search + table */}
-      <section>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-3 gap-2">
-          <h2 className="text-lg font-semibold">Existing customers</h2>
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              placeholder="Search name, company, email, postcode…"
-              className="border rounded px-2 py-1 text-sm w-64"
-              value={searchTerm}
-              onChange={(e) => {
-                setSearchTerm(e.target.value);
-                setCurrentPage(0);
-              }}
-            />
-          </div>
-        </div>
-
-        {filteredCustomers.length === 0 ? (
-          <p className="text-sm text-gray-600">No customers found.</p>
+      <section style={cardStyle}>
+        {filtered.length === 0 ? (
+          <p style={{ margin: 0 }}>No customers found.</p>
         ) : (
-          <>
-            <p className="text-xs text-gray-500 mb-2">
-              Showing {showingFrom}–{showingTo} of {totalFiltered} customer
-              {totalFiltered === 1 ? "" : "s"}.
-            </p>
-            <div className="overflow-x-auto border rounded">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-100">
-                  <tr>
-                    <th className="border px-2 py-1 text-left">
-                      Account Code
-                    </th>
-                    <th className="border px-2 py-1 text-left">Name</th>
-                    <th className="border px-2 py-1 text-left">Company</th>
-                    <th className="border px-2 py-1 text-left">Email</th>
-                    <th className="border px-2 py-1 text-left">Phone</th>
-                    <th className="border px-2 py-1 text-left">Address</th>
-                    <th className="border px-2 py-1 text-left">Postcode</th>
-                    <th className="border px-2 py-1 text-left">
-                      Credit Account
-                    </th>
-                    <th className="border px-2 py-1 text-left">Actions</th>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Customer</th>
+                  <th style={thStyle}>Company</th>
+                  <th style={thStyle}>Term hire</th>
+                  <th style={thStyle}>Override days</th>
+                  <th style={thStyle}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((c) => (
+                  <tr key={c.id}>
+                    <td style={tdStyle}>{`${c.first_name || ""} ${c.last_name || ""}`.trim() || "—"}</td>
+                    <td style={tdStyle}>{c.company_name || "—"}</td>
+                    <td style={tdStyle}>
+                      {c.term_hire_exempt ? (
+                        <span style={pillRed}>Exempt</span>
+                      ) : (
+                        <span style={pillGreen}>Applies</span>
+                      )}
+                    </td>
+                    <td style={tdStyle}>{c.term_hire_days_override ?? "—"}</td>
+                    <td style={tdStyle}>
+                      <Link href={`/app/customers/${c.id}`} style={actionLink}>
+                        View / Edit
+                      </Link>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {pageCustomers.map((c) => (
-                    <tr key={c.id}>
-                      <td className="border px-2 py-1">
-                        {c.account_code || (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td className="border px-2 py-1">
-                        {c.first_name} {c.last_name}
-                      </td>
-                      <td className="border px-2 py-1">
-                        {c.company_name || (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td className="border px-2 py-1">{c.email}</td>
-                      <td className="border px-2 py-1">{c.phone}</td>
-                      <td className="border px-2 py-1">
-                        {formatAddress(c)}
-                      </td>
-                      <td className="border px-2 py-1">{c.postcode}</td>
-                      <td className="border px-2 py-1">
-                        {c.is_credit_account ? "Yes" : "No"}
-                      </td>
-                      <td className="border px-2 py-1">
-                        <button
-                          type="button"
-                          className="text-blue-600 underline text-xs"
-                          onClick={() =>
-                            router.push(`/app/customers/${c.id}`)
-                          }
-                        >
-                          View / Edit
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination controls */}
-            {pageCount > 1 && (
-              <div className="flex items-center justify-between mt-3 text-xs">
-                <div>
-                  Page {safePage + 1} of {pageCount}
-                </div>
-                <div className="space-x-2">
-                  <button
-                    type="button"
-                    className="px-2 py-1 border rounded disabled:opacity-50"
-                    disabled={safePage === 0}
-                    onClick={() =>
-                      setCurrentPage((prev) => Math.max(0, prev - 1))
-                    }
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    className="px-2 py-1 border rounded disabled:opacity-50"
-                    disabled={safePage >= pageCount - 1}
-                    onClick={() =>
-                      setCurrentPage((prev) =>
-                        Math.min(pageCount - 1, prev + 1)
-                      )
-                    }
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </main>
   );
 }
+
+const pageStyle = {
+  minHeight: "100vh",
+  padding: 24,
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+  background: "#f7f7f7",
+};
+
+const centerStyle = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontFamily: "system-ui, sans-serif",
+};
+
+const headerStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 12,
+  flexWrap: "wrap",
+  marginBottom: 16,
+};
+
+const linkStyle = { textDecoration: "underline", color: "#0070f3", fontSize: 13 };
+
+const cardStyle = {
+  background: "#fff",
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 14,
+  marginBottom: 14,
+  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+};
+
+const thStyle = {
+  textAlign: "left",
+  borderBottom: "1px solid #ddd",
+  padding: "10px 8px",
+  fontSize: 12,
+  fontWeight: 700,
+  color: "#333",
+};
+
+const tdStyle = {
+  borderBottom: "1px solid #eee",
+  padding: "10px 8px",
+  fontSize: 12,
+  color: "#111",
+  verticalAlign: "top",
+};
+
+const inputStyle = {
+  padding: "8px 10px",
+  borderRadius: 8,
+  border: "1px solid #ccc",
+  fontSize: 13,
+  background: "#fff",
+};
+
+const btnPrimary = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #0070f3",
+  background: "#0070f3",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnSecondary = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #ccc",
+  background: "#f5f5f5",
+  color: "#111",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const actionLink = { fontSize: 12, textDecoration: "underline", color: "#0070f3" };
+
+const pillBase = {
+  display: "inline-block",
+  padding: "2px 8px",
+  borderRadius: 999,
+  fontSize: 11,
+  fontWeight: 700,
+  border: "1px solid transparent",
+};
+
+const pillGreen = { ...pillBase, background: "#ecfdf3", color: "#0f5132", borderColor: "#b7ebc6" };
+const pillRed = { ...pillBase, background: "#fff5f5", color: "#8a1f1f", borderColor: "#f0b4b4" };
