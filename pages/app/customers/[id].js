@@ -1,514 +1,367 @@
 // pages/app/customers/[id].js
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/router";
-import { useEffect, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
-// Helper: generate a human-friendly account code like COX-001, COX-002...
-async function generateAccountCode(rawName) {
-  let base = (rawName || "").trim();
+function clampIntOrNull(v, min, max) {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  const x = Math.trunc(n);
+  return Math.max(min, Math.min(max, x));
+}
 
-  if (!base) {
-    base = "Customer";
-  }
-
-  // Remove non-alphanumeric, take first 3 chars, uppercase
-  const cleaned = base.replace(/[^a-zA-Z0-9]/g, "");
-  const prefix = cleaned.substring(0, 3).toUpperCase() || "CUS";
-
-  // Find existing codes with this prefix
-  const { data, error } = await supabase
-    .from("customers")
-    .select("account_code")
-    .ilike("account_code", `${prefix}-%`);
-
-  if (error) {
-    console.error("Error checking existing account codes:", error);
-    // Fall back to 001 if something goes wrong
-    return `${prefix}-001`;
-  }
-
-  // Determine the next number by looking at existing suffixes
-  let maxNumber = 0;
-
-  (data || []).forEach((row) => {
-    if (!row.account_code) return;
-    const code = row.account_code;
-    const parts = code.split("-");
-    if (parts.length !== 2) return;
-
-    const num = parseInt(parts[1], 10);
-    if (!isNaN(num) && num > maxNumber) {
-      maxNumber = num;
-    }
-  });
-
-  const nextNumber = maxNumber + 1;
-  const padded = String(nextNumber).padStart(3, "0");
-  return `${prefix}-${padded}`;
+function displayName(c) {
+  if (!c) return "Customer";
+  const base = `${c.first_name || ""} ${c.last_name || ""}`.trim();
+  if (c.company_name) return `${c.company_name}${base ? ` – ${base}` : ""}`;
+  return base || "Customer";
 }
 
 export default function CustomerDetailPage() {
   const router = useRouter();
   const { id } = router.query;
-  const customerId = Array.isArray(id) ? id[0] : id;
 
-  const {
-    checking,
-    user,
-    subscriberId,
-    errorMsg: authError,
-  } = useAuthProfile();
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Form state
+  const [customer, setCustomer] = useState(null);
+
+  const [companyName, setCompanyName] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [companyName, setCompanyName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
-  const [addressLine1, setAddressLine1] = useState("");
-  const [addressLine2, setAddressLine2] = useState("");
-  const [addressLine3, setAddressLine3] = useState("");
-  const [postcode, setPostcode] = useState("");
-  const [creditAccount, setCreditAccount] = useState("no"); // "yes" | "no"
-  const [accountCode, setAccountCode] = useState("");
-  const [creditLimit, setCreditLimit] = useState(""); // £ credit limit
 
-  const [saving, setSaving] = useState(false);
+  const [applyTermHire, setApplyTermHire] = useState(true);
+  const [overrideDays, setOverrideDays] = useState("");
 
-  // Track original credit/account_code so we know when it changes
-  const [originalIsCredit, setOriginalIsCredit] = useState(false);
-  const [originalAccountCode, setOriginalAccountCode] = useState(null);
+  const termHireExempt = useMemo(() => !applyTermHire, [applyTermHire]);
+  const termHireDaysOverride = useMemo(() => {
+    if (!applyTermHire) return null;
+    return clampIntOrNull(overrideDays, 1, 365);
+  }, [applyTermHire, overrideDays]);
 
   useEffect(() => {
-    async function loadCustomer() {
-      if (!customerId || !subscriberId) return;
+    if (!applyTermHire) setOverrideDays("");
+  }, [applyTermHire]);
 
-      setLoading(true);
-      setErrorMsg("");
-      setSuccessMsg("");
+  async function load() {
+    if (checking) return;
+    if (!user || !subscriberId || !id) return;
 
-      const { data, error } = await supabase
-        .from("customers")
-        .select(
-          `
-          id,
-          subscriber_id,
-          first_name,
-          last_name,
-          company_name,
-          email,
-          phone,
-          address_line1,
-          address_line2,
-          address_line3,
-          postcode,
-          is_credit_account,
-          account_code,
-          credit_limit,
-          created_at
-        `
-        )
-        .eq("id", customerId)
-        .eq("subscriber_id", subscriberId)
-        .single();
-
-      if (error) {
-        console.error(error);
-        setErrorMsg("Could not load customer.");
-        setLoading(false);
-        return;
-      }
-
-      setFirstName(data.first_name || "");
-      setLastName(data.last_name || "");
-      setCompanyName(data.company_name || "");
-      setEmail(data.email || "");
-      setPhone(data.phone || "");
-      setAddressLine1(data.address_line1 || "");
-      setAddressLine2(data.address_line2 || "");
-      setAddressLine3(data.address_line3 || "");
-      setPostcode(data.postcode || "");
-      setCreditAccount(data.is_credit_account ? "yes" : "no");
-      setAccountCode(data.account_code || "");
-      setCreditLimit(
-        data.credit_limit !== null && data.credit_limit !== undefined
-          ? String(data.credit_limit)
-          : ""
-      );
-
-      setOriginalIsCredit(!!data.is_credit_account);
-      setOriginalAccountCode(data.account_code || null);
-
-      setLoading(false);
-    }
-
-    if (!checking && subscriberId && customerId) {
-      loadCustomer();
-    }
-  }, [checking, subscriberId, customerId]);
-
-  async function handleSave(e) {
-    e.preventDefault();
+    setLoading(true);
     setErrorMsg("");
     setSuccessMsg("");
 
-    if (!subscriberId || !customerId) {
-      setErrorMsg("Missing subscriber or customer ID.");
-      return;
-    }
-
-    // basic required check
-    if (
-      !firstName ||
-      !lastName ||
-      !email ||
-      !phone ||
-      !addressLine1 ||
-      !postcode
-    ) {
-      setErrorMsg("Please fill in all required fields.");
-      return;
-    }
-
-    setSaving(true);
-
-    const isCredit = creditAccount === "yes";
-    let accountCodeToSave = accountCode || null;
-
-    // If they were NOT credit before, and are now, and don't have a code, generate one
-    if (!originalIsCredit && isCredit && !accountCodeToSave) {
-      const nameForCode =
-        companyName.trim() ||
-        `${firstName.trim()} ${lastName.trim()}`;
-      accountCodeToSave = await generateAccountCode(nameForCode);
-    }
-
     const { data, error } = await supabase
       .from("customers")
-      .update({
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
-        company_name: companyName.trim() || null,
-        email: email.trim(),
-        phone: phone.trim(),
-        address_line1: addressLine1.trim(),
-        address_line2: addressLine2.trim() || null,
-        address_line3: addressLine3.trim() || null,
-        postcode: postcode.trim().toUpperCase(),
-        is_credit_account: isCredit,
-        account_code: accountCodeToSave,
-        credit_limit:
-          creditLimit.trim() === ""
-            ? null
-            : Number(creditLimit.trim()),
-      })
-      .eq("id", customerId)
+      .select("id, subscriber_id, first_name, last_name, company_name, term_hire_exempt, term_hire_days_override")
+      .eq("id", id)
       .eq("subscriber_id", subscriberId)
-      .select(
-        `
-        id,
-        first_name,
-        last_name,
-        company_name,
-        email,
-        phone,
-        address_line1,
-        address_line2,
-        address_line3,
-        postcode,
-        is_credit_account,
-        account_code,
-        credit_limit,
-        created_at
-      `
-      )
-      .single();
+      .maybeSingle();
 
     if (error) {
       console.error(error);
-      setErrorMsg("Could not save customer.");
-      setSaving(false);
+      setErrorMsg("Could not load customer.");
+      setLoading(false);
       return;
     }
 
-    // Update local + original state with latest data
+    if (!data) {
+      setErrorMsg("Customer not found (or you don't have access).");
+      setLoading(false);
+      return;
+    }
+
+    setCustomer(data);
+
+    setCompanyName(data.company_name || "");
     setFirstName(data.first_name || "");
     setLastName(data.last_name || "");
-    setCompanyName(data.company_name || "");
-    setEmail(data.email || "");
-    setPhone(data.phone || "");
-    setAddressLine1(data.address_line1 || "");
-    setAddressLine2(data.address_line2 || "");
-    setAddressLine3(data.address_line3 || "");
-    setPostcode(data.postcode || "");
-    setCreditAccount(data.is_credit_account ? "yes" : "no");
-    setAccountCode(data.account_code || "");
-    setCreditLimit(
-      data.credit_limit !== null && data.credit_limit !== undefined
-        ? String(data.credit_limit)
-        : ""
-    );
 
-    setOriginalIsCredit(!!data.is_credit_account);
-    setOriginalAccountCode(data.account_code || null);
+    const exempt = !!data.term_hire_exempt;
+    setApplyTermHire(!exempt);
+    setOverrideDays(data.term_hire_days_override != null ? String(data.term_hire_days_override) : "");
 
-    setSaving(false);
-    setSuccessMsg("Customer Edited");
-
-    setTimeout(() => setSuccessMsg(""), 3000);
+    setLoading(false);
   }
 
-  if (checking || loading || !customerId) {
-    return <p className="p-4">Loading customer...</p>;
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking, user, subscriberId, id]);
+
+  async function save() {
+    if (!customer?.id) return;
+
+    setSaving(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    const patch = {
+      company_name: companyName || null,
+      first_name: firstName || null,
+      last_name: lastName || null,
+      term_hire_exempt: termHireExempt,
+      term_hire_days_override: termHireDaysOverride,
+    };
+
+    const { error } = await supabase
+      .from("customers")
+      .update(patch)
+      .eq("id", customer.id)
+      .eq("subscriber_id", subscriberId);
+
+    setSaving(false);
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not save customer: " + (error.message || "Unknown error"));
+      return;
+    }
+
+    setSuccessMsg("Saved.");
+    await load();
+  }
+
+  async function deleteCustomer() {
+    if (!customer?.id) return;
+    const ok = window.confirm("Delete this customer? This cannot be undone.");
+    if (!ok) return;
+
+    setDeleting(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    const { error } = await supabase
+      .from("customers")
+      .delete()
+      .eq("id", customer.id)
+      .eq("subscriber_id", subscriberId);
+
+    setDeleting(false);
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not delete customer: " + (error.message || "Unknown error"));
+      return;
+    }
+
+    router.push("/app/customers");
+  }
+
+  if (checking || loading) {
+    return (
+      <main style={centerStyle}>
+        <p>Loading customer…</p>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main style={pageStyle}>
+        <h1>Customer</h1>
+        <p>You must be signed in.</p>
+        <button style={btnSecondary} onClick={() => router.push("/login")}>
+          Go to login
+        </button>
+      </main>
+    );
   }
 
   return (
-    <main className="p-4 max-w-3xl mx-auto font-sans">
-      <header className="mb-4">
-        <h1 className="text-2xl font-semibold mb-1">
-          Customer Details
-        </h1>
-        {user?.email && (
-          <p className="text-sm text-gray-600">
-            Signed in as {user.email}
+    <main style={pageStyle}>
+      <header style={headerStyle}>
+        <div>
+          <Link href="/app/customers" style={linkStyle}>
+            ← Back to customers
+          </Link>
+          <h1 style={{ margin: "10px 0 0" }}>{displayName(customer)}</h1>
+          <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
+            Edit customer details and term-hire settings.
           </p>
-        )}
-        <button
-          type="button"
-          className="mt-2 text-blue-600 underline text-sm"
-          onClick={() => router.push("/app/customers")}
-        >
-          ← Back to customers
-        </button>
-        <button
-          type="button"
-          className="mt-2 ml-2 text-blue-600 underline text-sm"
-          onClick={() =>
-            router.push(
-              `/app/customers/${customerId}/credit-application`
-            )
-          }
-        >
-          View Credit Application (PDF)
-        </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={btnDanger} onClick={deleteCustomer} disabled={deleting}>
+            {deleting ? "Deleting…" : "Delete"}
+          </button>
+          <button style={btnPrimary} onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
       </header>
 
-      {authError && (
-        <div className="mb-4 p-3 border border-red-400 bg-red-50 text-red-700 text-sm rounded">
-          {authError}
+      {(authError || errorMsg || successMsg) && (
+        <div style={{ marginBottom: 14 }}>
+          {(authError || errorMsg) ? (
+            <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p>
+          ) : null}
+          {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
         </div>
       )}
 
-      {errorMsg && (
-        <div className="mb-4 p-3 border border-red-400 bg-red-50 text-red-700 text-sm rounded">
-          {errorMsg}
+      <section style={cardStyle}>
+        <h2 style={h2Style}>Details</h2>
+
+        <div style={gridStyle}>
+          <label style={labelStyle}>
+            Company name
+            <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} style={inputStyle} />
+          </label>
+
+          <label style={labelStyle}>
+            First name
+            <input value={firstName} onChange={(e) => setFirstName(e.target.value)} style={inputStyle} />
+          </label>
+
+          <label style={labelStyle}>
+            Last name
+            <input value={lastName} onChange={(e) => setLastName(e.target.value)} style={inputStyle} />
+          </label>
         </div>
-      )}
+      </section>
 
-      {successMsg && (
-        <div className="mb-4 p-3 border border-green-400 bg-green-50 text-green-700 text-sm rounded">
-          {successMsg}
+      <section style={cardStyle}>
+        <h2 style={h2Style}>Skip hire terms</h2>
+
+        <label style={{ ...labelStyle, flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <input
+            type="checkbox"
+            checked={applyTermHire}
+            onChange={(e) => setApplyTermHire(e.target.checked)}
+          />
+          <span style={{ fontSize: 13 }}>
+            <b>Apply skip hire term rules</b> (untick for contract customers / tip &amp; returns)
+          </span>
+        </label>
+
+        <div style={{ marginTop: 10, color: "#666", fontSize: 12, lineHeight: 1.5 }}>
+          If this is off, this customer is exempt from reminders and overdue logic.
         </div>
-      )}
 
-      <section className="border rounded p-4">
-        <h2 className="text-lg font-semibold mb-3">Edit customer</h2>
+        <div style={{ marginTop: 12 }}>
+          <label style={labelStyle}>
+            Term days override (optional)
+            <input
+              type="number"
+              min={1}
+              max={365}
+              disabled={!applyTermHire}
+              value={overrideDays}
+              onChange={(e) => setOverrideDays(e.target.value)}
+              placeholder={applyTermHire ? "Leave blank to use Settings default" : "Disabled (customer is exempt)"}
+              style={{
+                ...inputStyle,
+                background: applyTermHire ? "#fff" : "#f3f3f3",
+                cursor: applyTermHire ? "text" : "not-allowed",
+              }}
+            />
+          </label>
 
-        <form onSubmit={handleSave} className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm mb-1">
-                First Name *
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Last Name *
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Company Name{" "}
-                <span className="text-gray-400 text-xs">
-                  (optional)
-                </span>
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={companyName}
-                onChange={(e) => setCompanyName(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Customer Email *
-              </label>
-              <input
-                type="email"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Customer Phone *
-              </label>
-              <input
-                type="tel"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Address Line 1 *
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={addressLine1}
-                onChange={(e) => setAddressLine1(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Address Line 2 *
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={addressLine2}
-                onChange={(e) => setAddressLine2(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Address Line 3{" "}
-                <span className="text-gray-400 text-xs">
-                  (optional)
-                </span>
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={addressLine3}
-                onChange={(e) => setAddressLine3(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Postcode *
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={postcode}
-                onChange={(e) => setPostcode(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Credit Account Customer *
-              </label>
-              <select
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={creditAccount}
-                onChange={(e) => setCreditAccount(e.target.value)}
-              >
-                <option value="no">No</option>
-                <option value="yes">Yes</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Account Code{" "}
-                <span className="text-gray-400 text-xs">
-                  (auto for credit customers)
-                </span>
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-2 py-1 text-sm bg-gray-50"
-                value={accountCode}
-                onChange={(e) => setAccountCode(e.target.value)}
-                placeholder="Will be generated when set as credit account"
-              />
-              {/* 
-                NOTE: Currently editable – if you want it read-only,
-                change to readOnly and remove onChange.
-              */}
-            </div>
-
-            <div>
-              <label className="block text-sm mb-1">
-                Credit Limit (£){" "}
-                <span className="text-gray-400 text-xs">
-                  (optional)
-                </span>
-              </label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                className="w-full border rounded px-2 py-1 text-sm"
-                value={creditLimit}
-                onChange={(e) => setCreditLimit(e.target.value)}
-                placeholder="e.g. 1000.00"
-              />
-            </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+            Example: set to 21 for a 21-day term for this customer only.
           </div>
-
-          <div className="flex items-center gap-2 mt-2">
-            <button
-              type="submit"
-              className="px-4 py-2 border rounded text-sm bg-black text-white disabled:opacity-60"
-              disabled={saving}
-            >
-              {saving ? "Saving..." : "Save changes"}
-            </button>
-
-            {successMsg && !saving && (
-              <span className="text-xs text-green-700">Saved ✓</span>
-            )}
-          </div>
-        </form>
+        </div>
       </section>
     </main>
   );
 }
+
+const pageStyle = {
+  minHeight: "100vh",
+  padding: 24,
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+  background: "#f7f7f7",
+};
+
+const centerStyle = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontFamily: "system-ui, sans-serif",
+};
+
+const headerStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 12,
+  flexWrap: "wrap",
+  marginBottom: 16,
+};
+
+const linkStyle = { textDecoration: "underline", color: "#0070f3", fontSize: 13 };
+
+const cardStyle = {
+  background: "#fff",
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 14,
+  marginBottom: 14,
+  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+};
+
+const h2Style = { fontSize: 16, margin: "0 0 10px" };
+
+const gridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+  gap: 10,
+};
+
+const labelStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  fontSize: 12,
+  color: "#333",
+};
+
+const inputStyle = {
+  padding: "8px 10px",
+  borderRadius: 8,
+  border: "1px solid #ccc",
+  fontSize: 13,
+  background: "#fff",
+};
+
+const btnPrimary = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #0070f3",
+  background: "#0070f3",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnSecondary = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #ccc",
+  background: "#f5f5f5",
+  color: "#111",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnDanger = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #f0b4b4",
+  background: "#fff5f5",
+  color: "#8a1f1f",
+  cursor: "pointer",
+  fontSize: 13,
+};
