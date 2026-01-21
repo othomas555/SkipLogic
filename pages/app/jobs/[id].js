@@ -1,543 +1,360 @@
+// pages/app/jobs/[id].js
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
-import { useEffect, useState } from "react";
+import Link from "next/link";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
 export default function JobDetailPage() {
   const router = useRouter();
   const { id } = router.query;
-  const jobId = Array.isArray(id) ? id[0] : id;
 
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
-  const [job, setJob] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [acting, setActing] = useState("");
+
   const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
 
-  useEffect(() => {
+  const [job, setJob] = useState(null);
+
+  // Editable fields (basic)
+  const [siteName, setSiteName] = useState("");
+  const [sitePostcode, setSitePostcode] = useState("");
+  const [scheduledDate, setScheduledDate] = useState(""); // YYYY-MM-DD
+  const [collectionDate, setCollectionDate] = useState(""); // YYYY-MM-DD
+  const [paymentType, setPaymentType] = useState("");
+  const [jobStatus, setJobStatus] = useState("");
+
+  async function loadJob() {
     if (checking) return;
-    if (!subscriberId || !jobId) return;
+    if (!user || !subscriberId || !id) return;
 
-    async function loadJob() {
-      setErrorMsg("");
-      setLoading(true);
-
-      const { data, error } = await supabase
-        .from("jobs")
-        .select(
-          `
-          id,
-          job_number,
-          customer_id,
-          skip_type_id,
-          job_status,
-          scheduled_date,
-          collection_date,
-          notes,
-          site_name,
-          site_address_line1,
-          site_address_line2,
-          site_town,
-          site_postcode,
-          payment_type
-        `
-        )
-        .eq("subscriber_id", subscriberId)
-        .eq("id", jobId)
-        .single();
-
-      if (error) {
-        console.error("Error loading job:", error);
-        setErrorMsg("Could not load job.");
-      } else {
-        setJob(data);
-      }
-
-      setLoading(false);
-    }
-
-    loadJob();
-  }, [checking, subscriberId, jobId]);
-
-  // ✅ format status nicely
-  function formatJobStatus(status) {
-    switch (status) {
-      case "booked":
-        return "Booked";
-      case "on_hire":
-        return "On hire";
-      case "awaiting_collection":
-        return "Awaiting collection";
-      case "collected":
-        return "Collected";
-      default:
-        return status || "Unknown";
-    }
-  }
-
-  // ✅ Save general job detail edits (address, notes, delivery date, payment, collection_date)
-  async function handleSave() {
-    if (!job) return;
-    setSaving(true);
+    setLoading(true);
     setErrorMsg("");
-
-    const { error } = await supabase
-      .from("jobs")
-      .update({
-        site_name: job.site_name,
-        site_address_line1: job.site_address_line1,
-        site_address_line2: job.site_address_line2,
-        site_town: job.site_town,
-        site_postcode: job.site_postcode,
-        scheduled_date: job.scheduled_date,
-        collection_date: job.collection_date || null,
-        notes: job.notes,
-        payment_type: job.payment_type,
-      })
-      .eq("id", jobId)
-      .eq("subscriber_id", subscriberId);
-
-    if (error) {
-      console.error("Save error:", error);
-      setErrorMsg("Could not save job.");
-    }
-
-    setSaving(false);
-  }
-
-  // ✅ Status transitions (also handles collection_date for awaiting_collection)
-  async function updateJobStatus(newStatus) {
-    if (!job) return;
-    setSaving(true);
-    setErrorMsg("");
-
-    const updates = {
-      job_status: newStatus,
-    };
-
-    // When booking collection, store the chosen collection_date
-    if (newStatus === "awaiting_collection") {
-      updates.collection_date = job.collection_date || null;
-    }
+    setSuccessMsg("");
 
     const { data, error } = await supabase
       .from("jobs")
-      .update(updates)
-      .eq("id", jobId)
-      .eq("subscriber_id", subscriberId)
       .select(
         `
         id,
+        subscriber_id,
         job_number,
         customer_id,
-        skip_type_id,
         job_status,
         scheduled_date,
         collection_date,
-        notes,
         site_name,
-        site_address_line1,
-        site_address_line2,
-        site_town,
         site_postcode,
-        payment_type
+        payment_type,
+        created_at
       `
       )
-      .single();
+      .eq("id", id)
+      .eq("subscriber_id", subscriberId)
+      .maybeSingle();
 
     if (error) {
-      console.error("Status update error:", error);
-      setErrorMsg("Could not update job status.");
-      setSaving(false);
+      console.error(error);
+      setErrorMsg("Could not load job.");
+      setLoading(false);
+      return;
+    }
+
+    if (!data) {
+      setErrorMsg("Job not found (or you don't have access).");
+      setLoading(false);
       return;
     }
 
     setJob(data);
+    setSiteName(data.site_name || "");
+    setSitePostcode(data.site_postcode || "");
+    setScheduledDate(data.scheduled_date || "");
+    setCollectionDate(data.collection_date || "");
+    setPaymentType(data.payment_type || "");
+    setJobStatus(data.job_status || "");
+
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    loadJob();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking, user, subscriberId, id]);
+
+  const title = useMemo(() => {
+    if (!job) return "Job";
+    return job.job_number ? `Job ${job.job_number}` : "Job";
+  }, [job]);
+
+  async function saveJob() {
+    if (!job?.id) return;
+
+    setSaving(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    const patch = {
+      site_name: siteName || null,
+      site_postcode: sitePostcode || null,
+      scheduled_date: scheduledDate || null,
+      collection_date: collectionDate || null,
+      payment_type: paymentType || null,
+      job_status: jobStatus || null,
+    };
+
+    const { error } = await supabase
+      .from("jobs")
+      .update(patch)
+      .eq("id", job.id)
+      .eq("subscriber_id", subscriberId);
+
     setSaving(false);
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not save job: " + (error.message || "Unknown error"));
+      return;
+    }
+
+    setSuccessMsg("Saved.");
+    await loadJob();
+  }
+
+  async function runAction(eventType) {
+    if (!job?.id) return;
+
+    setActing(eventType);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    const { error } = await supabase.rpc("create_job_event", {
+      _job_id: job.id,
+      _subscriber_id: subscriberId,
+      _event_type: eventType,
+      _event_time: new Date().toISOString(),
+      _scheduled_time: null,
+      _notes: null,
+    });
+
+    setActing("");
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not update job: " + (error.message || "Unknown error"));
+      return;
+    }
+
+    setSuccessMsg(`Updated: ${eventType.replace(/_/g, " ")}`);
+    await loadJob();
   }
 
   if (checking || loading) {
     return (
-      <main
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
-        <p>Loading job…</p>
+      <main style={centerStyle}>
+        <p>Loading…</p>
       </main>
     );
   }
 
-  if (!job) {
+  if (!user) {
     return (
-      <main style={{ padding: 24 }}>
-        <p>Job not found.</p>
-        <p>
-          <a href="/app/jobs">← Back to jobs</a>
-        </p>
+      <main style={pageStyle}>
+        <h1>Job</h1>
+        <p>You must be signed in.</p>
+        <button onClick={() => router.push("/login")} style={btnSecondary}>
+          Go to login
+        </button>
       </main>
     );
   }
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
-      <h1 style={{ fontSize: 24, marginBottom: 16 }}>
-        Job {job.job_number || job.id}
-      </h1>
+    <main style={pageStyle}>
+      <header style={headerStyle}>
+        <div>
+          <h1 style={{ margin: 0 }}>{title}</h1>
+          <p style={{ margin: "6px 0 0", color: "#555", fontSize: 13 }}>
+            Status: <b>{job.job_status || "—"}</b>
+          </p>
+        </div>
 
-      <p>
-        <a href="/app/jobs" style={{ fontSize: 14 }}>
-          ← Back to jobs
-        </a>
-      </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Link href="/app/jobs" style={{ ...btnSecondary, textDecoration: "none", display: "inline-block" }}>
+            ← Back to Jobs
+          </Link>
+          <button onClick={saveJob} disabled={saving} style={btnPrimary}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </header>
 
-      {(authError || errorMsg) && (
-        <p style={{ color: "red", marginTop: 8 }}>{authError || errorMsg}</p>
+      {(authError || errorMsg || successMsg) && (
+        <div style={{ marginBottom: 14 }}>
+          {(authError || errorMsg) ? (
+            <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p>
+          ) : null}
+          {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
+        </div>
       )}
 
-      {/* Overview */}
-      <section
-        style={{
-          padding: 16,
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          marginBottom: 24,
-          maxWidth: 700,
-        }}
-      >
-        <h2 style={{ fontSize: 18, marginTop: 0 }}>Overview</h2>
+      <section style={cardStyle}>
+        <h2 style={h2Style}>Actions</h2>
 
-        <p style={{ margin: "4px 0" }}>
-          <strong>Status:</strong> {formatJobStatus(job.job_status)}
-        </p>
-        <p style={{ margin: "4px 0" }}>
-          <strong>Delivery date:</strong>{" "}
-          {job.scheduled_date || "Not set"}
-        </p>
-        <p style={{ margin: "4px 0" }}>
-          <strong>Collection date:</strong>{" "}
-          {job.collection_date || "Ready whenever"}
-        </p>
-        <p style={{ margin: "4px 0" }}>
-          <strong>Payment:</strong> {job.payment_type || "Unknown"}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {job.job_status === "booked" && (
+            <button style={btnPrimary} disabled={acting === "delivered"} onClick={() => runAction("delivered")}>
+              {acting === "delivered" ? "Working…" : "Mark Delivered"}
+            </button>
+          )}
+
+          {job.job_status === "on_hire" && (
+            <button
+              style={btnDanger}
+              disabled={acting === "undo_delivered"}
+              onClick={() => runAction("undo_delivered")}
+              title="Revert to booked (keeps scheduled date)"
+            >
+              {acting === "undo_delivered" ? "Working…" : "Undo Delivered"}
+            </button>
+          )}
+        </div>
+
+        <p style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
+          Undo actions log an event (audit trail stays intact). Undo Delivered keeps the scheduled date.
         </p>
       </section>
 
-      {/* ✅ Status Actions */}
-      <section
-        style={{
-          padding: 16,
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          marginBottom: 24,
-          maxWidth: 700,
-        }}
-      >
-        <h2 style={{ fontSize: 18, marginTop: 0 }}>Status actions</h2>
+      <section style={cardStyle}>
+        <h2 style={h2Style}>Edit job</h2>
 
-        {job.job_status === "booked" && (
-          <div style={{ marginBottom: 8 }}>
-            <button
-              type="button"
-              onClick={() => updateJobStatus("on_hire")}
-              disabled={saving}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 4,
-                border: "none",
-                background: "#0070f3",
-                color: "#fff",
-                cursor: saving ? "default" : "pointer",
-                fontSize: 14,
-              }}
-            >
-              Mark delivered (On hire)
-            </button>
-            <p style={{ fontSize: 12, marginTop: 4, color: "#555" }}>
-              Use this when the skip has been dropped off on site.
-            </p>
-          </div>
-        )}
-
-        {job.job_status === "on_hire" && (
-          <>
-            <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
-                Ready for collection from (optional)
-              </label>
-              <input
-                type="date"
-                value={job.collection_date || ""}
-                onChange={(e) =>
-                  setJob({ ...job, collection_date: e.target.value })
-                }
-                style={{
-                  padding: 8,
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                }}
-              />
-              <div style={{ fontSize: 12, marginTop: 4, color: "#555" }}>
-                Leave blank if the skip is ready for collection at any time.
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => updateJobStatus("awaiting_collection")}
-              disabled={saving}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 4,
-                border: "none",
-                background: "#fa8c16",
-                color: "#fff",
-                cursor: saving ? "default" : "pointer",
-                fontSize: 14,
-              }}
-            >
-              Book collection (Awaiting collection)
-            </button>
-            <p style={{ fontSize: 12, marginTop: 4, color: "#555" }}>
-              This will mark the job as awaiting collection and store the date
-              above if provided.
-            </p>
-          </>
-        )}
-
-        {job.job_status === "awaiting_collection" && (
-          <>
-            <p style={{ fontSize: 14, marginBottom: 8 }}>
-              Skip is awaiting collection.
-              <br />
-              Collection date:{" "}
-              <strong>{job.collection_date || "Any time"}</strong>
-            </p>
-            <button
-              type="button"
-              onClick={() => updateJobStatus("collected")}
-              disabled={saving}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 4,
-                border: "none",
-                background: "#389e0d",
-                color: "#fff",
-                cursor: saving ? "default" : "pointer",
-                fontSize: 14,
-              }}
-            >
-              Mark collected
-            </button>
-          </>
-        )}
-
-        {job.job_status === "collected" && (
-          <p style={{ fontSize: 14, color: "#555" }}>
-            This job has been marked as <strong>collected</strong>.
-          </p>
-        )}
-
-        {/* Fallback if some other status value appears */}
-        {!["booked", "on_hire", "awaiting_collection", "collected"].includes(
-          job.job_status || ""
-        ) && (
-          <p style={{ fontSize: 14, color: "#555" }}>
-            No actions available for this status.
-          </p>
-        )}
-      </section>
-
-      {/* Editable job details */}
-      <section
-        style={{
-          padding: 16,
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          marginBottom: 24,
-          maxWidth: 700,
-        }}
-      >
-        <h2 style={{ fontSize: 18, marginTop: 0 }}>Job details</h2>
-
-        {/* Site fields */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>
-            Site name / description
+        <div style={gridStyle}>
+          <label style={labelStyle}>
+            Site name
+            <input value={siteName} onChange={(e) => setSiteName(e.target.value)} style={inputStyle} />
           </label>
-          <input
-            type="text"
-            value={job.site_name || ""}
-            onChange={(e) =>
-              setJob({ ...job, site_name: e.target.value })
-            }
-            style={{
-              width: "100%",
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-            }}
-          />
-        </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>
-            Address line 1
+          <label style={labelStyle}>
+            Site postcode
+            <input value={sitePostcode} onChange={(e) => setSitePostcode(e.target.value)} style={inputStyle} />
           </label>
-          <input
-            type="text"
-            value={job.site_address_line1 || ""}
-            onChange={(e) =>
-              setJob({ ...job, site_address_line1: e.target.value })
-            }
-            style={{
-              width: "100%",
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-            }}
-          />
-        </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>
-            Address line 2
+          <label style={labelStyle}>
+            Scheduled (delivery) date
+            <input type="date" value={scheduledDate || ""} onChange={(e) => setScheduledDate(e.target.value)} style={inputStyle} />
           </label>
-          <input
-            type="text"
-            value={job.site_address_line2 || ""}
-            onChange={(e) =>
-              setJob({ ...job, site_address_line2: e.target.value })
-            }
-            style={{
-              width: "100%",
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-            }}
-          />
-        </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>Town</label>
-          <input
-            type="text"
-            value={job.site_town || ""}
-            onChange={(e) =>
-              setJob({ ...job, site_town: e.target.value })
-            }
-            style={{
-              width: "100%",
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-            }}
-          />
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>Postcode</label>
-          <input
-            type="text"
-            value={job.site_postcode || ""}
-            onChange={(e) =>
-              setJob({ ...job, site_postcode: e.target.value })
-            }
-            style={{
-              width: "100%",
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-            }}
-          />
-        </div>
-
-        {/* Delivery date */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>
-            Delivery date
+          <label style={labelStyle}>
+            Collection date
+            <input type="date" value={collectionDate || ""} onChange={(e) => setCollectionDate(e.target.value)} style={inputStyle} />
           </label>
-          <input
-            type="date"
-            value={job.scheduled_date || ""}
-            onChange={(e) =>
-              setJob({ ...job, scheduled_date: e.target.value })
-            }
-            style={{
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-            }}
-          />
-        </div>
 
-        {/* Payment type */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>
+          <label style={labelStyle}>
             Payment type
+            <input value={paymentType} onChange={(e) => setPaymentType(e.target.value)} style={inputStyle} />
           </label>
-          <select
-            value={job.payment_type || ""}
-            onChange={(e) =>
-              setJob({ ...job, payment_type: e.target.value })
-            }
-            style={{
-              width: "100%",
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-            }}
-          >
-            <option value="">Select</option>
-            <option value="card">Card</option>
-            <option value="cash">Cash</option>
-            <option value="account">Account</option>
-          </select>
-        </div>
 
-        {/* Notes */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>Notes</label>
-          <textarea
-            value={job.notes || ""}
-            onChange={(e) =>
-              setJob({ ...job, notes: e.target.value })
-            }
-            rows={3}
-            style={{
-              width: "100%",
-              padding: 8,
-              borderRadius: 4,
-              border: "1px solid #ccc",
-              resize: "vertical",
-            }}
-          />
+          <label style={labelStyle}>
+            Job status
+            <select value={jobStatus || ""} onChange={(e) => setJobStatus(e.target.value)} style={inputStyle}>
+              <option value="">—</option>
+              <option value="booked">booked</option>
+              <option value="on_hire">on_hire</option>
+              <option value="awaiting_collection">awaiting_collection</option>
+              <option value="collected">collected</option>
+            </select>
+          </label>
         </div>
-
-        {/* Save button */}
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          style={{
-            padding: "8px 16px",
-            borderRadius: 4,
-            border: "none",
-            background: saving ? "#777" : "#0070f3",
-            color: "#fff",
-            fontWeight: 500,
-            cursor: saving ? "default" : "pointer",
-          }}
-        >
-          {saving ? "Saving…" : "Save changes"}
-        </button>
       </section>
     </main>
   );
 }
+
+const pageStyle = {
+  minHeight: "100vh",
+  padding: 24,
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+};
+
+const centerStyle = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontFamily: "system-ui, sans-serif",
+};
+
+const headerStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 12,
+  flexWrap: "wrap",
+  marginBottom: 16,
+};
+
+const cardStyle = {
+  background: "#fff",
+  border: "1px solid #eee",
+  borderRadius: 10,
+  padding: 14,
+  marginBottom: 14,
+  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+};
+
+const h2Style = { fontSize: 16, margin: "0 0 10px" };
+
+const gridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+  gap: 10,
+};
+
+const labelStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  fontSize: 12,
+  color: "#333",
+};
+
+const inputStyle = {
+  padding: "8px 10px",
+  borderRadius: 6,
+  border: "1px solid #ccc",
+  fontSize: 13,
+};
+
+const btnPrimary = {
+  padding: "8px 12px",
+  borderRadius: 6,
+  border: "1px solid #0070f3",
+  background: "#0070f3",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnSecondary = {
+  padding: "8px 12px",
+  borderRadius: 6,
+  border: "1px solid #ccc",
+  background: "#f5f5f5",
+  color: "#111",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnDanger = {
+  padding: "8px 12px",
+  borderRadius: 6,
+  border: "1px solid #f0b4b4",
+  background: "#fff5f5",
+  color: "#8a1f1f",
+  cursor: "pointer",
+  fontSize: 13,
+};
