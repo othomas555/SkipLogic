@@ -1,4 +1,4 @@
-// pages/app/customers/new.js
+// pages/app/customers/[id].js
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
@@ -22,13 +22,26 @@ function clampMoneyOrNull(v) {
   return n;
 }
 
-export default function NewCustomerPage() {
+function displayName(c) {
+  const base = `${c?.first_name || ""} ${c?.last_name || ""}`.trim();
+  if (c?.company_name) return `${c.company_name}${base ? ` – ${base}` : ""}`;
+  return base || "Customer";
+}
+
+export default function CustomerDetailPage() {
   const router = useRouter();
+  const { id } = router.query;
+
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+
+  const [customer, setCustomer] = useState(null);
 
   // Details
   const [firstName, setFirstName] = useState("");
@@ -69,16 +82,86 @@ export default function NewCustomerPage() {
     }
   }, [isCredit]);
 
+  async function load() {
+    if (checking) return;
+    if (!user || !subscriberId || !id) return;
+
+    setLoading(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    const { data, error } = await supabase
+      .from("customers")
+      .select(`
+        id,
+        subscriber_id,
+        phone,
+        email,
+        first_name,
+        last_name,
+        company_name,
+        address_line1,
+        address_line2,
+        address_line3,
+        postcode,
+        is_credit_account,
+        account_code,
+        credit_limit,
+        term_hire_exempt,
+        term_hire_days_override
+      `)
+      .eq("id", id)
+      .eq("subscriber_id", subscriberId)
+      .maybeSingle();
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not load customer.");
+      setLoading(false);
+      return;
+    }
+    if (!data) {
+      setErrorMsg("Customer not found (or you don't have access).");
+      setLoading(false);
+      return;
+    }
+
+    setCustomer(data);
+
+    setFirstName(data.first_name || "");
+    setLastName(data.last_name || "");
+    setCompanyName(data.company_name || "");
+    setPhone(data.phone || "");
+    setEmail(data.email || "");
+
+    setAddress1(data.address_line1 || "");
+    setAddress2(data.address_line2 || "");
+    setAddress3(data.address_line3 || "");
+    setPostcode(data.postcode || "");
+
+    setIsCredit(!!data.is_credit_account);
+    setAccountCode(data.account_code || "");
+    setCreditLimit(data.credit_limit != null ? String(data.credit_limit) : "");
+
+    setApplyTermHire(!data.term_hire_exempt);
+    setOverrideDays(data.term_hire_days_override != null ? String(data.term_hire_days_override) : "");
+
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking, user, subscriberId, id]);
+
   async function save() {
-    if (!subscriberId) return;
+    if (!customer?.id) return;
 
     setSaving(true);
     setErrorMsg("");
     setSuccessMsg("");
 
-    const payload = {
-      subscriber_id: subscriberId,
-
+    const patch = {
       first_name: firstName || null,
       last_name: lastName || null,
       company_name: companyName || null,
@@ -98,30 +181,54 @@ export default function NewCustomerPage() {
       term_hire_days_override: termHireDaysOverride,
     };
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("customers")
-      .insert(payload)
-      .select("id")
-      .maybeSingle();
+      .update(patch)
+      .eq("id", customer.id)
+      .eq("subscriber_id", subscriberId);
 
     setSaving(false);
 
     if (error) {
       console.error(error);
-      setErrorMsg("Could not create customer: " + (error.message || "Unknown error"));
+      setErrorMsg("Could not save customer: " + (error.message || "Unknown error"));
       return;
     }
 
-    setSuccessMsg("Customer created.");
-    const newId = data?.id;
-    if (newId) router.push(`/app/customers/${newId}`);
-    else router.push("/app/customers");
+    setSuccessMsg("Saved.");
+    await load();
   }
 
-  if (checking) {
+  async function deleteCustomer() {
+    if (!customer?.id) return;
+    const ok = window.confirm("Delete this customer? This cannot be undone.");
+    if (!ok) return;
+
+    setDeleting(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    const { error } = await supabase
+      .from("customers")
+      .delete()
+      .eq("id", customer.id)
+      .eq("subscriber_id", subscriberId);
+
+    setDeleting(false);
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not delete customer: " + (error.message || "Unknown error"));
+      return;
+    }
+
+    router.push("/app/customers");
+  }
+
+  if (checking || loading) {
     return (
       <main style={centerStyle}>
-        <p>Loading…</p>
+        <p>Loading customer…</p>
       </main>
     );
   }
@@ -129,7 +236,7 @@ export default function NewCustomerPage() {
   if (!user) {
     return (
       <main style={pageStyle}>
-        <h1>Add customer</h1>
+        <h1>Customer</h1>
         <p>You must be signed in.</p>
         <button style={btnSecondary} onClick={() => router.push("/login")}>
           Go to login
@@ -143,15 +250,18 @@ export default function NewCustomerPage() {
       <header style={headerStyle}>
         <div>
           <Link href="/app/customers" style={linkStyle}>← Back to customers</Link>
-          <h1 style={{ margin: "10px 0 0" }}>Add customer</h1>
+          <h1 style={{ margin: "10px 0 0" }}>{displayName(customer)}</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            Full customer details + credit + term hire settings.
+            Edit full details + credit + term hire settings.
           </p>
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={btnDanger} onClick={deleteCustomer} disabled={deleting}>
+            {deleting ? "Deleting…" : "Delete"}
+          </button>
           <button style={btnPrimary} onClick={save} disabled={saving}>
-            {saving ? "Saving…" : "Create customer"}
+            {saving ? "Saving…" : "Save"}
           </button>
         </div>
       </header>
@@ -168,7 +278,7 @@ export default function NewCustomerPage() {
         <div style={gridStyle}>
           <label style={labelStyle}>First name<input value={firstName} onChange={(e) => setFirstName(e.target.value)} style={inputStyle} /></label>
           <label style={labelStyle}>Last name<input value={lastName} onChange={(e) => setLastName(e.target.value)} style={inputStyle} /></label>
-          <label style={labelStyle}>Company (optional)<input value={companyName} onChange={(e) => setCompanyName(e.target.value)} style={inputStyle} /></label>
+          <label style={labelStyle}>Company<input value={companyName} onChange={(e) => setCompanyName(e.target.value)} style={inputStyle} /></label>
           <label style={labelStyle}>Phone<input value={phone} onChange={(e) => setPhone(e.target.value)} style={inputStyle} /></label>
           <label style={labelStyle}>Email<input value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} /></label>
         </div>
@@ -210,7 +320,6 @@ export default function NewCustomerPage() {
               value={creditLimit}
               onChange={(e) => setCreditLimit(e.target.value)}
               disabled={!isCredit}
-              placeholder={isCredit ? "" : "Disabled"}
               style={{ ...inputStyle, background: isCredit ? "#fff" : "#f3f3f3" }}
             />
           </label>
@@ -221,11 +330,7 @@ export default function NewCustomerPage() {
         <h2 style={h2Style}>Skip hire terms</h2>
 
         <label style={{ ...labelStyle, flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <input
-            type="checkbox"
-            checked={applyTermHire}
-            onChange={(e) => setApplyTermHire(e.target.checked)}
-          />
+          <input type="checkbox" checked={applyTermHire} onChange={(e) => setApplyTermHire(e.target.checked)} />
           <span style={{ fontSize: 13 }}>
             <b>Apply skip hire term rules</b> (untick for contract customers / tip &amp; returns)
           </span>
@@ -326,6 +431,16 @@ const btnSecondary = {
   border: "1px solid #ccc",
   background: "#f5f5f5",
   color: "#111",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnDanger = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #f0b4b4",
+  background: "#fff5f5",
+  color: "#8a1f1f",
   cursor: "pointer",
   fontSize: 13,
 };
