@@ -9,6 +9,7 @@ export default async function handler(req, res) {
 
   const supabase = getSupabaseAdmin();
   const token = readDriverSessionToken(req);
+
   if (token) {
     const sessionHash = hashOpaqueToken(token);
     await supabase.from("driver_sessions").delete().eq("session_hash", sessionHash);
