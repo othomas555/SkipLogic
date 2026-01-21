@@ -37,6 +37,12 @@ function addDaysYMD(ymd, days) {
   return dt.toISOString().slice(0, 10);
 }
 
+function cmpYMD(a, b) {
+  // YMD strings compare lexicographically when in YYYY-MM-DD format
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
 function clampInt(n, min, max) {
   const x = Number(n);
   if (!Number.isFinite(x)) return min;
@@ -132,11 +138,7 @@ export default async function handler(req, res) {
     const supabase = getSupabaseAdminClient();
     const today = ymdTodayUTC();
 
-    // IMPORTANT:
-    // We are NOT reading subscriber-level settings here to avoid guessing columns.
-    // Defaults:
-    // - term hire days: 14
-    // - reminder days before end: 4  (so reminder on day 10 of a 14-day term)
+    // Defaults (no subscriber-level settings read here):
     const DEFAULT_TERM_DAYS = 14;
     const DEFAULT_REMINDER_DAYS_BEFORE = 4;
 
@@ -188,18 +190,36 @@ export default async function handler(req, res) {
 
       if (cust.term_hire_exempt) {
         skippedExempt++;
+        details.push({
+          job_id: j.id,
+          ok: false,
+          skipped: "exempt",
+          job_number: j.job_number || null,
+        });
         continue;
       }
 
       const to = String(cust.email || "").trim();
       if (!to) {
         skippedNoEmail++;
+        details.push({
+          job_id: j.id,
+          ok: false,
+          skipped: "no_email",
+          job_number: j.job_number || null,
+        });
         continue;
       }
 
       const delivered = j.delivery_actual_date;
       if (!delivered) {
         skippedNotDue++;
+        details.push({
+          job_id: j.id,
+          ok: false,
+          skipped: "no_delivery_date",
+          job_number: j.job_number || null,
+        });
         continue;
       }
 
@@ -212,16 +232,32 @@ export default async function handler(req, res) {
       const totalDays = baseTermDays + extDays;
 
       const reminderBefore = DEFAULT_REMINDER_DAYS_BEFORE;
-      const reminderDate = addDaysYMD(delivered, Math.max(0, totalDays - reminderBefore));
 
-      if (reminderDate !== today) {
+      // Reminder is scheduled for the "reminder day" (e.g. day 10 of 14)
+      const reminderDate = addDaysYMD(delivered, Math.max(0, totalDays - reminderBefore));
+      const termEnd = addDaysYMD(delivered, totalDays);
+
+      // NEW BEHAVIOUR:
+      // If we missed the exact day, still send ONCE when overdue.
+      // Eligible if reminderDate <= today.
+      if (cmpYMD(reminderDate, today) === 1) {
         skippedNotDue++;
+        details.push({
+          job_id: j.id,
+          ok: false,
+          skipped: "not_due",
+          job_number: j.job_number || null,
+          delivered,
+          reminder_date: reminderDate,
+          today,
+          due_in_days_hint: "reminder_date > today",
+        });
         continue;
       }
 
       eligible++;
 
-      // Deduplicate using term_hire_reminder_log
+      // Deduplicate using term_hire_reminder_log (log is keyed by the scheduled reminderDate)
       const { data: existing, error: logErr } = await supabase
         .from("term_hire_reminder_log")
         .select("id")
@@ -232,16 +268,31 @@ export default async function handler(req, res) {
 
       if (logErr) {
         failed++;
-        details.push({ job_id: j.id, ok: false, stage: "log_lookup", error: logErr.message });
+        details.push({
+          job_id: j.id,
+          ok: false,
+          stage: "log_lookup",
+          error: logErr.message,
+          delivered,
+          reminder_date: reminderDate,
+          today,
+        });
         continue;
       }
 
       if (existing && existing.length) {
         skippedAlreadySent++;
+        details.push({
+          job_id: j.id,
+          ok: false,
+          skipped: "already_sent",
+          job_number: j.job_number || null,
+          delivered,
+          reminder_date: reminderDate,
+          today,
+        });
         continue;
       }
-
-      const termEnd = addDaysYMD(delivered, totalDays);
 
       const name =
         cust.company_name ||
@@ -262,7 +313,16 @@ export default async function handler(req, res) {
 
       if (!mail.ok) {
         failed++;
-        details.push({ job_id: j.id, ok: false, stage: "send_email", reason: mail.reason, body: mail.body });
+        details.push({
+          job_id: j.id,
+          ok: false,
+          stage: "send_email",
+          reason: mail.reason,
+          body: mail.body,
+          delivered,
+          reminder_date: reminderDate,
+          today,
+        });
         continue;
       }
 
@@ -278,12 +338,33 @@ export default async function handler(req, res) {
         // Email sent, but logging failed. Surface it.
         sent++;
         failed++;
-        details.push({ job_id: j.id, ok: true, stage: "sent_but_log_failed", error: insErr.message });
+        details.push({
+          job_id: j.id,
+          ok: true,
+          stage: "sent_but_log_failed",
+          error: insErr.message,
+          to: mail.to,
+          overridden: mail.overridden,
+          delivered,
+          reminder_date: reminderDate,
+          today,
+        });
         continue;
       }
 
       sent++;
-      details.push({ job_id: j.id, ok: true, to: mail.to, overridden: mail.overridden });
+      details.push({
+        job_id: j.id,
+        ok: true,
+        to: mail.to,
+        overridden: mail.overridden,
+        delivered,
+        reminder_date: reminderDate,
+        term_end: termEnd,
+        total_days: totalDays,
+        reminder_days_before: reminderBefore,
+        today,
+      });
     }
 
     return res.status(200).json({
@@ -300,8 +381,8 @@ export default async function handler(req, res) {
         already_sent: skippedAlreadySent,
       },
       defaults: {
-        term_days: 14,
-        reminder_days_before: 4,
+        term_days: DEFAULT_TERM_DAYS,
+        reminder_days_before: DEFAULT_REMINDER_DAYS_BEFORE,
       },
       details,
     });
