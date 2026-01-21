@@ -2,8 +2,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { supabase } from "../../../lib/supabaseClient";
-import { useAuthProfile } from "../../../lib/useAuthProfile";
+import { supabase } from "../../lib/supabaseClient";
+import { useAuthProfile } from "../../lib/useAuthProfile";
 
 function clampInt(n, min, max) {
   const x = Number(n);
@@ -25,7 +25,6 @@ export default function SettingsPage() {
   const [reminderDaysBefore, setReminderDaysBefore] = useState(4);
 
   const reminderDayNumber = useMemo(() => {
-    // Example: term=14, before=4 -> reminder on day 10 after delivery
     const term = clampInt(termHireDays, 1, 365);
     const before = clampInt(reminderDaysBefore, 0, 365);
     return Math.max(0, term - before);
@@ -128,10 +127,12 @@ export default function SettingsPage() {
     <main style={pageStyle}>
       <header style={headerStyle}>
         <div>
-          <Link href="/app" style={linkStyle}>← Back to dashboard</Link>
+          <Link href="/app" style={linkStyle}>
+            ← Back to dashboard
+          </Link>
           <h1 style={{ margin: "10px 0 0" }}>Settings</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            Skip hire terms (defaults). Customer overrides come next.
+            Skip hire terms (defaults).
           </p>
         </div>
 
@@ -185,8 +186,8 @@ export default function SettingsPage() {
           <div style={{ fontSize: 13, color: "#333", lineHeight: 1.5 }}>
             <div>
               If the term is <b>{clampInt(termHireDays, 1, 365)} days</b> and the reminder is{" "}
-              <b>{clampInt(reminderDaysBefore, 0, 365)} days before end</b>, then the reminder should
-              go out on <b>day {reminderDayNumber}</b> after the skip is <b>actually delivered</b>.
+              <b>{clampInt(reminderDaysBefore, 0, 365)} days before end</b>, then the reminder should go
+              out on <b>day {reminderDayNumber}</b> after the skip is <b>actually delivered</b>.
             </div>
             <div style={{ marginTop: 8, color: "#666" }}>
               Example: 14-day hire with 4-days-before reminder → email goes on day 10.
@@ -195,7 +196,7 @@ export default function SettingsPage() {
         </div>
 
         <p style={{ marginTop: 12, color: "#666", fontSize: 12 }}>
-          Next step: Customer override tick-box (“term hire exempt”) + optional per-customer term days override.
+          Next step: customer override tick-box (“term hire exempt”) + optional per-customer hire term override.
         </p>
       </section>
     </main>
