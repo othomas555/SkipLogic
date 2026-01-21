@@ -11,8 +11,9 @@ export default function JobsPage() {
   const [customers, setCustomers] = useState([]);
   const [jobs, setJobs] = useState([]);
 
-  const [loading, setLoading] = useState(true);      // only for first load
-  const [refreshing, setRefreshing] = useState(false); // for background refresh
+  const [loading, setLoading] = useState(true); // first load only
+  const [refreshing, setRefreshing] = useState(false); // background refresh
+
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [actionLoadingKey, setActionLoadingKey] = useState(null); // jobId:eventType
@@ -34,7 +35,7 @@ export default function JobsPage() {
     if (initial) setLoading(true);
     else setRefreshing(true);
 
-    // Customers
+    // 1) Customers
     const { data: customerData, error: customersError } = await supabase
       .from("customers")
       .select("id, first_name, last_name, company_name")
@@ -50,7 +51,7 @@ export default function JobsPage() {
     }
     setCustomers(customerData || []);
 
-    // Jobs
+    // 2) Jobs
     const { data: jobData, error: jobsError } = await supabase
       .from("jobs")
       .select(
@@ -115,15 +116,10 @@ export default function JobsPage() {
     return actionLoadingKey === `${jobId}:${eventType}`;
   }
 
-  async function createJobEvent(jobId, eventType, { confirmText } = {}) {
+  async function createJobEvent(jobId, eventType) {
     if (!subscriberId) {
       setErrorMsg("No subscriber found for this user.");
       return;
-    }
-
-    if (confirmText) {
-      const ok = window.confirm(confirmText);
-      if (!ok) return;
     }
 
     setErrorMsg("");
@@ -147,16 +143,24 @@ export default function JobsPage() {
       return;
     }
 
-    // Background refresh without flicker
+    // background refresh (no flicker)
     await loadData({ initial: false });
 
-    // Keep success message visible
+    // show success banner
     setSuccessMsg(`Updated job: ${eventType.replace(/_/g, " ")}`);
   }
 
   if (checking || loading) {
     return (
-      <main style={centerStyle}>
+      <main
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "system-ui, sans-serif",
+        }}
+      >
         <p>Loading jobs…</p>
       </main>
     );
@@ -167,7 +171,18 @@ export default function JobsPage() {
       <main style={{ minHeight: "100vh", padding: 24, fontFamily: "system-ui, sans-serif" }}>
         <h1>Jobs</h1>
         <p>You must be signed in to view jobs.</p>
-        <button type="button" onClick={() => router.push("/login")} style={btnSecondary}>
+        <button
+          type="button"
+          onClick={() => router.push("/login")}
+          style={{
+            marginTop: 8,
+            padding: "8px 12px",
+            borderRadius: 4,
+            border: "1px solid #ccc",
+            background: "#f5f5f5",
+            cursor: "pointer",
+          }}
+        >
           Go to login
         </button>
       </main>
@@ -176,7 +191,16 @@ export default function JobsPage() {
 
   return (
     <main style={{ minHeight: "100vh", padding: 24, fontFamily: "system-ui, sans-serif" }}>
-      <header style={headerStyle}>
+      <header
+        style={{
+          marginBottom: 16,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
         <div>
           <h1 style={{ fontSize: 24, marginBottom: 4 }}>Jobs</h1>
           <p style={{ fontSize: 14, color: "#555", margin: 0 }}>
@@ -185,10 +209,33 @@ export default function JobsPage() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" onClick={() => router.push("/app")} style={btnSecondary}>
+          <button
+            type="button"
+            onClick={() => router.push("/app")}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 4,
+              border: "1px solid #ccc",
+              background: "#f5f5f5",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
             ← Back to dashboard
           </button>
-          <button type="button" onClick={() => router.push("/app/jobs/book")} style={btnPrimary}>
+          <button
+            type="button"
+            onClick={() => router.push("/app/jobs/book")}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 4,
+              border: "none",
+              background: "#0070f3",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
             + Book new job
           </button>
         </div>
@@ -238,37 +285,16 @@ export default function JobsPage() {
                         View / Edit
                       </a>
 
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {job.job_status === "booked" && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              createJobEvent(job.id, "delivered", {
-                                confirmText: `Mark job ${job.job_number || ""} as DELIVERED?`,
-                              })
-                            }
-                            disabled={isActionLoading(job.id, "delivered")}
-                            style={smallPrimaryButton}
-                          >
-                            {isActionLoading(job.id, "delivered") ? "Saving…" : "Mark Delivered"}
-                          </button>
-                        )}
-
-                        {job.job_status === "on_hire" && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              createJobEvent(job.id, "undo_delivered", {
-                                confirmText: `Undo delivered (back to BOOKED) for job ${job.job_number || ""}?`,
-                              })
-                            }
-                            disabled={isActionLoading(job.id, "undo_delivered")}
-                            style={smallDangerButton}
-                          >
-                            {isActionLoading(job.id, "undo_delivered") ? "Saving…" : "Undo Delivered"}
-                          </button>
-                        )}
-                      </div>
+                      {job.job_status === "booked" && (
+                        <button
+                          type="button"
+                          onClick={() => createJobEvent(job.id, "delivered")}
+                          disabled={isActionLoading(job.id, "delivered")}
+                          style={smallPrimaryButton}
+                        >
+                          {isActionLoading(job.id, "delivered") ? "Saving…" : "Mark Delivered"}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -280,23 +306,6 @@ export default function JobsPage() {
     </main>
   );
 }
-
-const centerStyle = {
-  minHeight: "100vh",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontFamily: "system-ui, sans-serif",
-};
-
-const headerStyle = {
-  marginBottom: 16,
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  gap: 12,
-  flexWrap: "wrap",
-};
 
 const thStyle = {
   textAlign: "left",
@@ -310,25 +319,6 @@ const tdStyle = {
   borderBottom: "1px solid #eee",
   padding: "6px",
   fontSize: 12,
-};
-
-const btnPrimary = {
-  padding: "8px 12px",
-  borderRadius: 4,
-  border: "none",
-  background: "#0070f3",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-
-const btnSecondary = {
-  padding: "8px 12px",
-  borderRadius: 4,
-  border: "1px solid #ccc",
-  background: "#f5f5f5",
-  cursor: "pointer",
-  fontSize: 13,
 };
 
 const baseSmallButton = {
@@ -345,11 +335,4 @@ const smallPrimaryButton = {
   background: "#0070f3",
   color: "#fff",
   borderColor: "#0070f3",
-};
-
-const smallDangerButton = {
-  ...baseSmallButton,
-  background: "#fff5f5",
-  color: "#8a1f1f",
-  borderColor: "#f0b4b4",
 };
