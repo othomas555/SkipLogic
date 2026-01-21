@@ -5,10 +5,6 @@ import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
 import { useAuthProfile } from "../../lib/useAuthProfile";
 
-function cx(...xs) {
-  return xs.filter(Boolean).join(" ");
-}
-
 function ymdTodayUTC() {
   const dt = new Date();
   const y = dt.getUTCFullYear();
@@ -19,6 +15,19 @@ function ymdTodayUTC() {
 
 function toStr(x) {
   return String(x ?? "").trim();
+}
+
+function toInt(x, fallback = 0) {
+  const n = Number(x);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function fmtDate(d) {
+  return d ? String(d).slice(0, 10) : "";
+}
+
+function boolLabel(b) {
+  return b ? "Yes" : "No";
 }
 
 export default function DriversPage() {
@@ -35,12 +44,16 @@ export default function DriversPage() {
   const [showInactive, setShowInactive] = useState(false);
   const [drivers, setDrivers] = useState([]);
 
-  // Add driver form
-  const [fullName, setFullName] = useState("");
-  const [callsign, setCallsign] = useState("");
-  const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
-  const [licenceNumber, setLicenceNumber] = useState("");
+  // Add driver form (matches real schema)
+  const [newName, setNewName] = useState("");
+  const [newCallsign, setNewCallsign] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newLicenceNumber, setNewLicenceNumber] = useState("");
+  const [newNotes, setNewNotes] = useState("");
+
+  // Inline edit state per driver: { [id]: {field: value, ...} }
+  const [edits, setEdits] = useState({});
 
   async function loadDrivers() {
     if (checking) return;
@@ -51,10 +64,32 @@ export default function DriversPage() {
 
     let q = supabase
       .from("drivers")
-      .select("id, subscriber_id, full_name, callsign, phone, email, licence_number, is_active, created_at")
+      .select(
+        `
+        id,
+        subscriber_id,
+        name,
+        callsign,
+        phone,
+        email,
+        licence_number,
+        licence_check_due,
+        driver_card_number,
+        driver_card_expiry,
+        cpc_expiry,
+        medical_expiry,
+        notes,
+        is_active,
+        created_at,
+        updated_at,
+        expiry_notifications_enabled,
+        expiry_warning_days,
+        staff_id
+      `
+      )
       .eq("subscriber_id", subscriberId)
       .order("is_active", { ascending: false })
-      .order("full_name", { ascending: true });
+      .order("name", { ascending: true });
 
     if (!showInactive) {
       q = q.eq("is_active", true);
@@ -64,13 +99,37 @@ export default function DriversPage() {
 
     if (error) {
       console.error(error);
-      setErrorMsg("Could not load drivers.");
+      setErrorMsg("Could not load drivers: " + (error.message || "Unknown error"));
       setDrivers([]);
       setLoading(false);
       return;
     }
 
-    setDrivers(Array.isArray(data) ? data : []);
+    const rows = Array.isArray(data) ? data : [];
+    setDrivers(rows);
+
+    // Seed edits with current values (so inputs always show something)
+    const nextEdits = {};
+    for (const d of rows) {
+      nextEdits[d.id] = {
+        name: d.name ?? "",
+        callsign: d.callsign ?? "",
+        phone: d.phone ?? "",
+        email: d.email ?? "",
+        licence_number: d.licence_number ?? "",
+        licence_check_due: fmtDate(d.licence_check_due),
+        driver_card_number: d.driver_card_number ?? "",
+        driver_card_expiry: fmtDate(d.driver_card_expiry),
+        cpc_expiry: fmtDate(d.cpc_expiry),
+        medical_expiry: fmtDate(d.medical_expiry),
+        notes: d.notes ?? "",
+        expiry_notifications_enabled: !!d.expiry_notifications_enabled,
+        expiry_warning_days: toInt(d.expiry_warning_days, 30),
+        staff_id: d.staff_id ?? "",
+      };
+    }
+    setEdits(nextEdits);
+
     setLoading(false);
   }
 
@@ -83,6 +142,16 @@ export default function DriversPage() {
     return user?.email ? `Signed in as ${user.email}` : "Signed in";
   }, [user]);
 
+  function setEdit(driverId, key, value) {
+    setEdits((prev) => ({
+      ...prev,
+      [driverId]: {
+        ...(prev[driverId] || {}),
+        [key]: value,
+      },
+    }));
+  }
+
   async function addDriver(e) {
     e?.preventDefault?.();
     if (!subscriberId) return;
@@ -93,17 +162,18 @@ export default function DriversPage() {
 
     const payload = {
       subscriber_id: subscriberId,
-      full_name: toStr(fullName),
-      callsign: toStr(callsign) || null,
-      phone: toStr(phone) || null,
-      email: toStr(email) || null,
-      licence_number: toStr(licenceNumber) || null,
+      name: toStr(newName),
+      callsign: toStr(newCallsign) || null,
+      phone: toStr(newPhone) || null,
+      email: toStr(newEmail) || null,
+      licence_number: toStr(newLicenceNumber) || null,
+      notes: toStr(newNotes) || null,
       is_active: true,
     };
 
-    if (!payload.full_name) {
+    if (!payload.name) {
       setSaving(false);
-      setErrorMsg("Name is required.");
+      setErrorMsg("Driver name is required.");
       return;
     }
 
@@ -117,13 +187,67 @@ export default function DriversPage() {
       return;
     }
 
-    setFullName("");
-    setCallsign("");
-    setPhone("");
-    setEmail("");
-    setLicenceNumber("");
+    setNewName("");
+    setNewCallsign("");
+    setNewPhone("");
+    setNewEmail("");
+    setNewLicenceNumber("");
+    setNewNotes("");
 
     setSuccessMsg("Driver added.");
+    await loadDrivers();
+  }
+
+  async function saveDriver(driverId) {
+    if (!driverId) return;
+    if (!subscriberId) return;
+
+    const row = edits[driverId];
+    if (!row) return;
+
+    setActingId(driverId);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    const patch = {
+      name: toStr(row.name) || null,
+      callsign: toStr(row.callsign) || null,
+      phone: toStr(row.phone) || null,
+      email: toStr(row.email) || null,
+      licence_number: toStr(row.licence_number) || null,
+      licence_check_due: row.licence_check_due || null,
+      driver_card_number: toStr(row.driver_card_number) || null,
+      driver_card_expiry: row.driver_card_expiry || null,
+      cpc_expiry: row.cpc_expiry || null,
+      medical_expiry: row.medical_expiry || null,
+      notes: toStr(row.notes) || null,
+      expiry_notifications_enabled: !!row.expiry_notifications_enabled,
+      expiry_warning_days: Math.max(1, Math.min(365, toInt(row.expiry_warning_days, 30))),
+      staff_id: toStr(row.staff_id) || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (!patch.name) {
+      setActingId("");
+      setErrorMsg("Name is required.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("drivers")
+      .update(patch)
+      .eq("id", driverId)
+      .eq("subscriber_id", subscriberId);
+
+    setActingId("");
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("Could not save driver: " + (error.message || "Unknown error"));
+      return;
+    }
+
+    setSuccessMsg("Driver saved.");
     await loadDrivers();
   }
 
@@ -132,7 +256,7 @@ export default function DriversPage() {
     if (!subscriberId) return;
 
     const ok = confirm(
-      `Deactivate "${driver.full_name}"?\n\nThis will automatically unassign them from FUTURE jobs. Historic jobs remain unchanged.`
+      `Deactivate "${driver.name}"?\n\nThis will unassign them from FUTURE jobs. Historic jobs remain unchanged.`
     );
     if (!ok) return;
 
@@ -140,23 +264,21 @@ export default function DriversPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
-    // 1) Deactivate driver
+    // 1) Deactivate
     const { error: dErr } = await supabase
       .from("drivers")
-      .update({ is_active: false })
+      .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq("id", driver.id)
       .eq("subscriber_id", subscriberId);
 
     if (dErr) {
       console.error(dErr);
       setActingId("");
-      setErrorMsg("Could not deactivate driver: " + (dErr.message || "Unknown error"));
+      setErrorMsg("Could not deactivate: " + (dErr.message || "Unknown error"));
       return;
     }
 
-    // 2) Unassign from future jobs
-    // Definition of "future": scheduled_date >= today (UTC) AND not yet collected.
-    // (We also scope by subscriber_id.)
+    // 2) Unassign from future jobs (scheduled_date >= today UTC, not collected)
     const today = ymdTodayUTC();
     const { error: jErr } = await supabase
       .from("jobs")
@@ -169,11 +291,8 @@ export default function DriversPage() {
     setActingId("");
 
     if (jErr) {
-      // Driver is deactivated, but unassign failed. Surface it.
       console.error(jErr);
-      setErrorMsg(
-        "Driver deactivated, but could not unassign future jobs: " + (jErr.message || "Unknown error")
-      );
+      setErrorMsg("Driver deactivated, but could not unassign future jobs: " + (jErr.message || "Unknown error"));
       await loadDrivers();
       return;
     }
@@ -192,7 +311,7 @@ export default function DriversPage() {
 
     const { error } = await supabase
       .from("drivers")
-      .update({ is_active: true })
+      .update({ is_active: true, updated_at: new Date().toISOString() })
       .eq("id", driver.id)
       .eq("subscriber_id", subscriberId);
 
@@ -200,7 +319,7 @@ export default function DriversPage() {
 
     if (error) {
       console.error(error);
-      setErrorMsg("Could not reactivate driver: " + (error.message || "Unknown error"));
+      setErrorMsg("Could not reactivate: " + (error.message || "Unknown error"));
       return;
     }
 
@@ -230,31 +349,33 @@ export default function DriversPage() {
 
   return (
     <main style={pageStyle}>
-      <h1 style={{ marginTop: 0 }}>Drivers</h1>
-      <p style={{ marginTop: 6, color: "#444" }}>
-        <b>{signedInLabel}</b>
-      </p>
+      <header style={headerStyle}>
+        <div>
+          <h1 style={{ margin: 0 }}>Drivers</h1>
+          <div style={{ marginTop: 6, color: "#444", fontSize: 13 }}>
+            <b>{signedInLabel}</b>
+          </div>
+        </div>
 
-      <div style={{ margin: "12px 0 16px", display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Link href="/app" style={btnSecondaryLink}>
-          ← Back to dashboard
-        </Link>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <Link href="/app" style={btnSecondaryLink}>
+            ← Back to dashboard
+          </Link>
 
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-          <input
-            type="checkbox"
-            checked={showInactive}
-            onChange={(e) => setShowInactive(e.target.checked)}
-          />
-          Show inactive drivers
-        </label>
-      </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={showInactive}
+              onChange={(e) => setShowInactive(e.target.checked)}
+            />
+            Show inactive
+          </label>
+        </div>
+      </header>
 
       {(authError || errorMsg || successMsg) && (
         <div style={{ marginBottom: 14 }}>
-          {authError || errorMsg ? (
-            <div style={alertError}>{authError || errorMsg}</div>
-          ) : null}
+          {authError || errorMsg ? <div style={alertError}>{authError || errorMsg}</div> : null}
           {successMsg ? <div style={alertOk}>{successMsg}</div> : null}
         </div>
       )}
@@ -265,27 +386,35 @@ export default function DriversPage() {
           <div style={gridForm}>
             <label style={labelStyle}>
               Name *
-              <input value={fullName} onChange={(e) => setFullName(e.target.value)} style={inputStyle} />
+              <input value={newName} onChange={(e) => setNewName(e.target.value)} style={inputStyle} />
             </label>
             <label style={labelStyle}>
-              Callsign (optional)
-              <input value={callsign} onChange={(e) => setCallsign(e.target.value)} style={inputStyle} placeholder="e.g. Driver A" />
+              Callsign
+              <input value={newCallsign} onChange={(e) => setNewCallsign(e.target.value)} style={inputStyle} />
             </label>
             <label style={labelStyle}>
               Phone
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} style={inputStyle} />
+              <input value={newPhone} onChange={(e) => setNewPhone(e.target.value)} style={inputStyle} />
             </label>
             <label style={labelStyle}>
               Email
-              <input value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} />
+              <input value={newEmail} onChange={(e) => setNewEmail(e.target.value)} style={inputStyle} />
             </label>
             <label style={labelStyle}>
               Licence number
-              <input value={licenceNumber} onChange={(e) => setLicenceNumber(e.target.value)} style={inputStyle} />
+              <input
+                value={newLicenceNumber}
+                onChange={(e) => setNewLicenceNumber(e.target.value)}
+                style={inputStyle}
+              />
+            </label>
+            <label style={labelStyle}>
+              Notes
+              <input value={newNotes} onChange={(e) => setNewNotes(e.target.value)} style={inputStyle} />
             </label>
           </div>
 
-          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ marginTop: 12 }}>
             <button type="submit" style={btnPrimary} disabled={saving}>
               {saving ? "Saving…" : "Add driver"}
             </button>
@@ -299,49 +428,132 @@ export default function DriversPage() {
         {!drivers.length ? (
           <p style={{ margin: 0, color: "#666" }}>No drivers found.</p>
         ) : (
-          <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "grid", gap: 12 }}>
             {drivers.map((d) => {
               const inactive = d.is_active === false;
               const busy = actingId === d.id;
+              const row = edits[d.id] || {};
 
               return (
-                <div key={d.id} style={driverRow}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>
-                        {d.full_name || "—"}{" "}
+                <div key={d.id} style={driverCard}>
+                  <div style={driverTopRow}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ fontWeight: 800, fontSize: 15 }}>{d.name || "—"}</div>
                         {inactive ? <span style={pillInactive}>Inactive</span> : <span style={pillActive}>Active</span>}
+                        {d.callsign ? <span style={miniMeta}>Callsign: {d.callsign}</span> : null}
                       </div>
-                      {d.callsign ? <div style={{ fontSize: 12, color: "#555" }}>Callsign: {d.callsign}</div> : null}
+                      <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
+                        <span>Created: {String(d.created_at || "").slice(0, 10) || "—"}</span>
+                        {"  "}•{"  "}
+                        <span>Updated: {String(d.updated_at || "").slice(0, 10) || "—"}</span>
+                      </div>
                     </div>
 
-                    <div style={{ fontSize: 12, color: "#555", display: "flex", gap: 14, flexWrap: "wrap" }}>
-                      {d.phone ? <span>Phone: {d.phone}</span> : null}
-                      {d.email ? <span>Email: {d.email}</span> : null}
-                      {d.licence_number ? <span>Licence: {d.licence_number}</span> : null}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {!inactive ? (
+                        <button style={btnDanger} disabled={busy} onClick={() => deactivateDriver(d)} type="button">
+                          {busy ? "Working…" : "Deactivate"}
+                        </button>
+                      ) : (
+                        <button style={btnSecondary} disabled={busy} onClick={() => reactivateDriver(d)} type="button">
+                          {busy ? "Working…" : "Reactivate"}
+                        </button>
+                      )}
+                      <button style={btnPrimary} disabled={busy} onClick={() => saveDriver(d.id)} type="button">
+                        {busy ? "Saving…" : "Save"}
+                      </button>
                     </div>
                   </div>
 
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    {!inactive ? (
-                      <button
-                        style={btnDanger}
-                        disabled={busy}
-                        onClick={() => deactivateDriver(d)}
-                        type="button"
+                  <div style={gridForm}>
+                    <label style={labelStyle}>
+                      Name *
+                      <input value={row.name ?? ""} onChange={(e) => setEdit(d.id, "name", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Callsign
+                      <input value={row.callsign ?? ""} onChange={(e) => setEdit(d.id, "callsign", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Phone
+                      <input value={row.phone ?? ""} onChange={(e) => setEdit(d.id, "phone", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Email
+                      <input value={row.email ?? ""} onChange={(e) => setEdit(d.id, "email", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Licence number
+                      <input value={row.licence_number ?? ""} onChange={(e) => setEdit(d.id, "licence_number", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Licence check due
+                      <input type="date" value={row.licence_check_due ?? ""} onChange={(e) => setEdit(d.id, "licence_check_due", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Driver card number
+                      <input value={row.driver_card_number ?? ""} onChange={(e) => setEdit(d.id, "driver_card_number", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Driver card expiry
+                      <input type="date" value={row.driver_card_expiry ?? ""} onChange={(e) => setEdit(d.id, "driver_card_expiry", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      CPC expiry
+                      <input type="date" value={row.cpc_expiry ?? ""} onChange={(e) => setEdit(d.id, "cpc_expiry", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Medical expiry
+                      <input type="date" value={row.medical_expiry ?? ""} onChange={(e) => setEdit(d.id, "medical_expiry", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Expiry notifications enabled
+                      <select
+                        value={row.expiry_notifications_enabled ? "yes" : "no"}
+                        onChange={(e) => setEdit(d.id, "expiry_notifications_enabled", e.target.value === "yes")}
+                        style={inputStyle}
                       >
-                        {busy ? "Working…" : "Deactivate"}
-                      </button>
-                    ) : (
-                      <button
-                        style={btnSecondary}
-                        disabled={busy}
-                        onClick={() => reactivateDriver(d)}
-                        type="button"
-                      >
-                        {busy ? "Working…" : "Reactivate"}
-                      </button>
-                    )}
+                        <option value="no">No</option>
+                        <option value="yes">Yes</option>
+                      </select>
+                    </label>
+
+                    <label style={labelStyle}>
+                      Expiry warning days
+                      <input
+                        type="number"
+                        min={1}
+                        max={365}
+                        value={String(row.expiry_warning_days ?? 30)}
+                        onChange={(e) => setEdit(d.id, "expiry_warning_days", e.target.value)}
+                        style={inputStyle}
+                      />
+                    </label>
+
+                    <label style={labelStyle}>
+                      Staff ID (optional)
+                      <input value={row.staff_id ?? ""} onChange={(e) => setEdit(d.id, "staff_id", e.target.value)} style={inputStyle} />
+                    </label>
+
+                    <label style={{ ...labelStyle, gridColumn: "1 / -1" }}>
+                      Notes
+                      <textarea
+                        value={row.notes ?? ""}
+                        onChange={(e) => setEdit(d.id, "notes", e.target.value)}
+                        style={{ ...inputStyle, minHeight: 70 }}
+                      />
+                    </label>
                   </div>
                 </div>
               );
@@ -366,6 +578,14 @@ const centerStyle = {
   alignItems: "center",
   justifyContent: "center",
   fontFamily: "system-ui, sans-serif",
+};
+
+const headerStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-end",
+  gap: 12,
+  flexWrap: "wrap",
 };
 
 const cardStyle = {
@@ -445,6 +665,7 @@ const alertError = {
   background: "#fff5f5",
   color: "#8a1f1f",
   fontSize: 13,
+  whiteSpace: "pre-wrap",
 };
 
 const alertOk = {
@@ -456,16 +677,22 @@ const alertOk = {
   fontSize: 13,
 };
 
-const driverRow = {
+const driverCard = {
   border: "1px solid #eee",
   borderRadius: 12,
   padding: 12,
+};
+
+const driverTopRow = {
   display: "flex",
-  alignItems: "center",
   justifyContent: "space-between",
   gap: 12,
   flexWrap: "wrap",
+  alignItems: "flex-start",
+  marginBottom: 10,
 };
+
+const miniMeta = { fontSize: 12, color: "#555" };
 
 const pillActive = {
   display: "inline-block",
@@ -476,7 +703,6 @@ const pillActive = {
   background: "#f2fff2",
   color: "#1f6b2a",
   fontWeight: 700,
-  marginLeft: 8,
 };
 
 const pillInactive = {
@@ -488,5 +714,4 @@ const pillInactive = {
   background: "#fafafa",
   color: "#666",
   fontWeight: 700,
-  marginLeft: 8,
 };
