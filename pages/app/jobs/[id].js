@@ -29,11 +29,12 @@ function daysBetween(aYmd, bYmd) {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   return Math.round((b - a) / (1000 * 60 * 60 * 24));
 }
-function todayYMD() {
+function todayYMDUTC() {
+  // Match cron behaviour (UTC day boundaries)
   const dt = new Date();
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const d = String(dt.getDate()).padStart(2, "0");
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dt.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
@@ -53,6 +54,9 @@ export default function JobDetailPage() {
   const [job, setJob] = useState(null);
   const [customer, setCustomer] = useState(null);
   const [subscriberSettings, setSubscriberSettings] = useState(null);
+
+  // term-hire reminder log rows for this job
+  const [reminderLogs, setReminderLogs] = useState([]);
 
   // editable fields
   const [siteName, setSiteName] = useState("");
@@ -121,9 +125,20 @@ export default function JobDetailPage() {
 
     if (sErr) console.error(sErr);
 
+    // Load reminder log for this job (don’t assume created_at exists; order by reminder_date)
+    const { data: logs, error: lErr } = await supabase
+      .from("term_hire_reminder_log")
+      .select("reminder_date, sent_to")
+      .eq("subscriber_id", subscriberId)
+      .eq("job_id", j.id)
+      .order("reminder_date", { ascending: false });
+
+    if (lErr) console.error(lErr);
+
     setJob(j);
     setCustomer(c || null);
     setSubscriberSettings(s || null);
+    setReminderLogs(Array.isArray(logs) ? logs : []);
 
     setSiteName(j.site_name || "");
     setSitePostcode(j.site_postcode || "");
@@ -155,27 +170,41 @@ export default function JobDetailPage() {
     return subDefault;
   }, [subscriberSettings, customer]);
 
+  const reminderBeforeDays = useMemo(() => {
+    return toInt(subscriberSettings?.term_hire_reminder_days_before, 4);
+  }, [subscriberSettings]);
+
   const reminderDay = useMemo(() => {
-    const before = toInt(subscriberSettings?.term_hire_reminder_days_before, 4);
     const term = termHireDays;
     if (!term) return null;
-    return Math.max(0, term - before);
-  }, [subscriberSettings, termHireDays]);
+    return Math.max(0, term - reminderBeforeDays);
+  }, [termHireDays, reminderBeforeDays]);
 
   const deliveryAnchor = useMemo(() => {
     return job?.delivery_actual_date || job?.scheduled_date || null;
   }, [job]);
 
-  const hireEndDate = useMemo(() => {
+  const totalHireDays = useMemo(() => {
     if (!termHireDays) return null;
+    return termHireDays + toInt(job?.hire_extension_days, 0);
+  }, [termHireDays, job]);
+
+  const scheduledReminderDate = useMemo(() => {
     if (!deliveryAnchor) return null;
-    const total = termHireDays + toInt(job?.hire_extension_days, 0);
-    return addDays(deliveryAnchor, total);
-  }, [termHireDays, deliveryAnchor, job]);
+    if (!totalHireDays) return null;
+    // reminder date is delivery + (totalDays - reminderBeforeDays)
+    return addDays(deliveryAnchor, Math.max(0, totalHireDays - reminderBeforeDays));
+  }, [deliveryAnchor, totalHireDays, reminderBeforeDays]);
+
+  const hireEndDate = useMemo(() => {
+    if (!deliveryAnchor) return null;
+    if (!totalHireDays) return null;
+    return addDays(deliveryAnchor, totalHireDays);
+  }, [deliveryAnchor, totalHireDays]);
 
   const daysRemaining = useMemo(() => {
     if (!hireEndDate) return null;
-    return daysBetween(todayYMD(), hireEndDate);
+    return daysBetween(todayYMDUTC(), hireEndDate);
   }, [hireEndDate]);
 
   const hireStateLabel = useMemo(() => {
@@ -186,6 +215,28 @@ export default function JobDetailPage() {
     if (daysRemaining === 0) return "Due today";
     return `${daysRemaining} day(s) remaining`;
   }, [termHireDays, deliveryAnchor, daysRemaining]);
+
+  const reminderLogMatch = useMemo(() => {
+    if (!scheduledReminderDate) return null;
+    const rows = Array.isArray(reminderLogs) ? reminderLogs : [];
+    return rows.find((r) => String(r?.reminder_date || "") === scheduledReminderDate) || null;
+  }, [reminderLogs, scheduledReminderDate]);
+
+  const reminderStatus = useMemo(() => {
+    if (termHireDays == null) return { label: "Exempt", tone: "muted" };
+    if (!deliveryAnchor) return { label: "Pending (no delivery date)", tone: "muted" };
+    if (!scheduledReminderDate) return { label: "—", tone: "muted" };
+
+    if (reminderLogMatch) {
+      return { label: `Sent (for ${scheduledReminderDate})`, tone: "good" };
+    }
+
+    const diff = daysBetween(todayYMDUTC(), scheduledReminderDate);
+    if (diff == null) return { label: "—", tone: "muted" };
+    if (diff > 0) return { label: `Due in ${diff} day(s)`, tone: "muted" };
+    if (diff === 0) return { label: "Due today", tone: "warn" };
+    return { label: `Overdue by ${Math.abs(diff)} day(s)`, tone: "bad" };
+  }, [termHireDays, deliveryAnchor, scheduledReminderDate, reminderLogMatch]);
 
   // Status helpers (YOUR statuses)
   const status = job?.job_status || "";
@@ -205,8 +256,8 @@ export default function JobDetailPage() {
     const patch = {
       site_name: siteName || null,
       site_postcode: sitePostcode || null,
-      scheduled_date: plannedDelivery || null,   // planned delivery
-      collection_date: plannedCollection || null // planned collection
+      scheduled_date: plannedDelivery || null, // planned delivery
+      collection_date: plannedCollection || null, // planned collection
     };
 
     const { error } = await supabase
@@ -341,21 +392,43 @@ export default function JobDetailPage() {
       <main style={pageStyle}>
         <h1>Job</h1>
         <p>You must be signed in.</p>
-        <button onClick={() => router.push("/login")} style={btnSecondary}>Go to login</button>
+        <button onClick={() => router.push("/login")} style={btnSecondary}>
+          Go to login
+        </button>
       </main>
     );
   }
+
+  const reminderToneStyle =
+    reminderStatus.tone === "good"
+      ? { color: "green" }
+      : reminderStatus.tone === "warn"
+      ? { color: "#8a6d00" }
+      : reminderStatus.tone === "bad"
+      ? { color: "#8a1f1f" }
+      : { color: "#555" };
 
   return (
     <main style={pageStyle}>
       <header style={headerStyle}>
         <div>
-          <Link href="/app/jobs" style={linkStyle}>← Back to jobs list</Link>
+          <Link href="/app/jobs" style={linkStyle}>
+            ← Back to jobs list
+          </Link>
           <h1 style={{ margin: "10px 0 6px" }}>{job.job_number ? `Job ${job.job_number}` : "Job"}</h1>
           <div style={{ color: "#555", fontSize: 13 }}>
-            <div><b>Status:</b> {job.job_status || "—"}</div>
-            <div><b>Customer:</b> {customerName}</div>
-            <div><b>Site:</b> {job.site_name ? `${job.site_name}${job.site_postcode ? `, ${job.site_postcode}` : ""}` : (job.site_postcode || "—")}</div>
+            <div>
+              <b>Status:</b> {job.job_status || "—"}
+            </div>
+            <div>
+              <b>Customer:</b> {customerName}
+            </div>
+            <div>
+              <b>Site:</b>{" "}
+              {job.site_name
+                ? `${job.site_name}${job.site_postcode ? `, ${job.site_postcode}` : ""}`
+                : job.site_postcode || "—"}
+            </div>
           </div>
         </div>
 
@@ -368,7 +441,7 @@ export default function JobDetailPage() {
 
       {(authError || errorMsg || successMsg) && (
         <div style={{ marginBottom: 14 }}>
-          {(authError || errorMsg) ? <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p> : null}
+          {authError || errorMsg ? <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p> : null}
           {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
         </div>
       )}
@@ -377,10 +450,22 @@ export default function JobDetailPage() {
         <section style={cardStyle}>
           <h2 style={h2Style}>Dates</h2>
           <div style={kvGrid}>
-            <div style={kv}><span style={k}>Planned delivery</span><span style={v}>{fmtDate(job.scheduled_date)}</span></div>
-            <div style={kv}><span style={k}>Actual delivery</span><span style={v}>{fmtDate(job.delivery_actual_date)}</span></div>
-            <div style={kv}><span style={k}>Planned collection</span><span style={v}>{fmtDate(job.collection_date)}</span></div>
-            <div style={kv}><span style={k}>Actual collection</span><span style={v}>{fmtDate(job.collection_actual_date)}</span></div>
+            <div style={kv}>
+              <span style={k}>Planned delivery</span>
+              <span style={v}>{fmtDate(job.scheduled_date)}</span>
+            </div>
+            <div style={kv}>
+              <span style={k}>Actual delivery</span>
+              <span style={v}>{fmtDate(job.delivery_actual_date)}</span>
+            </div>
+            <div style={kv}>
+              <span style={k}>Planned collection</span>
+              <span style={v}>{fmtDate(job.collection_date)}</span>
+            </div>
+            <div style={kv}>
+              <span style={k}>Actual collection</span>
+              <span style={v}>{fmtDate(job.collection_actual_date)}</span>
+            </div>
           </div>
 
           <div style={{ marginTop: 12 }}>
@@ -388,11 +473,21 @@ export default function JobDetailPage() {
             <div style={gridForm}>
               <label style={labelStyle}>
                 Planned delivery
-                <input type="date" value={plannedDelivery || ""} onChange={(e) => setPlannedDelivery(e.target.value)} style={inputStyle} />
+                <input
+                  type="date"
+                  value={plannedDelivery || ""}
+                  onChange={(e) => setPlannedDelivery(e.target.value)}
+                  style={inputStyle}
+                />
               </label>
               <label style={labelStyle}>
                 Planned collection
-                <input type="date" value={plannedCollection || ""} onChange={(e) => setPlannedCollection(e.target.value)} style={inputStyle} />
+                <input
+                  type="date"
+                  value={plannedCollection || ""}
+                  onChange={(e) => setPlannedCollection(e.target.value)}
+                  style={inputStyle}
+                />
               </label>
             </div>
           </div>
@@ -401,7 +496,9 @@ export default function JobDetailPage() {
         <section style={cardStyle}>
           <h2 style={h2Style}>Hire terms</h2>
           <div style={{ fontSize: 13, color: "#333" }}>
-            <div style={{ marginBottom: 6 }}><b>{hireStateLabel}</b></div>
+            <div style={{ marginBottom: 6 }}>
+              <b>{hireStateLabel}</b>
+            </div>
 
             {termHireDays == null ? (
               <p style={{ margin: "8px 0", color: "#666" }}>
@@ -410,14 +507,42 @@ export default function JobDetailPage() {
             ) : (
               <>
                 <div style={kvGrid}>
-                  <div style={kv}><span style={k}>Term days</span><span style={v}>{termHireDays}</span></div>
-                  <div style={kv}><span style={k}>Extension days</span><span style={v}>{toInt(job.hire_extension_days, 0)}</span></div>
-                  <div style={kv}><span style={k}>Hire end date</span><span style={v}>{hireEndDate ? hireEndDate : "—"}</span></div>
-                  <div style={kv}><span style={k}>Reminder day</span><span style={v}>{reminderDay != null ? `Day ${reminderDay}` : "—"}</span></div>
+                  <div style={kv}>
+                    <span style={k}>Term days</span>
+                    <span style={v}>{termHireDays}</span>
+                  </div>
+                  <div style={kv}>
+                    <span style={k}>Extension days</span>
+                    <span style={v}>{toInt(job.hire_extension_days, 0)}</span>
+                  </div>
+                  <div style={kv}>
+                    <span style={k}>Hire end date</span>
+                    <span style={v}>{hireEndDate ? hireEndDate : "—"}</span>
+                  </div>
+                  <div style={kv}>
+                    <span style={k}>Reminder day</span>
+                    <span style={v}>{reminderDay != null ? `Day ${reminderDay}` : "—"}</span>
+                  </div>
+
+                  <div style={kv}>
+                    <span style={k}>Scheduled reminder date</span>
+                    <span style={v}>{scheduledReminderDate || "—"}</span>
+                  </div>
+
+                  <div style={kv}>
+                    <span style={k}>Reminder status</span>
+                    <span style={{ ...v, ...reminderToneStyle }}>{reminderStatus.label}</span>
+                  </div>
+
+                  <div style={kv}>
+                    <span style={k}>Reminder sent to</span>
+                    <span style={v}>{reminderLogMatch?.sent_to ? String(reminderLogMatch.sent_to) : "—"}</span>
+                  </div>
                 </div>
 
                 <p style={{ margin: "10px 0", color: "#666" }}>
-                  Goal: email the customer on day {reminderDay ?? "—"} after delivery to book collection or extend.
+                  Reminder logic: scheduled for {scheduledReminderDate || "—"} (based on delivery + term days).
+                  If missed, cron will still send once when overdue.
                 </p>
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -451,7 +576,11 @@ export default function JobDetailPage() {
           )}
 
           {canRequestCollection && (
-            <button style={btnSecondary} disabled={acting === "customer_requested_collection"} onClick={() => runAction("customer_requested_collection")}>
+            <button
+              style={btnSecondary}
+              disabled={acting === "customer_requested_collection"}
+              onClick={() => runAction("customer_requested_collection")}
+            >
               {acting === "customer_requested_collection" ? "Working…" : "Customer Requested Collection"}
             </button>
           )}
