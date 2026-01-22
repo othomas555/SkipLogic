@@ -296,10 +296,22 @@ export default function DriversPage() {
     setActingId(driver.id);
 
     try {
+      const { data: sessData, error: sessErr } = await supabase.auth.getSession();
+      const accessToken = sessData?.session?.access_token;
+
+      if (sessErr || !accessToken) {
+        setActingId("");
+        setErrorMsg("You are not signed in (missing session). Please refresh and sign in again.");
+        return;
+      }
+
       const res = await fetch("/api/admin/drivers/set-password", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driver_id: driver.id, password: pw1 }),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ driver_id: driver.id, password: pw1, subscriber_id: subscriberId }),
       });
 
       const json = await res.json().catch(() => ({}));
@@ -366,7 +378,9 @@ export default function DriversPage() {
 
     if (jErr) {
       console.error(jErr);
-      setErrorMsg("Driver deactivated, but could not unassign future jobs: " + (jErr.message || "Unknown error"));
+      setErrorMsg(
+        "Driver deactivated, but could not unassign future jobs: " + (jErr.message || "Unknown error")
+      );
       await loadDrivers();
       return;
     }
@@ -437,11 +451,7 @@ export default function DriversPage() {
           </Link>
 
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={showInactive}
-              onChange={(e) => setShowInactive(e.target.checked)}
-            />
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
             Show inactive
           </label>
         </div>
@@ -476,11 +486,7 @@ export default function DriversPage() {
             </label>
             <label style={labelStyle}>
               Licence number
-              <input
-                value={newLicenceNumber}
-                onChange={(e) => setNewLicenceNumber(e.target.value)}
-                style={inputStyle}
-              />
+              <input value={newLicenceNumber} onChange={(e) => setNewLicenceNumber(e.target.value)} style={inputStyle} />
             </label>
             <label style={labelStyle}>
               Notes
@@ -625,11 +631,7 @@ export default function DriversPage() {
 
                     <label style={{ ...labelStyle, gridColumn: "1 / -1" }}>
                       Notes
-                      <textarea
-                        value={row.notes ?? ""}
-                        onChange={(e) => setEdit(d.id, "notes", e.target.value)}
-                        style={{ ...inputStyle, minHeight: 70 }}
-                      />
+                      <textarea value={row.notes ?? ""} onChange={(e) => setEdit(d.id, "notes", e.target.value)} style={{ ...inputStyle, minHeight: 70 }} />
                     </label>
 
                     {/* Driver password */}
@@ -660,12 +662,7 @@ export default function DriversPage() {
                         </label>
 
                         <div style={{ display: "flex", alignItems: "flex-end" }}>
-                          <button
-                            type="button"
-                            style={btnSecondary}
-                            disabled={busy}
-                            onClick={() => setDriverPassword(d)}
-                          >
+                          <button type="button" style={btnSecondary} disabled={busy} onClick={() => setDriverPassword(d)}>
                             {busy ? "Working…" : "Set password"}
                           </button>
                         </div>
