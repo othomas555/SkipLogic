@@ -333,6 +333,48 @@ if (skipTypesError) {
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
+  async function persistDriverRuns(layout) {
+  if (!layout || !subscriberId) return;
+
+  const runDate = selectedDate;
+
+  for (const driver of drivers) {
+    const items = layout[driver.id];
+    if (!Array.isArray(items)) continue;
+
+    const normalizedItems = items.map((item) => {
+      if (typeof item === "string") {
+        if (item.startsWith("yardbreak:") || item.startsWith("break:")) {
+          return { type: "yard_break" };
+        }
+        if (item.startsWith("driverbreak:")) {
+          return { type: "driver_break" };
+        }
+      }
+
+      return { type: "job", job_id: item };
+    });
+
+    const { error } = await supabase
+      .from("driver_runs")
+      .upsert(
+        {
+          subscriber_id: subscriberId,
+          driver_id: driver.id,
+          run_date: runDate,
+          items: normalizedItems,
+        },
+        {
+          onConflict: "subscriber_id,driver_id,run_date",
+        }
+      );
+
+    if (error) {
+      console.error("Failed to save driver run", driver.id, error);
+    }
+  }
+}
+
   // Build the unassigned jobs list from layout (defensive: only include jobs that exist)
   const unassignedJobs = useMemo(() => {
     return (columnLayout?.unassigned || []).map((id) => findJobById(id)).filter(Boolean);
@@ -677,6 +719,8 @@ if (skipTypesError) {
       return next;
     });
     setTimingsByJobId({});
+    
+    persistDriverRuns(columnLayout);
   }
 
   // Move all unassigned jobs to rolloverDate
