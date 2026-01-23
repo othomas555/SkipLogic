@@ -164,6 +164,11 @@ if (skipTypesError) {
   });
   setSkipTypeNameById(map);
 }
+// -------------------- PERSIST RUNS ON LAYOUT CHANGE --------------------
+useEffect(() => {
+  if (!columnLayout) return;
+  persistDriverRuns(columnLayout);
+}, [columnLayout]);
 
 
       // 3) Holidays – approved and covering selectedDate
@@ -399,6 +404,50 @@ if (skipTypesError) {
 
   function itemsForDriver(driverId) {
     return columnLayout?.[driverId] || [];
+  }
+  // -------------------- PERSIST DRIVER RUNS --------------------
+  async function persistDriverRuns(layout) {
+    try {
+      if (!layout || !subscriberId) return;
+      if (!Array.isArray(drivers) || drivers.length === 0) return;
+
+      const runDate = selectedDate;
+
+      for (const driver of drivers) {
+        const items = layout[driver.id];
+        if (!Array.isArray(items)) continue;
+
+        const normalizedItems = items.map((item) => {
+          if (typeof item === "string") {
+            if (item.startsWith("yardbreak:") || item.startsWith("break:")) {
+              return { type: "yard_break" };
+            }
+            if (item.startsWith("driverbreak:")) {
+              return { type: "driver_break" };
+            }
+          }
+          return { type: "job", job_id: item };
+        });
+
+        const { error } = await supabase
+          .from("driver_runs")
+          .upsert(
+            {
+              subscriber_id: subscriberId,
+              driver_id: driver.id,
+              run_date: runDate,
+              items: normalizedItems,
+            },
+            { onConflict: "subscriber_id,driver_id,run_date" }
+          );
+
+        if (error) {
+          console.error("persistDriverRuns: upsert failed for driver", driver.id, error);
+        }
+      }
+    } catch (err) {
+      console.error("persistDriverRuns: unexpected error", err);
+    }
   }
 
   // -------------------- GOOGLE DISTANCE MATRIX --------------------
