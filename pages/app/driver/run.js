@@ -1,7 +1,6 @@
 // pages/app/driver/run.js
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
-import Link from "next/link";
 import { supabase } from "../../../lib/supabaseClient";
 
 function ymdTodayLocal() {
@@ -12,16 +11,10 @@ function ymdTodayLocal() {
   return `${y}-${m}-${d}`;
 }
 
-function cx(...xs) {
-  return xs.filter(Boolean).join(" ");
-}
-
 function niceAddr(job) {
-  const parts = [
-    job?.site_address_line1,
-    job?.site_address_line2,
-    job?.site_town,
-  ].map((x) => String(x || "").trim()).filter(Boolean);
+  const parts = [job?.site_address_line1, job?.site_address_line2, job?.site_town]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
   return parts.join(", ");
 }
 
@@ -35,7 +28,7 @@ export default function DriverTodayRunPage() {
   const [profile, setProfile] = useState(null); // { subscriber_id, driver_id, role }
   const [driver, setDriver] = useState(null);   // { id, full_name }
   const [run, setRun] = useState(null);         // { id, run_date, items: [] }
-  const [jobsByNumber, setJobsByNumber] = useState({});
+  const [jobsById, setJobsById] = useState({});
 
   const runDate = useMemo(() => ymdTodayLocal(), []);
 
@@ -105,43 +98,31 @@ export default function DriverTodayRunPage() {
 
       setRun(runRow || null);
 
-      // Resolve jobs by job_number (preserve order in rendering; this is just a lookup map)
+      // Resolve jobs by job_id referenced in items (best effort; preserves JSON order in rendering)
       const items = Array.isArray(runRow?.items) ? runRow.items : [];
-      const jobNumbers = Array.from(new Set(items.map((it) => String(it?.job_number || "").trim()).filter(Boolean)));
+      const jobIds = Array.from(
+        new Set(items.map((it) => (it && it.type === "job" ? it.job_id : null)).filter(Boolean))
+      );
 
-      if (jobNumbers.length) {
+      if (jobIds.length) {
         const { data: jobs, error: jobsErr } = await supabase
           .from("jobs")
-          .select(
-            [
-              "job_number",
-              "site_name",
-              "site_address_line1",
-              "site_address_line2",
-              "site_town",
-              "site_postcode",
-              "job_status",
-              "notes",
-              // TODO: add these when available in schema:
-              // "payment_type",
-              // "skip_type",
-            ].join(",")
-          )
-          .in("job_number", jobNumbers);
+          .select("id, job_number, site_name, site_address_line1, site_address_line2, site_town, site_postcode, job_status, notes, payment_type, skip_types(name)")
+          .in("id", jobIds);
 
         if (!jobsErr && Array.isArray(jobs)) {
           const map = {};
-          for (const j of jobs) map[String(j.job_number)] = j;
-          setJobsByNumber(map);
+          for (const j of jobs) map[String(j.id)] = j;
+          setJobsById(map);
         } else {
-          setJobsByNumber({});
+          setJobsById({});
         }
       } else {
-        setJobsByNumber({});
+        setJobsById({});
       }
 
       if (!silent) setLoading(false);
-    } catch (e) {
+    } catch {
       setErr("Something went wrong loading your run.");
       if (!silent) setLoading(false);
     }
@@ -152,11 +133,9 @@ export default function DriverTodayRunPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll every 45s (acceptable per your spec)
+  // Poll every 45s
   useEffect(() => {
-    const t = setInterval(() => {
-      loadAll({ silent: true });
-    }, 45000);
+    const t = setInterval(() => loadAll({ silent: true }), 45000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runDate]);
@@ -180,7 +159,7 @@ export default function DriverTodayRunPage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 4px" }}>
           <div>
             <div style={{ fontSize: 12, color: "#666" }}>Today</div>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>{runDate}</div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>{runDate}</div>
             <div style={{ fontSize: 13, color: "#333", marginTop: 2 }}>
               {driver?.full_name ? `Driver: ${driver.full_name}` : "Driver"}
             </div>
@@ -217,7 +196,7 @@ export default function DriverTodayRunPage() {
 
         {!loading && !run ? (
           <div style={{ background: "#fff", borderRadius: 14, padding: 14, boxShadow: "0 6px 18px rgba(0,0,0,0.06)" }}>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>No run assigned</div>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>No run assigned</div>
             <div style={{ color: "#555" }}>Nothing scheduled for you today.</div>
           </div>
         ) : null}
@@ -231,73 +210,84 @@ export default function DriverTodayRunPage() {
             ) : null}
 
             {items.map((it, idx) => {
-              const jobNo = String(it?.job_number || "").trim();
-              const job = jobNo ? jobsByNumber[jobNo] : null;
-              const notes = String(job?.notes || "").trim();
-              const hasNotes = Boolean(notes);
+              const key = `${run.id}:${idx}`;
 
-              return (
-                <div
-                  key={`${jobNo || "item"}-${idx}`}
-                  style={{ background: "#fff", borderRadius: 14, padding: 12, boxShadow: "0 6px 18px rgba(0,0,0,0.06)" }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 800 }}>
-                        {jobNo || "—"}
-                        {job?.job_status ? <span style={{ fontWeight: 600, color: "#666" }}> · {job.job_status}</span> : null}
-                      </div>
-                      <div style={{ marginTop: 4, color: "#111", fontWeight: 700 }}>{job?.site_name || "—"}</div>
-                      <div style={{ marginTop: 4, color: "#444", lineHeight: 1.35 }}>
-                        {job ? niceAddr(job) : "Loading address…"}
-                      </div>
-                      <div style={{ marginTop: 6, fontSize: 13 }}>
-                        <span style={{ fontWeight: 700 }}>Postcode:</span>{" "}
-                        <span style={{ fontWeight: 700 }}>{job?.site_postcode || "—"}</span>
+              if (!it || typeof it !== "object") {
+                return (
+                  <div key={key} style={{ background: "#fff", borderRadius: 14, padding: 12, boxShadow: "0 6px 18px rgba(0,0,0,0.06)" }}>
+                    <b>Item {idx + 1}:</b> invalid item
+                  </div>
+                );
+              }
+
+              if (it.type === "yard_break") {
+                return (
+                  <div key={key} style={{ background: "#fff", borderRadius: 14, padding: 12, border: "1px dashed #999" }}>
+                    <b>Return to yard / Tip return</b>
+                  </div>
+                );
+              }
+
+              if (it.type === "driver_break") {
+                return (
+                  <div key={key} style={{ background: "#fff", borderRadius: 14, padding: 12, border: "1px dashed #999" }}>
+                    <b>Driver break</b>
+                  </div>
+                );
+              }
+
+              if (it.type === "job") {
+                const job = it.job_id ? jobsById[String(it.job_id)] : null;
+                const notes = String(job?.notes || "").trim();
+                const hasNotes = Boolean(notes);
+
+                const skipName = job?.skip_types?.name || "—";
+                const payment = job?.payment_type || "—";
+
+                return (
+                  <div key={key} style={{ background: "#fff", borderRadius: 14, padding: 12, boxShadow: "0 6px 18px rgba(0,0,0,0.06)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 900 }}>
+                          {job?.job_number || "—"} {job?.job_status ? <span style={{ fontWeight: 700, color: "#666" }}>· {job.job_status}</span> : null}
+                        </div>
+                        <div style={{ marginTop: 4, color: "#111", fontWeight: 800 }}>{job?.site_name || "—"}</div>
+                        <div style={{ marginTop: 4, color: "#444", lineHeight: 1.35 }}>
+                          {job ? niceAddr(job) : "Loading address…"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 13 }}>
+                          <span style={{ fontWeight: 800 }}>Postcode:</span>{" "}
+                          <span style={{ fontWeight: 800 }}>{job?.site_postcode || "—"}</span>
+                        </div>
+
+                        <div style={{ marginTop: 10, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                          <div><span style={{ fontWeight: 800 }}>Payment:</span> {payment}</div>
+                          <div><span style={{ fontWeight: 800 }}>Skip:</span> {skipName}</div>
+                        </div>
                       </div>
 
-                      {/* TODO: show payment type + skip type once fields exist */}
-                      {/* <div style={{ marginTop: 6, fontSize: 13 }}>
-                        <span style={{ fontWeight: 700 }}>Payment:</span> {job?.payment_type || "—"} ·{" "}
-                        <span style={{ fontWeight: 700 }}>Skip:</span> {job?.skip_type || "—"}
-                      </div> */}
+                      {hasNotes ? (
+                        <span style={{ display: "inline-block", background: "#fff3cd", color: "#7a5a00", padding: "6px 10px", borderRadius: 999, fontSize: 12, fontWeight: 800 }}>
+                          Notes
+                        </span>
+                      ) : null}
                     </div>
 
                     {hasNotes ? (
-                      <div style={{ flexShrink: 0 }}>
-                        <span style={{ display: "inline-block", background: "#fff3cd", color: "#7a5a00", padding: "6px 10px", borderRadius: 999, fontSize: 12, fontWeight: 700 }}>
-                          Notes
-                        </span>
-                      </div>
+                      <details style={{ marginTop: 10 }}>
+                        <summary style={{ cursor: "pointer", fontWeight: 800 }}>View notes</summary>
+                        <div style={{ marginTop: 8, background: "#fafafa", border: "1px solid #eee", padding: 10, borderRadius: 12, color: "#222", whiteSpace: "pre-wrap" }}>
+                          {notes}
+                        </div>
+                      </details>
                     ) : null}
                   </div>
+                );
+              }
 
-                  {hasNotes ? (
-                    <details style={{ marginTop: 10 }}>
-                      <summary style={{ cursor: "pointer", fontWeight: 700 }}>View notes</summary>
-                      <div style={{ marginTop: 8, background: "#fafafa", border: "1px solid #eee", padding: 10, borderRadius: 12, color: "#222", whiteSpace: "pre-wrap" }}>
-                        {notes}
-                      </div>
-                    </details>
-                  ) : null}
-
-                  {/* Read-only initially. Buttons here are placeholders for next step. */}
-                  <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-                    <button
-                      disabled
-                      style={{ flex: 1, padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", background: "#f3f3f3", color: "#777" }}
-                      title="Next step: mark delivered + photo"
-                    >
-                      Mark delivered (next)
-                    </button>
-                    <button
-                      disabled
-                      style={{ flex: 1, padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", background: "#f3f3f3", color: "#777" }}
-                      title="Next step: mark collected + photo"
-                    >
-                      Mark collected (next)
-                    </button>
-                  </div>
+              return (
+                <div key={key} style={{ background: "#fff", borderRadius: 14, padding: 12, boxShadow: "0 6px 18px rgba(0,0,0,0.06)" }}>
+                  <b>Item {idx + 1}:</b> unknown type <code>{String(it.type)}</code>
                 </div>
               );
             })}
