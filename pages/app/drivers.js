@@ -322,10 +322,11 @@ export default function DriversPage() {
 
       setActingId("");
 
-      if (!res.ok || !json.ok) {
-        setErrorMsg(json?.error || "Could not set password.");
-        return;
-      }
+     if (!res.ok || !json.ok) {
+  const msg = [json?.error || "Could not enable driver login.", json?.details].filter(Boolean).join("\n");
+  setErrorMsg(msg);
+  return;
+}
 
       setPwEdits((prev) => ({
         ...prev,
