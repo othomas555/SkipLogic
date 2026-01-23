@@ -1,4 +1,4 @@
-=// pages/driver/work.js
+// pages/driver/work.js
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 
@@ -187,3 +187,12 @@ function Section({ title, items }) {
               ) : null}
 
               {j.job_status ? (
+                <div style={{ marginTop: 8, color: "#777", fontSize: 13 }}>Status: {j.job_status}</div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
