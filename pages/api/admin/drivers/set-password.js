@@ -8,9 +8,16 @@ function bad(res, msg, code = 400) {
 
 function makePBKDF2Hash(password) {
   const iterations = 210000;
-  const salt = crypto.randomBytes(16).toString("hex");
-  const hash = crypto.pbkdf2Sync(String(password), salt, iterations, 32, "sha256").toString("hex");
-  return `pbkdf2$sha256$${iterations}$${salt}$${hash}`;
+
+  // IMPORTANT: salt must be bytes (Buffer), not a hex string
+  const saltBuf = crypto.randomBytes(16);
+  const saltHex = saltBuf.toString("hex");
+
+  const hashHex = crypto
+    .pbkdf2Sync(String(password), saltBuf, iterations, 32, "sha256")
+    .toString("hex");
+
+  return `pbkdf2$sha256$${iterations}$${saltHex}$${hashHex}`;
 }
 
 export default async function handler(req, res) {
@@ -18,15 +25,13 @@ export default async function handler(req, res) {
 
   const supabase = getSupabaseAdmin();
 
-  // Require staff auth token from the browser (so this isn't open to the world)
+  // Require staff auth token from the browser
   const authHeader = String(req.headers.authorization || "");
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-
   if (!token) return bad(res, "Missing auth token", 401);
 
   const { data: userData, error: userErr } = await supabase.auth.getUser(token);
   const user = userData?.user;
-
   if (userErr || !user) return bad(res, "Invalid auth token", 401);
 
   const { driver_id, password, subscriber_id } = req.body || {};
@@ -38,7 +43,7 @@ export default async function handler(req, res) {
   if (!subId) return bad(res, "Missing subscriber_id");
   if (pw.length < 6) return bad(res, "Password must be at least 6 characters");
 
-  // Extra safety: ensure driver belongs to the subscriber_id from the staff UI
+  // Ensure driver belongs to this subscriber (safety)
   const { data: existing, error: exErr } = await supabase
     .from("drivers")
     .select("id, subscriber_id")
@@ -51,7 +56,6 @@ export default async function handler(req, res) {
 
   const stored = makePBKDF2Hash(pw);
 
-  // IMPORTANT: select() so we can detect 0-row update
   const { data: updated, error: upErr } = await supabase
     .from("drivers")
     .update({
