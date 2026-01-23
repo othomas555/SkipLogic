@@ -241,6 +241,8 @@ if (skipTypesError) {
       }
 
       setColumnLayout(initialLayout);
+      console.log("INITIAL COLUMN LAYOUT SET", initialLayout);
+
       setLoading(false);
 
       // Clear timings & travel cache when day changes / data reloads
