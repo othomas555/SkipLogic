@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import { supabase } from "../../lib/supabaseClient";
-import { useAuthProfile } from "../../lib/useAuthProfile";
 
 function todayYMDLocal() {
   const d = new Date();
@@ -20,115 +19,68 @@ function addrLine(job) {
 
 export default function DriverRunPage() {
   const router = useRouter();
-  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
-
   const runDate = useMemo(() => todayYMDLocal(), []);
+
+  const [checking, setChecking] = useState(true);
+  const [user, setUser] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  const [driverRow, setDriverRow] = useState(null); // drivers row
-  const [runRow, setRunRow] = useState(null); // driver_runs row
-  const [jobsById, setJobsById] = useState({});
+  const [driver, setDriver] = useState(null); // {id,name,subscriber_id}
+  const [run, setRun] = useState(null); // {id,run_date,items,updated_at}
+  const [jobsById, setJobsById] = useState({}); // { [id]: job }
 
   const items = useMemo(() => {
-    const raw = runRow?.items;
+    const raw = run?.items;
     return Array.isArray(raw) ? raw : [];
-  }, [runRow]);
+  }, [run]);
 
-  async function loadAll({ silent = false } = {}) {
+  async function loadSession() {
+    setChecking(true);
+    const { data } = await supabase.auth.getSession();
+    setUser(data?.session?.user || null);
+    setChecking(false);
+  }
+
+  async function loadRun({ silent = false } = {}) {
     if (!silent) setLoading(true);
     setErrorMsg("");
 
     try {
-      if (!subscriberId || !user?.email) {
-        setDriverRow(null);
-        setRunRow(null);
+      const { data: sess } = await supabase.auth.getSession();
+      const u = sess?.session?.user;
+      setUser(u || null);
+
+      if (!u) {
+        setDriver(null);
+        setRun(null);
         setJobsById({});
         return;
       }
 
-      // 1) Find operational driver by logged-in email (simple + working)
-      const { data: drv, error: drvErr } = await supabase
-        .from("drivers")
-        .select("id, subscriber_id, name, callsign, email")
-        .eq("subscriber_id", subscriberId)
-        .eq("email", user.email)
-        .maybeSingle();
+      const { data, error } = await supabase.rpc("get_my_run", { p_run_date: runDate });
+      if (error) throw error;
 
-      if (drvErr) throw drvErr;
-
-      if (!drv) {
-        setDriverRow(null);
-        setRunRow(null);
+      if (!data?.ok) {
+        setDriver(null);
+        setRun(null);
         setJobsById({});
-        setErrorMsg("This login email is not linked to a driver record. Office: set the driver email to match.");
+        setErrorMsg(data?.error || "Could not load run.");
         return;
       }
 
-      setDriverRow(drv);
+      setDriver(data.driver || null);
+      setRun(data.run || null);
 
-      // 2) Load today’s run
-      const { data: run, error: runErr } = await supabase
-        .from("driver_runs")
-        .select("id, subscriber_id, driver_id, run_date, items, updated_at")
-        .eq("subscriber_id", subscriberId)
-        .eq("driver_id", drv.id)
-        .eq("run_date", runDate)
-        .maybeSingle();
-
-      if (runErr) throw runErr;
-
-      setRunRow(run || null);
-
-      // 3) Load referenced jobs (best effort)
-      const ids = [];
-      if (run && Array.isArray(run.items)) {
-        for (const it of run.items) {
-          if (it && it.type === "job" && it.job_id) ids.push(it.job_id);
-        }
-      }
-      const uniq = Array.from(new Set(ids));
-      if (!uniq.length) {
-        setJobsById({});
-        return;
-      }
-
-      const { data: jobs, error: jobsErr } = await supabase
-        .from("jobs")
-        .select(
-          `
-          id,
-          job_number,
-          site_name,
-          site_address_line1,
-          site_address_line2,
-          site_town,
-          site_postcode,
-          job_status,
-          notes,
-          payment_type,
-          skip_type_id,
-          skip_types ( id, name )
-        `
-        )
-        .in("id", uniq);
-
-      if (jobsErr) {
-        console.warn("DriverRun: jobs lookup failed", jobsErr);
-        setJobsById({});
-        return;
-      }
-
-      const map = {};
-      for (const j of jobs || []) map[j.id] = j;
-      setJobsById(map);
+      const jobsObj = data.jobs && typeof data.jobs === "object" ? data.jobs : {};
+      setJobsById(jobsObj);
     } catch (e) {
       console.error(e);
       setErrorMsg(e?.message || String(e));
-      setDriverRow(null);
-      setRunRow(null);
+      setDriver(null);
+      setRun(null);
       setJobsById({});
     } finally {
       if (!silent) setLoading(false);
@@ -136,47 +88,32 @@ export default function DriverRunPage() {
   }
 
   useEffect(() => {
-    if (checking) return;
-    if (!user) return;
-    loadAll({ silent: false });
+    loadSession().then(() => loadRun({ silent: false }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checking, user, subscriberId]);
+  }, []);
 
-  // Polling is fine for now (45s)
+  // polling: simple + good enough
   useEffect(() => {
-    if (checking) return;
-    if (!user) return;
-    const t = setInterval(() => loadAll({ silent: true }), 45000);
+    const t = setInterval(() => loadRun({ silent: true }), 45000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checking, user, subscriberId]);
+  }, []);
 
   async function refreshNow() {
     setRefreshing(true);
-    await loadAll({ silent: true });
+    await loadRun({ silent: true });
     setRefreshing(false);
   }
 
   async function logout() {
     await supabase.auth.signOut();
-    router.push("/login");
+    router.push("/login"); // IMPORTANT: NOT /app/login-driver
   }
 
   if (checking) {
     return (
       <main style={wrap}>
         <p>Checking sign-in…</p>
-      </main>
-    );
-  }
-
-  if (authError) {
-    return (
-      <main style={wrap}>
-        <div style={card}>
-          <div style={errBox}>{authError}</div>
-          <Link href="/login">Go to login</Link>
-        </div>
       </main>
     );
   }
@@ -200,7 +137,7 @@ export default function DriverRunPage() {
             <div style={{ fontSize: 12, color: "#666" }}>Today</div>
             <div style={{ fontSize: 20, fontWeight: 900 }}>{runDate}</div>
             <div style={{ fontSize: 13, color: "#333", marginTop: 2 }}>
-              {driverRow?.name ? `Driver: ${driverRow.name}` : `Signed in: ${user.email}`}
+              {driver?.name ? `Driver: ${driver.name}` : `Signed in: ${user.email}`}
             </div>
           </div>
 
@@ -218,16 +155,16 @@ export default function DriverRunPage() {
 
         {loading ? (
           <div style={card}>Loading…</div>
-        ) : !driverRow ? (
-          <div style={card}>No driver record found for this login.</div>
-        ) : !runRow ? (
+        ) : !driver ? (
+          <div style={card}>This login email is not linked to an active driver.</div>
+        ) : !run ? (
           <div style={card}>No run assigned for today.</div>
         ) : (
           <div style={{ display: "grid", gap: 10 }}>
             {items.length === 0 ? <div style={card}>Run is empty.</div> : null}
 
             {items.map((it, idx) => {
-              const key = `${runRow.id}:${idx}`;
+              const key = `${run.id}:${idx}`;
 
               if (!it || typeof it !== "object") {
                 return (
@@ -263,7 +200,9 @@ export default function DriverRunPage() {
                       <div style={{ fontWeight: 900 }}>
                         {idx + 1}. {job?.job_number || "—"}
                       </div>
-                      <div style={{ fontSize: 12, color: "#666" }}>{job?.job_status ? `Status: ${job.job_status}` : null}</div>
+                      <div style={{ fontSize: 12, color: "#666" }}>
+                        {job?.job_status ? `Status: ${job.job_status}` : null}
+                      </div>
                     </div>
 
                     <div style={{ marginTop: 6, fontWeight: 800 }}>{job?.site_name || "—"}</div>
@@ -277,14 +216,23 @@ export default function DriverRunPage() {
                         <b>Payment:</b> {job?.payment_type || "—"}
                       </div>
                       <div>
-                        <b>Skip:</b> {job?.skip_types?.name || "—"}
+                        <b>Skip:</b> {job?.skip_type_name || "—"}
                       </div>
                     </div>
 
                     {notes ? (
                       <details style={{ marginTop: 10 }}>
                         <summary style={{ cursor: "pointer", fontWeight: 800 }}>Notes</summary>
-                        <div style={{ marginTop: 8, background: "#fafafa", border: "1px solid #eee", padding: 10, borderRadius: 12, whiteSpace: "pre-wrap" }}>
+                        <div
+                          style={{
+                            marginTop: 8,
+                            background: "#fafafa",
+                            border: "1px solid #eee",
+                            padding: 10,
+                            borderRadius: 12,
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
                           {notes}
                         </div>
                       </details>
