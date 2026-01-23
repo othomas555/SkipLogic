@@ -1,4 +1,4 @@
-// pages/driver/work.js
+=// pages/driver/work.js
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 
@@ -27,6 +27,7 @@ export default function DriverWorkPage() {
   async function load() {
     setErr("");
     setLoading(true);
+
     try {
       const res = await fetch(`/api/driver/jobs?date=${encodeURIComponent(today)}`);
       if (res.status === 401) {
@@ -39,9 +40,9 @@ export default function DriverWorkPage() {
         setLoading(false);
         return;
       }
-      setJobs(json.jobs || []);
+      setJobs(Array.isArray(json.jobs) ? json.jobs : []);
       setLoading(false);
-    } catch {
+    } catch (e) {
       setErr("Failed to load jobs");
       setLoading(false);
     }
@@ -186,12 +187,3 @@ function Section({ title, items }) {
               ) : null}
 
               {j.job_status ? (
-                <div style={{ marginTop: 8, color: "#777", fontSize: 13 }}>Status: {j.job_status}</div>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
