@@ -37,9 +37,35 @@ function verifyPasswordPBKDF2(password, stored) {
 
   const actual = crypto.pbkdf2Sync(String(password), salt, iterations, expected.length, "sha256");
 
-  // timing-safe compare
   if (actual.length !== expected.length) return false;
   return crypto.timingSafeEqual(actual, expected);
+}
+
+async function findDriverByEmailLoose(supabase, cleanEmail) {
+  // 1) case-insensitive exact match
+  let { data, error } = await supabase
+    .from("drivers")
+    .select("id, subscriber_id, email, password_hash, is_active")
+    .ilike("email", cleanEmail)
+    .limit(2);
+
+  if (error) throw error;
+  if (Array.isArray(data) && data.length === 1) return data[0];
+  if (Array.isArray(data) && data.length > 1) throw new Error("Multiple drivers match email");
+
+  // 2) fallback: starts-with match to handle trailing spaces in DB
+  // (e.g. stored "name@domain.com " will match "name@domain.com%")
+  ({ data, error } = await supabase
+    .from("drivers")
+    .select("id, subscriber_id, email, password_hash, is_active")
+    .ilike("email", `${cleanEmail}%`)
+    .limit(2));
+
+  if (error) throw error;
+  if (Array.isArray(data) && data.length === 1) return data[0];
+  if (Array.isArray(data) && data.length > 1) throw new Error("Multiple drivers match email");
+
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -53,15 +79,16 @@ export default async function handler(req, res) {
 
   const supabase = getSupabaseAdmin();
 
-  const { data: driver, error } = await supabase
-    .from("drivers")
-    .select("id, subscriber_id, email, password_hash, is_active")
-    .ilike("email", cleanEmail)
-    .maybeSingle();
+  let driver = null;
+  try {
+    driver = await findDriverByEmailLoose(supabase, cleanEmail);
+  } catch (e) {
+    // don’t leak details to drivers; just fail safely
+    return bad(res, "Invalid credentials", 401);
+  }
 
-  if (error) return bad(res, "Login failed", 500);
   if (!driver) return bad(res, "Invalid credentials", 401);
-  if (driver.is_active === false) return bad(res, "Driver is inactive", 401);
+  if (driver.is_active === false) return bad(res, "Invalid credentials", 401);
   if (!driver.password_hash) return bad(res, "Password not set", 401);
 
   const ok = verifyPasswordPBKDF2(cleanPw, driver.password_hash);
