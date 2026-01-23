@@ -1,6 +1,5 @@
 // pages/api/ops/drivers/enable-login.js
 import { getSupabaseAdmin } from "../../../../lib/supabaseAdmin";
-import { supabase } from "../../../../lib/supabaseClient";
 
 function randomCode(len = 6) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // avoids 0/O/1/I
@@ -20,19 +19,32 @@ function toDriverEmail(loginCode) {
   return `${code}@drivers.skiplogic.local`;
 }
 
+function getBearerToken(req) {
+  const h = req.headers?.authorization || req.headers?.Authorization || "";
+  const s = String(h);
+  if (!s.toLowerCase().startsWith("bearer ")) return "";
+  return s.slice(7).trim();
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // Validate office session (client auth)
-    const {
-      data: { user },
-      error: userErr,
-    } = await supabase.auth.getUser();
+    const admin = getSupabaseAdmin();
 
-    if (userErr || !user) return res.status(401).json({ error: "Not authenticated" });
+    // ✅ Auth via Bearer token from client
+    const accessToken = getBearerToken(req);
+    if (!accessToken) return res.status(401).json({ error: "Not authenticated (missing bearer token)" });
 
-    const { data: prof, error: profErr } = await supabase
+    const { data: tokenUser, error: tokenErr } = await admin.auth.getUser(accessToken);
+    const user = tokenUser?.user;
+
+    if (tokenErr || !user?.id) {
+      return res.status(401).json({ error: "Not authenticated (invalid token)" });
+    }
+
+    // Office role check + subscriber_id
+    const { data: prof, error: profErr } = await admin
       .from("profiles")
       .select("id, subscriber_id, role")
       .eq("id", user.id)
@@ -47,8 +59,6 @@ export default async function handler(req, res) {
 
     const { driver_id, pin_length = 4, code_length = 6, force_reset = true } = req.body || {};
     if (!driver_id) return res.status(400).json({ error: "Missing driver_id" });
-
-    const admin = getSupabaseAdmin();
 
     // Ensure driver belongs to same subscriber
     const { data: driverRow, error: driverErr } = await admin
@@ -98,15 +108,12 @@ export default async function handler(req, res) {
       authUserId = created.user.id;
       await admin.from("drivers").update({ auth_user_id: authUserId }).eq("id", driver_id);
     } else {
-      // Force reset PIN by default for ops convenience
       if (force_reset) {
         const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
           password: pin,
           user_metadata: { kind: "driver", login_code: loginCode, driver_id },
         });
-        if (updErr) {
-          return res.status(500).json({ error: "Failed to reset PIN", details: String(updErr.message || "") });
-        }
+        if (updErr) return res.status(500).json({ error: "Failed to reset PIN", details: String(updErr.message || "") });
       }
 
       await admin.auth.admin.updateUserById(authUserId, {
@@ -115,7 +122,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // Upsert profile row for driver auth user
+    // Upsert profile mapping for driver auth user
     const { error: upProfErr } = await admin.from("profiles").upsert(
       {
         id: authUserId,
