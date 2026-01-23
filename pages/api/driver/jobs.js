@@ -19,7 +19,7 @@ export default async function handler(req, res) {
 
   const date = typeof req.query.date === "string" && req.query.date ? req.query.date : ymd(new Date());
 
-  // Deliveries + collections for the day:
+  // "Work items" for the day: deliveries or collections (tip returns later)
   const { data, error } = await supabase
     .from("jobs")
     .select(
@@ -36,14 +36,29 @@ export default async function handler(req, res) {
         "notes",
         "job_status",
         "price_inc_vat",
+        "driver_sort_key",
+        "driver_run_group",
       ].join(",")
     )
     .eq("subscriber_id", driver.subscriber_id)
     .eq("assigned_driver_id", driver.id)
     .or(`scheduled_date.eq.${date},collection_date.eq.${date}`)
+    .order("driver_run_group", { ascending: true, nullsFirst: true })
+    .order("driver_sort_key", { ascending: true, nullsFirst: true })
     .order("job_number", { ascending: true });
 
   if (error) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
 
-  return res.json({ ok: true, date, jobs: data || [] });
+  // Add a lightweight "type" so the UI can render a single ordered list
+  const jobs = (data || []).map((j) => {
+    const isDelivery = j.scheduled_date === date;
+    const isCollection = j.collection_date === date;
+    let type = "other";
+    if (isDelivery && isCollection) type = "delivery+collection";
+    else if (isDelivery) type = "delivery";
+    else if (isCollection) type = "collection";
+    return { ...j, type };
+  });
+
+  return res.json({ ok: true, date, jobs });
 }
