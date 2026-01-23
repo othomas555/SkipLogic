@@ -17,23 +17,20 @@ function todayYMDLocal() {
   return `${y}-${m}-${day}`;
 }
 
-function cx(...xs) {
-  return xs.filter(Boolean).join(" ");
-}
-
 export default function DriverRunViewerPage() {
   const router = useRouter();
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
   const driverId = typeof router.query.driver_id === "string" ? router.query.driver_id : "";
-  const runDate = typeof router.query.date === "string" && isYMD(router.query.date) ? router.query.date : todayYMDLocal();
+  const runDate =
+    typeof router.query.date === "string" && isYMD(router.query.date) ? router.query.date : todayYMDLocal();
 
   const [loading, setLoading] = useState(true);
   const [runRow, setRunRow] = useState(null);
   const [jobsById, setJobsById] = useState({});
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Optional: lightweight polling (off by default)
+  // Optional: lightweight polling
   const [autoRefresh, setAutoRefresh] = useState(false);
 
   const items = useMemo(() => {
@@ -41,32 +38,18 @@ export default function DriverRunViewerPage() {
     return Array.isArray(raw) ? raw : [];
   }, [runRow]);
 
-  const jobIds = useMemo(() => {
-    const ids = [];
-    for (const it of items) {
-      if (it && it.type === "job" && it.job_id) ids.push(it.job_id);
-    }
-    // De-dupe but preserve first occurrence order
-    const seen = new Set();
-    return ids.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
-  }, [items]);
-
   async function loadRunAndJobs() {
     setErrorMsg("");
     setLoading(true);
+
     try {
-      if (!subscriberId) {
-        setRunRow(null);
-        setJobsById({});
-        return;
-      }
-      if (!driverId) {
+      if (!subscriberId || !driverId) {
         setRunRow(null);
         setJobsById({});
         return;
       }
 
-      // 1) Load the run row (office RLS applies via profiles)
+      // 1) Load the run row
       const { data: run, error: runErr } = await supabase
         .from("driver_runs")
         .select("id, subscriber_id, driver_id, run_date, items, created_at, updated_at, updated_by")
@@ -79,7 +62,7 @@ export default function DriverRunViewerPage() {
 
       setRunRow(run || null);
 
-      // 2) Load referenced jobs (best-effort; don’t fail the whole page if missing columns)
+      // 2) Load referenced jobs (best-effort)
       if (!run || !Array.isArray(run.items)) {
         setJobsById({});
         return;
@@ -95,14 +78,14 @@ export default function DriverRunViewerPage() {
         return;
       }
 
-      // Select a safe subset. If your jobs table differs, this still won’t crash the page.
       const { data: jobs, error: jobsErr } = await supabase
         .from("jobs")
-        .select("id, job_number, site_name, site_address1, site_address2, site_city, site_postcode, status, job_type")
+        .select(
+          "id, job_number, site_name, site_address_line1, site_address_line2, site_town, site_postcode, job_status, notes"
+        )
         .in("id", uniq);
 
       if (jobsErr) {
-        // Don’t hard fail; show IDs only if jobs fetch fails
         console.warn("DriverRunViewer: jobs lookup failed", jobsErr);
         setJobsById({});
         return;
@@ -255,6 +238,7 @@ export default function DriverRunViewerPage() {
 
             {items.map((it, idx) => {
               const key = `${runRow.id}:${idx}`;
+
               if (!it || typeof it !== "object") {
                 return (
                   <div key={key} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12, background: "#fff" }}>
@@ -303,21 +287,30 @@ export default function DriverRunViewerPage() {
                 return (
                   <div key={key} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12, background: "#fff" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                      <div style={{ fontWeight: 700 }}>{idx + 1}. {title}</div>
-                      <div style={{ fontSize: 12, color: "#666" }}>{job?.status ? `Status: ${job.status}` : null}</div>
+                      <div style={{ fontWeight: 700 }}>
+                        {idx + 1}. {title}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#666" }}>
+                        {job?.job_status ? `Status: ${job.job_status}` : null}
+                      </div>
                     </div>
 
                     <div style={{ marginTop: 6, color: "#444" }}>
-                      {job?.site_address1 || job?.site_address2 || job?.site_city || job?.site_postcode ? (
+                      {job?.site_address_line1 || job?.site_address_line2 || job?.site_town || job?.site_postcode ? (
                         <div>
-                          {[job.site_address1, job.site_address2, job.site_city, job.site_postcode].filter(Boolean).join(", ")}
+                          {[job.site_address_line1, job.site_address_line2, job.site_town, job.site_postcode]
+                            .filter(Boolean)
+                            .join(", ")}
                         </div>
                       ) : (
                         <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12 }}>
                           job_id: {jobId || "—"}
                         </div>
                       )}
-                      {job?.job_type ? <div style={{ fontSize: 12, color: "#666" }}>Type: {job.job_type}</div> : null}
+
+                      {job?.notes ? (
+                        <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>Notes: {job.notes}</div>
+                      ) : null}
                     </div>
                   </div>
                 );
