@@ -3,10 +3,6 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
 
-function cx(...xs) {
-  return xs.filter(Boolean).join(" ");
-}
-
 function toDriverEmail(loginCode) {
   const code = String(loginCode || "").trim().toLowerCase();
   return `${code}@drivers.skiplogic.local`;
@@ -20,7 +16,6 @@ export default function DriverLoginPage() {
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    // If already logged in, go straight to run
     supabase.auth.getSession().then(({ data }) => {
       if (data?.session?.user) router.replace("/app/driver/run");
     });
@@ -40,13 +35,15 @@ export default function DriverLoginPage() {
     try {
       const email = toDriverEmail(code);
       const { data, error } = await supabase.auth.signInWithPassword({ email, password: p });
+
       if (error || !data?.session) {
         setErr("Login failed. Check your driver code and PIN.");
         setLoading(false);
         return;
       }
+
       router.replace("/app/driver/run");
-    } catch (e2) {
+    } catch {
       setErr("Login failed.");
       setLoading(false);
     }
@@ -76,7 +73,6 @@ export default function DriverLoginPage() {
               autoCorrect="off"
               inputMode="text"
               placeholder="e.g. D7K2P9"
-              className="driver-code"
               style={{ width: "100%", padding: "12px 12px", borderRadius: 12, border: "1px solid #ddd", marginBottom: 12, fontSize: 16 }}
             />
 
@@ -93,7 +89,6 @@ export default function DriverLoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className={cx(loading ? "loading" : "")}
               style={{
                 width: "100%",
                 padding: "12px 12px",
