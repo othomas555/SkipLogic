@@ -51,12 +51,8 @@ export default function DriversPage() {
   // Inline edit state per driver: { [id]: {field: value, ...} }
   const [edits, setEdits] = useState({});
 
-  // Password UI state per driver (legacy email+password flow you already have)
+  // Password UI state per driver
   const [pwEdits, setPwEdits] = useState({}); // { [driverId]: { pw1: "", pw2: "" } }
-
-  // NEW: Driver Code + PIN modal state per driver
-  const [loginCredsByDriver, setLoginCredsByDriver] = useState({}); // { [driverId]: { login_code, pin } }
-  const [showLoginPanelFor, setShowLoginPanelFor] = useState(""); // driverId
 
   async function loadDrivers() {
     if (checking) return;
@@ -88,16 +84,16 @@ export default function DriversPage() {
         expiry_notifications_enabled,
         expiry_warning_days,
         staff_id,
-        password_set_at,
-        login_code,
-        auth_user_id
+        password_set_at
       `
       )
       .eq("subscriber_id", subscriberId)
       .order("is_active", { ascending: false })
       .order("name", { ascending: true });
 
-    if (!showInactive) q = q.eq("is_active", true);
+    if (!showInactive) {
+      q = q.eq("is_active", true);
+    }
 
     const { data, error } = await q;
 
@@ -322,11 +318,10 @@ export default function DriversPage() {
 
       setActingId("");
 
-     if (!res.ok || !json.ok) {
-  const msg = [json?.error || "Could not enable driver login.", json?.details].filter(Boolean).join("\n");
-  setErrorMsg(msg);
-  return;
-}
+      if (!res.ok || !json.ok) {
+        setErrorMsg(json?.error || "Could not set password.");
+        return;
+      }
 
       setPwEdits((prev) => ({
         ...prev,
@@ -339,63 +334,6 @@ export default function DriversPage() {
       console.error(e);
       setActingId("");
       setErrorMsg("Could not set password.");
-    }
-  }
-
-  // NEW: Enable Driver Code + PIN (no console)
-  async function enableDriverLogin(driver) {
-    if (!driver?.id) return;
-    if (!subscriberId) return;
-
-    setErrorMsg("");
-    setSuccessMsg("");
-
-    const ok = confirm(
-      `Generate / reset Driver Code + PIN for "${driver.name}"?\n\nThis will create or reset their login for /login-driver.`
-    );
-    if (!ok) return;
-
-    setActingId(driver.id);
-
-    try {
-      const { data: sessData, error: sessErr } = await supabase.auth.getSession();
-      const accessToken = sessData?.session?.access_token;
-
-      if (sessErr || !accessToken) {
-        setActingId("");
-        setErrorMsg("You are not signed in (missing session). Please refresh and sign in again.");
-        return;
-      }
-
-      const res = await fetch("/api/ops/drivers/enable-login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ driver_id: driver.id }),
-      });
-
-      const json = await res.json().catch(() => ({}));
-
-      setActingId("");
-
-      if (!res.ok || !json.ok) {
-        setErrorMsg(json?.error || "Could not enable driver login.");
-        return;
-      }
-
-      setLoginCredsByDriver((prev) => ({
-        ...prev,
-        [driver.id]: { login_code: json.login_code, pin: json.pin },
-      }));
-      setShowLoginPanelFor(driver.id);
-      setSuccessMsg("Driver Code + PIN generated.");
-      await loadDrivers();
-    } catch (e) {
-      console.error(e);
-      setActingId("");
-      setErrorMsg("Could not enable driver login.");
     }
   }
 
@@ -412,6 +350,7 @@ export default function DriversPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
+    // 1) Deactivate
     const { error: dErr } = await supabase
       .from("drivers")
       .update({ is_active: false, updated_at: new Date().toISOString() })
@@ -425,6 +364,7 @@ export default function DriversPage() {
       return;
     }
 
+    // 2) Unassign from future jobs (scheduled_date >= today UTC, not collected)
     const today = ymdTodayUTC();
     const { error: jErr } = await supabase
       .from("jobs")
@@ -438,7 +378,9 @@ export default function DriversPage() {
 
     if (jErr) {
       console.error(jErr);
-      setErrorMsg("Driver deactivated, but could not unassign future jobs: " + (jErr.message || "Unknown error"));
+      setErrorMsg(
+        "Driver deactivated, but could not unassign future jobs: " + (jErr.message || "Unknown error")
+      );
       await loadDrivers();
       return;
     }
@@ -573,9 +515,6 @@ export default function DriversPage() {
               const row = edits[d.id] || {};
               const pw = pwEdits[d.id] || { pw1: "", pw2: "" };
 
-              const creds = loginCredsByDriver[d.id];
-              const showCreds = showLoginPanelFor === d.id;
-
               return (
                 <div key={d.id} style={driverCard}>
                   <div style={driverTopRow}>
@@ -584,7 +523,6 @@ export default function DriversPage() {
                         <div style={{ fontWeight: 800, fontSize: 15 }}>{d.name || "—"}</div>
                         {inactive ? <span style={pillInactive}>Inactive</span> : <span style={pillActive}>Active</span>}
                         {d.callsign ? <span style={miniMeta}>Callsign: {d.callsign}</span> : null}
-                        {d.login_code ? <span style={miniMeta}>Driver Code: <b>{d.login_code}</b></span> : null}
                       </div>
                       <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
                         <span>Created: {String(d.created_at || "").slice(0, 10) || "—"}</span>
@@ -605,42 +543,11 @@ export default function DriversPage() {
                           {busy ? "Working…" : "Reactivate"}
                         </button>
                       )}
-
-                      <button style={btnSecondary} disabled={busy} onClick={() => enableDriverLogin(d)} type="button">
-                        {busy ? "Working…" : d.login_code ? "Reset Code + PIN" : "Enable Code + PIN"}
-                      </button>
-
                       <button style={btnPrimary} disabled={busy} onClick={() => saveDriver(d.id)} type="button">
                         {busy ? "Saving…" : "Save"}
                       </button>
                     </div>
                   </div>
-
-                  {showCreds ? (
-                    <div style={credsPanel}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                        <div style={{ fontWeight: 900 }}>Driver app login</div>
-                        <button type="button" style={btnSecondary} onClick={() => setShowLoginPanelFor("")}>
-                          Close
-                        </button>
-                      </div>
-
-                      <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                        <div style={credsBox}>
-                          <div style={credsLabel}>Driver Code</div>
-                          <div style={credsValue}>{creds?.login_code || d.login_code || "—"}</div>
-                        </div>
-                        <div style={credsBox}>
-                          <div style={credsLabel}>PIN (show once)</div>
-                          <div style={credsValue}>{creds?.pin || "—"}</div>
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: 10, fontSize: 12, color: "#555" }}>
-                        Driver logs in at <b>/login-driver</b>. Do not email them. Just give them the code + PIN.
-                      </div>
-                    </div>
-                  ) : null}
 
                   <div style={gridForm}>
                     <label style={labelStyle}>
@@ -727,9 +634,9 @@ export default function DriversPage() {
                       <textarea value={row.notes ?? ""} onChange={(e) => setEdit(d.id, "notes", e.target.value)} style={{ ...inputStyle, minHeight: 70 }} />
                     </label>
 
-                    {/* Legacy driver password section kept as-is */}
+                    {/* Driver password */}
                     <div style={{ gridColumn: "1 / -1", borderTop: "1px solid #eee", paddingTop: 10 }}>
-                      <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Driver portal password (legacy)</div>
+                      <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Driver portal password</div>
 
                       <div style={gridForm}>
                         <label style={labelStyle}>
@@ -762,7 +669,7 @@ export default function DriversPage() {
                       </div>
 
                       <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
-                        (Legacy) Drivers log in using email + password. New flow is Code + PIN at <b>/login-driver</b>.
+                        Drivers will log in at <b>/driver/run</b> after signing in with email + password.
                       </div>
                     </div>
                   </div>
@@ -882,7 +789,6 @@ const alertError = {
 const alertOk = {
   padding: 10,
   borderRadius: 8,
-  borderRadius: 8,
   border: "1px solid #bfe7c0",
   background: "#f2fff2",
   color: "#1f6b2a",
@@ -926,32 +832,4 @@ const pillInactive = {
   background: "#fafafa",
   color: "#666",
   fontWeight: 700,
-};
-
-const credsPanel = {
-  marginTop: 10,
-  border: "1px solid #e5e5e5",
-  background: "#fafafa",
-  borderRadius: 12,
-  padding: 12,
-};
-
-const credsBox = {
-  border: "1px solid #e5e5e5",
-  background: "#fff",
-  borderRadius: 12,
-  padding: 12,
-};
-
-const credsLabel = {
-  fontSize: 12,
-  color: "#666",
-  marginBottom: 6,
-};
-
-const credsValue = {
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  fontSize: 18,
-  fontWeight: 900,
-  letterSpacing: 1,
 };
