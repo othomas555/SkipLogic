@@ -27,49 +27,53 @@ function getBearerToken(req) {
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
   try {
     const admin = getSupabaseAdmin();
 
-    // ✅ Auth via Bearer token from client
+    // Auth via Bearer token from client
     const accessToken = getBearerToken(req);
-    if (!accessToken) return res.status(401).json({ error: "Not authenticated (missing bearer token)" });
+    if (!accessToken) return res.status(401).json({ ok: false, error: "Not authenticated (missing bearer token)" });
 
     const { data: tokenUser, error: tokenErr } = await admin.auth.getUser(accessToken);
     const user = tokenUser?.user;
+    if (tokenErr || !user?.id) return res.status(401).json({ ok: false, error: "Not authenticated (invalid token)" });
 
-    if (tokenErr || !user?.id) {
-      return res.status(401).json({ error: "Not authenticated (invalid token)" });
-    }
-
-    // Office role check + subscriber_id
+    // Office profile / role check
     const { data: prof, error: profErr } = await admin
       .from("profiles")
       .select("id, subscriber_id, role")
       .eq("id", user.id)
       .single();
 
-    if (profErr || !prof) return res.status(403).json({ error: "No profile / forbidden" });
+    if (profErr || !prof) return res.status(403).json({ ok: false, error: "No profile / forbidden" });
 
     const role = String(prof.role || "");
     if (!["owner", "staff", "admin"].includes(role)) {
-      return res.status(403).json({ error: "Forbidden (office only)" });
+      return res.status(403).json({ ok: false, error: "Forbidden (office only)" });
     }
 
     const { driver_id, pin_length = 4, code_length = 6, force_reset = true } = req.body || {};
-    if (!driver_id) return res.status(400).json({ error: "Missing driver_id" });
+    if (!driver_id) return res.status(400).json({ ok: false, error: "Missing driver_id" });
 
-    // Ensure driver belongs to same subscriber
+    // ✅ IMPORTANT: drivers table uses "name" not "full_name"
     const { data: driverRow, error: driverErr } = await admin
       .from("drivers")
-      .select("id, subscriber_id, full_name, login_code, auth_user_id")
+      .select("id, subscriber_id, name, login_code, auth_user_id")
       .eq("id", driver_id)
       .single();
 
-    if (driverErr || !driverRow) return res.status(404).json({ error: "Driver not found" });
+    if (driverErr) {
+      return res.status(500).json({ ok: false, error: "Driver lookup failed", details: driverErr.message });
+    }
+
+    if (!driverRow) {
+      return res.status(404).json({ ok: false, error: "Driver not found" });
+    }
+
     if (driverRow.subscriber_id !== prof.subscriber_id) {
-      return res.status(403).json({ error: "Driver not in your subscriber" });
+      return res.status(403).json({ ok: false, error: "Driver not in your subscriber" });
     }
 
     // Generate or reuse login_code
@@ -77,15 +81,17 @@ export default async function handler(req, res) {
     if (!loginCode) {
       for (let i = 0; i < 10; i++) {
         const c = randomCode(code_length);
-        const { data: exists } = await admin.from("drivers").select("id").eq("login_code", c).maybeSingle();
+        const { data: exists, error: exErr } = await admin.from("drivers").select("id").eq("login_code", c).maybeSingle();
+        if (exErr) return res.status(500).json({ ok: false, error: "Code uniqueness check failed", details: exErr.message });
         if (!exists) {
           loginCode = c;
           break;
         }
       }
-      if (!loginCode) return res.status(500).json({ error: "Failed to generate unique login code" });
+      if (!loginCode) return res.status(500).json({ ok: false, error: "Failed to generate unique login code" });
 
-      await admin.from("drivers").update({ login_code: loginCode }).eq("id", driver_id);
+      const { error: updCodeErr } = await admin.from("drivers").update({ login_code: loginCode }).eq("id", driver_id);
+      if (updCodeErr) return res.status(500).json({ ok: false, error: "Failed to save login code", details: updCodeErr.message });
     }
 
     const pin = randomPin(pin_length);
@@ -102,24 +108,27 @@ export default async function handler(req, res) {
       });
 
       if (createErr || !created?.user?.id) {
-        return res.status(500).json({ error: "Failed to create auth user", details: String(createErr?.message || "") });
+        return res.status(500).json({ ok: false, error: "Failed to create auth user", details: createErr?.message || "Unknown" });
       }
 
       authUserId = created.user.id;
-      await admin.from("drivers").update({ auth_user_id: authUserId }).eq("id", driver_id);
+
+      const { error: updAuthErr } = await admin.from("drivers").update({ auth_user_id: authUserId }).eq("id", driver_id);
+      if (updAuthErr) return res.status(500).json({ ok: false, error: "Failed to link auth user", details: updAuthErr.message });
     } else {
       if (force_reset) {
         const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
           password: pin,
           user_metadata: { kind: "driver", login_code: loginCode, driver_id },
         });
-        if (updErr) return res.status(500).json({ error: "Failed to reset PIN", details: String(updErr.message || "") });
+        if (updErr) return res.status(500).json({ ok: false, error: "Failed to reset PIN", details: updErr.message });
       }
 
-      await admin.auth.admin.updateUserById(authUserId, {
+      const { error: updEmailErr } = await admin.auth.admin.updateUserById(authUserId, {
         email,
         user_metadata: { kind: "driver", login_code: loginCode, driver_id },
       });
+      if (updEmailErr) return res.status(500).json({ ok: false, error: "Failed to update auth user", details: updEmailErr.message });
     }
 
     // Upsert profile mapping for driver auth user
@@ -134,7 +143,7 @@ export default async function handler(req, res) {
       { onConflict: "id" }
     );
 
-    if (upProfErr) return res.status(500).json({ error: "Failed to upsert profile", details: String(upProfErr.message || "") });
+    if (upProfErr) return res.status(500).json({ ok: false, error: "Failed to upsert profile", details: upProfErr.message });
 
     return res.json({
       ok: true,
@@ -143,6 +152,6 @@ export default async function handler(req, res) {
       pin, // show once so office can hand it to driver
     });
   } catch (e) {
-    return res.status(500).json({ error: "Server error", details: String(e?.message || e) });
+    return res.status(500).json({ ok: false, error: "Server error", details: String(e?.message || e) });
   }
 }
