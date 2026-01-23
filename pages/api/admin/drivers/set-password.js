@@ -1,75 +1,90 @@
 // pages/api/admin/drivers/set-password.js
-import crypto from "crypto";
 import { getSupabaseAdmin } from "../../../../lib/supabaseAdmin";
 
 function bad(res, msg, code = 400) {
   return res.status(code).json({ ok: false, error: msg });
 }
 
-function makePBKDF2Hash(password) {
-  const iterations = 210000;
-
-  // IMPORTANT: salt must be bytes (Buffer), not a hex string
-  const saltBuf = crypto.randomBytes(16);
-  const saltHex = saltBuf.toString("hex");
-
-  const hashHex = crypto
-    .pbkdf2Sync(String(password), saltBuf, iterations, 32, "sha256")
-    .toString("hex");
-
-  return `pbkdf2$sha256$${iterations}$${saltHex}$${hashHex}`;
-}
-
 export default async function handler(req, res) {
   if (req.method !== "POST") return bad(res, "Method not allowed", 405);
 
-  const supabase = getSupabaseAdmin();
+  const admin = getSupabaseAdmin();
 
-  // Require staff auth token from the browser
+  // Office auth (Bearer token)
   const authHeader = String(req.headers.authorization || "");
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
   if (!token) return bad(res, "Missing auth token", 401);
 
-  const { data: userData, error: userErr } = await supabase.auth.getUser(token);
-  const user = userData?.user;
-  if (userErr || !user) return bad(res, "Invalid auth token", 401);
+  const { data: userData, error: userErr } = await admin.auth.getUser(token);
+  const officeUser = userData?.user;
+  if (userErr || !officeUser) return bad(res, "Invalid auth token", 401);
 
   const { driver_id, password, subscriber_id } = req.body || {};
-  const id = String(driver_id || "").trim();
+  const driverId = String(driver_id || "").trim();
   const pw = String(password || "");
   const subId = String(subscriber_id || "").trim();
 
-  if (!id) return bad(res, "Missing driver_id");
+  if (!driverId) return bad(res, "Missing driver_id");
   if (!subId) return bad(res, "Missing subscriber_id");
   if (pw.length < 6) return bad(res, "Password must be at least 6 characters");
 
-  // Ensure driver belongs to this subscriber (safety)
-  const { data: existing, error: exErr } = await supabase
+  // Load driver (must belong to subscriber)
+  const { data: driver, error: drvErr } = await admin
     .from("drivers")
-    .select("id, subscriber_id")
-    .eq("id", id)
+    .select("id, subscriber_id, email")
+    .eq("id", driverId)
     .maybeSingle();
 
-  if (exErr) return bad(res, "Could not load driver", 500);
-  if (!existing) return bad(res, "Driver not found", 404);
-  if (String(existing.subscriber_id || "") !== subId) return bad(res, "Forbidden", 403);
+  if (drvErr) return bad(res, "Could not load driver", 500);
+  if (!driver) return bad(res, "Driver not found", 404);
+  if (String(driver.subscriber_id) !== subId) return bad(res, "Forbidden", 403);
+  if (!driver.email) return bad(res, "Driver has no email set");
 
-  const stored = makePBKDF2Hash(pw);
+  const email = String(driver.email).trim().toLowerCase();
 
-  const { data: updated, error: upErr } = await supabase
+  // Try to find existing auth user
+  let authUserId = null;
+
+  const { data: existingUser, error: findErr } = await admin.auth.admin.getUserByEmail(email);
+  if (findErr && !findErr.message.includes("User not found")) {
+    return bad(res, "Auth lookup failed", 500);
+  }
+
+  if (existingUser?.user?.id) {
+    // Update password
+    authUserId = existingUser.user.id;
+
+    const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
+      password: pw,
+    });
+
+    if (updErr) return bad(res, updErr.message || "Failed to update password", 500);
+  } else {
+    // Create auth user
+    const { data: created, error: createErr } = await admin.auth.admin.createUser({
+      email,
+      password: pw,
+      email_confirm: true,
+    });
+
+    if (createErr || !created?.user?.id) {
+      return bad(res, createErr?.message || "Failed to create auth user", 500);
+    }
+
+    authUserId = created.user.id;
+  }
+
+  // Update driver row for UI tracking only
+  const { error: upErr } = await admin
     .from("drivers")
     .update({
-      password_hash: stored,
       password_set_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
-    .eq("id", id)
-    .eq("subscriber_id", subId)
-    .select("id, password_set_at")
-    .maybeSingle();
+    .eq("id", driverId)
+    .eq("subscriber_id", subId);
 
-  if (upErr) return bad(res, upErr.message || "Failed to set password", 500);
-  if (!updated) return bad(res, "Password not saved (no rows updated)", 500);
+  if (upErr) return bad(res, "Password set but driver update failed", 500);
 
-  return res.json({ ok: true, password_set_at: updated.password_set_at });
+  return res.json({ ok: true });
 }
