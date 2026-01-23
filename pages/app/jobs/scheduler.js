@@ -4,6 +4,7 @@ import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
 export default function SchedulerPage() {
+  console.log("SCHEDULER PAGE RENDERED");
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
   const [customers, setCustomers] = useState([]);
