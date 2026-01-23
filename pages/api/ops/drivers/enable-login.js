@@ -2,7 +2,7 @@
 import { getSupabaseAdmin } from "../../../../lib/supabaseAdmin";
 
 function randomCode(len = 6) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // avoids 0/O/1/I
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let out = "";
   for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
@@ -32,22 +32,22 @@ export default async function handler(req, res) {
   try {
     const admin = getSupabaseAdmin();
 
-    // Auth via Bearer token from client
+    // Auth (office user) via Bearer token
     const accessToken = getBearerToken(req);
     if (!accessToken) return res.status(401).json({ ok: false, error: "Not authenticated (missing bearer token)" });
 
     const { data: tokenUser, error: tokenErr } = await admin.auth.getUser(accessToken);
-    const user = tokenUser?.user;
-    if (tokenErr || !user?.id) return res.status(401).json({ ok: false, error: "Not authenticated (invalid token)" });
+    const officeUser = tokenUser?.user;
+    if (tokenErr || !officeUser?.id) return res.status(401).json({ ok: false, error: "Not authenticated (invalid token)" });
 
     // Office profile / role check
     const { data: prof, error: profErr } = await admin
       .from("profiles")
       .select("id, subscriber_id, role")
-      .eq("id", user.id)
+      .eq("id", officeUser.id)
       .single();
 
-    if (profErr || !prof) return res.status(403).json({ ok: false, error: "No profile / forbidden" });
+    if (profErr || !prof) return res.status(403).json({ ok: false, error: "No profile / forbidden", details: profErr?.message });
 
     const role = String(prof.role || "");
     if (!["owner", "staff", "admin"].includes(role)) {
@@ -57,24 +57,16 @@ export default async function handler(req, res) {
     const { driver_id, pin_length = 4, code_length = 6, force_reset = true } = req.body || {};
     if (!driver_id) return res.status(400).json({ ok: false, error: "Missing driver_id" });
 
-    // ✅ IMPORTANT: drivers table uses "name" not "full_name"
+    // Driver lookup (your table uses `name`)
     const { data: driverRow, error: driverErr } = await admin
       .from("drivers")
       .select("id, subscriber_id, name, login_code, auth_user_id")
       .eq("id", driver_id)
       .single();
 
-    if (driverErr) {
-      return res.status(500).json({ ok: false, error: "Driver lookup failed", details: driverErr.message });
-    }
-
-    if (!driverRow) {
-      return res.status(404).json({ ok: false, error: "Driver not found" });
-    }
-
-    if (driverRow.subscriber_id !== prof.subscriber_id) {
-      return res.status(403).json({ ok: false, error: "Driver not in your subscriber" });
-    }
+    if (driverErr) return res.status(500).json({ ok: false, error: "Driver lookup failed", details: driverErr.message });
+    if (!driverRow) return res.status(404).json({ ok: false, error: "Driver not found" });
+    if (driverRow.subscriber_id !== prof.subscriber_id) return res.status(403).json({ ok: false, error: "Driver not in your subscriber" });
 
     // Generate or reuse login_code
     let loginCode = driverRow.login_code;
@@ -99,23 +91,8 @@ export default async function handler(req, res) {
 
     let authUserId = driverRow.auth_user_id;
 
-    if (!authUserId) {
-      const { data: created, error: createErr } = await admin.auth.admin.createUser({
-        email,
-        password: pin,
-        email_confirm: true,
-        user_metadata: { kind: "driver", login_code: loginCode, driver_id },
-      });
-
-      if (createErr || !created?.user?.id) {
-        return res.status(500).json({ ok: false, error: "Failed to create auth user", details: createErr?.message || "Unknown" });
-      }
-
-      authUserId = created.user.id;
-
-      const { error: updAuthErr } = await admin.from("drivers").update({ auth_user_id: authUserId }).eq("id", driver_id);
-      if (updAuthErr) return res.status(500).json({ ok: false, error: "Failed to link auth user", details: updAuthErr.message });
-    } else {
+    // If driver already linked, just reset PIN (if requested) + ensure metadata/email correct
+    if (authUserId) {
       if (force_reset) {
         const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
           password: pin,
@@ -129,6 +106,64 @@ export default async function handler(req, res) {
         user_metadata: { kind: "driver", login_code: loginCode, driver_id },
       });
       if (updEmailErr) return res.status(500).json({ ok: false, error: "Failed to update auth user", details: updEmailErr.message });
+    } else {
+      // Create auth user
+      const { data: created, error: createErr } = await admin.auth.admin.createUser({
+        email,
+        password: pin,
+        email_confirm: true,
+        user_metadata: { kind: "driver", login_code: loginCode, driver_id },
+      });
+
+      if (createErr) {
+        // Common case: email already exists (previous partial attempt)
+        const msg = String(createErr.message || "");
+        const looksDuplicate = msg.toLowerCase().includes("already") || msg.toLowerCase().includes("exists") || msg.toLowerCase().includes("registered");
+
+        if (looksDuplicate) {
+          // Try to find existing driver profile by email (since your trigger auto-creates profiles on auth.users insert)
+          const { data: existingProf, error: findErr } = await admin
+            .from("profiles")
+            .select("id, subscriber_id, role, driver_id, email")
+            .eq("subscriber_id", prof.subscriber_id)
+            .eq("email", email)
+            .maybeSingle();
+
+          if (findErr) {
+            return res.status(500).json({ ok: false, error: "Auth user exists but lookup failed", details: findErr.message });
+          }
+
+          if (!existingProf?.id) {
+            return res.status(500).json({ ok: false, error: "Failed to create auth user", details: createErr.message });
+          }
+
+          authUserId = existingProf.id;
+
+          // Reset PIN on that existing auth user
+          const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
+            password: pin,
+            user_metadata: { kind: "driver", login_code: loginCode, driver_id },
+          });
+          if (updErr) return res.status(500).json({ ok: false, error: "Failed to reset PIN on existing auth user", details: updErr.message });
+
+          // Link driver row
+          const { error: updAuthErr } = await admin.from("drivers").update({ auth_user_id: authUserId }).eq("id", driver_id);
+          if (updAuthErr) return res.status(500).json({ ok: false, error: "Failed to link existing auth user", details: updAuthErr.message });
+        } else {
+          // Most likely missing/invalid service role key
+          return res.status(500).json({
+            ok: false,
+            error: "Failed to create auth user",
+            details: createErr.message,
+          });
+        }
+      } else {
+        if (!created?.user?.id) return res.status(500).json({ ok: false, error: "Failed to create auth user", details: "No user id returned" });
+        authUserId = created.user.id;
+
+        const { error: updAuthErr } = await admin.from("drivers").update({ auth_user_id: authUserId }).eq("id", driver_id);
+        if (updAuthErr) return res.status(500).json({ ok: false, error: "Failed to link auth user", details: updAuthErr.message });
+      }
     }
 
     // Upsert profile mapping for driver auth user
@@ -145,12 +180,7 @@ export default async function handler(req, res) {
 
     if (upProfErr) return res.status(500).json({ ok: false, error: "Failed to upsert profile", details: upProfErr.message });
 
-    return res.json({
-      ok: true,
-      driver_id,
-      login_code: loginCode,
-      pin, // show once so office can hand it to driver
-    });
+    return res.json({ ok: true, driver_id, login_code: loginCode, pin });
   } catch (e) {
     return res.status(500).json({ ok: false, error: "Server error", details: String(e?.message || e) });
   }
