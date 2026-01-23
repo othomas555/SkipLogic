@@ -334,6 +334,8 @@ if (skipTypesError) {
   }
 
   async function persistDriverRuns(layout) {
+    console.log("Persisting runs", layout);
+
   if (!layout || !subscriberId) return;
 
   const runDate = selectedDate;
