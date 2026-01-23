@@ -164,11 +164,6 @@ if (skipTypesError) {
   });
   setSkipTypeNameById(map);
 }
-// -------------------- PERSIST RUNS ON LAYOUT CHANGE --------------------
-useEffect(() => {
-  if (!columnLayout) return;
-  persistDriverRuns(columnLayout);
-}, [columnLayout]);
 
 
       // 3) Holidays – approved and covering selectedDate
@@ -257,6 +252,12 @@ useEffect(() => {
 
     loadData();
   }, [checking, subscriberId, selectedDate]);
+  
+  // -------------------- PERSIST RUNS ON LAYOUT CHANGE --------------------
+useEffect(() => {
+  if (!columnLayout) return;
+  persistDriverRuns(columnLayout);
+}, [columnLayout]);
 
   // -------------------- HELPERS --------------------
 
@@ -341,8 +342,6 @@ useEffect(() => {
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  async function persistDriverRuns(layout) {
-    console.log("Persisting runs", layout);
 
   if (!layout || !subscriberId) return;
 
@@ -773,8 +772,7 @@ useEffect(() => {
       return next;
     });
     setTimingsByJobId({});
-    
-    persistDriverRuns(columnLayout);
+  
   }
 
   // Move all unassigned jobs to rolloverDate
