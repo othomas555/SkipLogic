@@ -17,7 +17,6 @@ function fmtGBP(n) {
 }
 
 function stableItemsFingerprint(items, jobsById) {
-  // minimal fingerprint for update banner
   const minimal = (Array.isArray(items) ? items : []).map((it) => {
     if (!it || typeof it !== "object") return { bad: true };
     if (it.type !== "job") return { type: it.type };
@@ -34,6 +33,18 @@ function stableItemsFingerprint(items, jobsById) {
   return JSON.stringify(minimal);
 }
 
+function buildAddress(job) {
+  if (!job) return "";
+  return [job.site_address_line1, job.site_address_line2, job.site_town, job.site_postcode].filter(Boolean).join(", ");
+}
+
+function openGoogleMaps(job) {
+  const addr = buildAddress(job);
+  if (!addr) return;
+  const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}`;
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 export default function DriverWorkPage() {
   const router = useRouter();
 
@@ -48,6 +59,9 @@ export default function DriverWorkPage() {
   const [tab, setTab] = useState("run"); // run | deliveries | collections | all
   const [hasUpdate, setHasUpdate] = useState(false);
   const lastFingerprintRef = useRef("");
+
+  const [actingJobId, setActingJobId] = useState("");
+  const [toast, setToast] = useState("");
 
   async function load({ silent = false } = {}) {
     if (!silent) {
@@ -104,19 +118,64 @@ export default function DriverWorkPage() {
     router.replace("/driver");
   }
 
+  async function markComplete(job) {
+    if (!job?.id) return;
+
+    const label =
+      job.type === "delivery"
+        ? "mark this DELIVERY as complete"
+        : job.type === "collection"
+        ? "mark this COLLECTION as complete"
+        : job.type === "delivery+collection"
+        ? "mark this TIP RETURN (swap) as complete"
+        : "mark this job as complete";
+
+    const ok = confirm(`Are you sure you want to ${label}?\n\n${job.job_number || ""}\n${buildAddress(job)}`);
+    if (!ok) return;
+
+    setToast("");
+    setErr("");
+    setActingJobId(String(job.id));
+
+    try {
+      const res = await fetch("/api/driver/complete-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: job.id, date, job_type: job.type }),
+      });
+
+      if (res.status === 401) {
+        router.replace("/driver");
+        return;
+      }
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        setErr(json?.error || "Could not mark complete");
+        setActingJobId("");
+        return;
+      }
+
+      setToast("Marked complete.");
+      setActingJobId("");
+      await hardRefresh();
+    } catch (e) {
+      setErr("Could not mark complete");
+      setActingJobId("");
+    }
+  }
+
   useEffect(() => {
     load({ silent: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
-  // Poll for updates every 45 seconds
   useEffect(() => {
     const t = setInterval(() => load({ silent: true }), 45000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
-  // Derive “job items” for tabs (never re-order run tab)
   const jobItems = useMemo(() => {
     return (items || []).filter((it) => it && typeof it === "object" && it.type === "job" && it.job_id);
   }, [items]);
@@ -139,7 +198,7 @@ export default function DriverWorkPage() {
     if (tab === "deliveries") return deliveries.map((it) => ({ type: "job", job_id: it.job_id }));
     if (tab === "collections") return collections.map((it) => ({ type: "job", job_id: it.job_id }));
     if (tab === "all") return jobItems.map((it) => ({ type: "job", job_id: it.job_id }));
-    return items; // run tab shows full items incl yard_break etc
+    return items;
   }, [tab, items, deliveries, collections, jobItems]);
 
   return (
@@ -172,6 +231,7 @@ export default function DriverWorkPage() {
         </div>
       ) : null}
 
+      {toast ? <div style={alertOk}>{toast}</div> : null}
       {err ? <div style={alertError}>{err}</div> : null}
 
       <div style={tabsRow}>
@@ -224,6 +284,9 @@ export default function DriverWorkPage() {
                       job={job}
                       index={idx + 1}
                       showIndex={tab === "run"}
+                      busy={actingJobId === String(job?.id || "")}
+                      onNavigate={() => openGoogleMaps(job)}
+                      onComplete={() => markComplete(job)}
                     />
                   );
                 }
@@ -266,7 +329,7 @@ function TabButton({ active, onClick, children }) {
   );
 }
 
-function JobCard({ job, index, showIndex }) {
+function JobCard({ job, index, showIndex, onNavigate, onComplete, busy }) {
   const typeLabel =
     job?.type === "delivery"
       ? "Delivery"
@@ -322,7 +385,14 @@ function JobCard({ job, index, showIndex }) {
         </details>
       ) : null}
 
-      {/* Next step (later): buttons + photo capture */}
+      <div style={actionsRow}>
+        <button type="button" style={btnSecondarySmall} onClick={onNavigate} disabled={!buildAddress(job)}>
+          Navigate
+        </button>
+        <button type="button" style={btnPrimarySmall} onClick={onComplete} disabled={busy}>
+          {busy ? "Working…" : "Mark complete"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -426,6 +496,16 @@ const alertError = {
   whiteSpace: "pre-wrap",
 };
 
+const alertOk = {
+  padding: 12,
+  borderRadius: 12,
+  border: "1px solid #bfe7c0",
+  background: "#f2fff2",
+  color: "#1f6b2a",
+  marginBottom: 12,
+  whiteSpace: "pre-wrap",
+};
+
 const tabsRow = {
   display: "flex",
   gap: 8,
@@ -490,4 +570,31 @@ const notesBox = {
   borderRadius: 10,
   padding: 10,
   whiteSpace: "pre-wrap",
+};
+
+const actionsRow = {
+  marginTop: 10,
+  display: "flex",
+  gap: 10,
+  justifyContent: "flex-end",
+  flexWrap: "wrap",
+};
+
+const btnSecondarySmall = {
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid #ddd",
+  background: "#fff",
+  cursor: "pointer",
+  fontWeight: 900,
+};
+
+const btnPrimarySmall = {
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: 0,
+  background: "#111",
+  color: "#fff",
+  cursor: "pointer",
+  fontWeight: 900,
 };
