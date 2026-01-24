@@ -26,14 +26,14 @@ export default async function handler(req, res) {
   const { job_id, date, job_type } = req.body || {};
   const jobId = String(job_id || "").trim();
   const runDate = typeof date === "string" && date ? date : ymd(new Date());
-  const type = String(job_type || "").trim(); // "delivery" | "collection" | "delivery+collection"
+  let t = String(job_type || "").trim(); // "delivery" | "collection" | "delivery+collection"
 
   if (!jobId) return bad(res, "Missing job_id");
 
   // Load job (lock to this driver + subscriber)
   const { data: job, error: jobErr } = await supabase
     .from("jobs")
-    .select("id, subscriber_id, assigned_driver_id, scheduled_date, collection_date, job_status")
+    .select("id, subscriber_id, assigned_driver_id, scheduled_date, collection_date")
     .eq("id", jobId)
     .maybeSingle();
 
@@ -43,11 +43,7 @@ export default async function handler(req, res) {
   if (String(job.subscriber_id) !== String(driver.subscriber_id)) return bad(res, "Forbidden", 403);
   if (String(job.assigned_driver_id || "") !== String(driver.id)) return bad(res, "Forbidden", 403);
 
-  // Decide what to update
-  const patch = { updated_at: new Date().toISOString() };
-
-  // If UI sent a type, trust it. Otherwise infer from dates (backup safety).
-  let t = type;
+  // If UI didn't send a type, infer it from scheduled/collection dates for that day
   if (!t) {
     const isDelivery = String(job.scheduled_date || "").slice(0, 10) === runDate;
     const isCollection = String(job.collection_date || "").slice(0, 10) === runDate;
@@ -56,6 +52,8 @@ export default async function handler(req, res) {
     else if (isCollection) t = "collection";
     else t = "other";
   }
+
+  const patch = {};
 
   if (t === "delivery") {
     patch.delivery_actual_date = runDate;
