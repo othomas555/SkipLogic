@@ -19,17 +19,37 @@ function fmtGBP(n) {
 function stableItemsFingerprint(items, jobsById) {
   const minimal = (Array.isArray(items) ? items : []).map((it) => {
     if (!it || typeof it !== "object") return { bad: true };
-    if (it.type !== "job") return { type: it.type };
-    const j = it.job_id ? jobsById?.[String(it.job_id)] : null;
-    return {
-      type: "job",
-      job_id: it.job_id,
-      job_number: j?.job_number,
-      job_status: j?.job_status,
-      scheduled_date: j?.scheduled_date,
-      collection_date: j?.collection_date,
-    };
+
+    if (it.type === "job") {
+      const j = it.job_id ? jobsById?.[String(it.job_id)] : null;
+      return {
+        type: "job",
+        job_id: it.job_id,
+        job_number: j?.job_number,
+        job_status: j?.job_status,
+        scheduled_date: j?.scheduled_date,
+        collection_date: j?.collection_date,
+        job_type: j?.type,
+      };
+    }
+
+    if (it.type === "swap") {
+      const p = it.parent_job_id ? jobsById?.[String(it.parent_job_id)] : null;
+      const c = it.child_job_id ? jobsById?.[String(it.child_job_id)] : null;
+      return {
+        type: "swap",
+        parent_job_id: it.parent_job_id,
+        child_job_id: it.child_job_id,
+        p_job_number: p?.job_number,
+        c_job_number: c?.job_number,
+        p_status: p?.job_status,
+        c_status: c?.job_status,
+      };
+    }
+
+    return { type: it.type };
   });
+
   return JSON.stringify(minimal);
 }
 
@@ -43,6 +63,29 @@ function openGoogleMaps(job) {
   if (!addr) return;
   const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}`;
   window.open(url, "_blank", "noopener,noreferrer");
+}
+
+/**
+ * Build a synthetic "swap" job object for UI + completion.
+ * Uses parent job as the main location/job_number, but shows skip FULL->EMPTY.
+ */
+function makeSwapSyntheticJob(parentJob, childJob) {
+  if (!parentJob || !parentJob.id) return null;
+
+  const fullName = parentJob.skip_type_name || "Full skip";
+  const emptyName = childJob?.skip_type_name || "Empty skip";
+
+  return {
+    ...parentJob,
+    // force the driver UI behaviour we want
+    type: "delivery+collection",
+    // allow server to complete both
+    swap_child_job_id: childJob?.id || null,
+    // nicer label
+    skip_type_name: `${fullName} → ${emptyName}`,
+    // keep price from parent (or show — if missing)
+    price_inc_vat: parentJob.price_inc_vat,
+  };
 }
 
 export default function DriverWorkPage() {
@@ -130,11 +173,14 @@ export default function DriverWorkPage() {
 
   async function uploadOne(jobId, kind, file) {
     if (!file) return null;
-    const res = await fetch(`/api/driver/upload-photo?job_id=${encodeURIComponent(jobId)}&kind=${encodeURIComponent(kind)}`, {
-      method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-      body: file,
-    });
+    const res = await fetch(
+      `/api/driver/upload-photo?job_id=${encodeURIComponent(jobId)}&kind=${encodeURIComponent(kind)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      }
+    );
 
     if (res.status === 401) {
       router.replace("/driver");
@@ -162,7 +208,7 @@ export default function DriverWorkPage() {
     } else if (t === "collection") {
       if (!kindSet.collected) return setErr("Photo required: collected (take a photo of the skip before lifting).");
     } else if (t === "delivery+collection") {
-      if (!kindSet.swap_full || !kindSet.swap_empty) return setErr("Photos required for tip return: full skip + empty skip.");
+      if (!kindSet.swap_full || !kindSet.swap_empty) return setErr("Photos required for swap: full skip + empty skip.");
     } else {
       return setErr("Cannot complete: unknown job type.");
     }
@@ -191,7 +237,14 @@ export default function DriverWorkPage() {
       const res = await fetch("/api/driver/complete-job", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: job.id, date, job_type: t, photos }),
+        body: JSON.stringify({
+          job_id: job.id,
+          date,
+          job_type: t,
+          photos,
+          // IMPORTANT: allow server to complete both jobs in a swap
+          swap_child_job_id: job.swap_child_job_id || null,
+        }),
       });
 
       if (res.status === 401) {
@@ -222,24 +275,52 @@ export default function DriverWorkPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
-  const jobItems = useMemo(() => (items || []).filter((it) => it && typeof it === "object" && it.type === "job" && it.job_id), [items]);
+  // Build "display items" where swap becomes a synthetic job card
+  const displayItems = useMemo(() => {
+    const out = [];
+    for (const it of Array.isArray(items) ? items : []) {
+      if (!it || typeof it !== "object") continue;
 
-  const deliveries = useMemo(() => jobItems.filter((it) => {
-    const j = jobsById[String(it.job_id)];
-    return j?.type === "delivery" || j?.type === "delivery+collection";
-  }), [jobItems, jobsById]);
+      if (it.type === "swap") {
+        const parent = it.parent_job_id ? jobsById[String(it.parent_job_id)] : null;
+        const child = it.child_job_id ? jobsById[String(it.child_job_id)] : null;
+        const synthetic = makeSwapSyntheticJob(parent, child);
+        if (synthetic) {
+          out.push({ type: "job", job_id: synthetic.id, __synthetic_job: synthetic });
+        }
+        continue;
+      }
 
-  const collections = useMemo(() => jobItems.filter((it) => {
-    const j = jobsById[String(it.job_id)];
-    return j?.type === "collection" || j?.type === "delivery+collection";
-  }), [jobItems, jobsById]);
+      out.push(it);
+    }
+    return out;
+  }, [items, jobsById]);
+
+  const jobItems = useMemo(
+    () => (displayItems || []).filter((it) => it && typeof it === "object" && it.type === "job" && it.job_id),
+    [displayItems]
+  );
+
+  const deliveries = useMemo(() => {
+    return jobItems.filter((it) => {
+      const j = it.__synthetic_job || jobsById[String(it.job_id)];
+      return j?.type === "delivery" || j?.type === "delivery+collection";
+    });
+  }, [jobItems, jobsById]);
+
+  const collections = useMemo(() => {
+    return jobItems.filter((it) => {
+      const j = it.__synthetic_job || jobsById[String(it.job_id)];
+      return j?.type === "collection" || j?.type === "delivery+collection";
+    });
+  }, [jobItems, jobsById]);
 
   const shown = useMemo(() => {
-    if (tab === "deliveries") return deliveries.map((it) => ({ type: "job", job_id: it.job_id }));
-    if (tab === "collections") return collections.map((it) => ({ type: "job", job_id: it.job_id }));
-    if (tab === "all") return jobItems.map((it) => ({ type: "job", job_id: it.job_id }));
-    return items;
-  }, [tab, items, deliveries, collections, jobItems]);
+    if (tab === "deliveries") return deliveries.map((it) => it);
+    if (tab === "collections") return collections.map((it) => it);
+    if (tab === "all") return jobItems.map((it) => it);
+    return displayItems;
+  }, [tab, displayItems, deliveries, collections, jobItems]);
 
   return (
     <main style={pageStyle}>
@@ -271,7 +352,7 @@ export default function DriverWorkPage() {
       {err ? <div style={alertError}>{err}</div> : null}
 
       <div style={tabsRow}>
-        <TabButton active={tab === "run"} onClick={() => setTab("run")}>Run ({items.length})</TabButton>
+        <TabButton active={tab === "run"} onClick={() => setTab("run")}>Run ({displayItems.length})</TabButton>
         <TabButton active={tab === "deliveries"} onClick={() => setTab("deliveries")}>Deliveries ({deliveries.length})</TabButton>
         <TabButton active={tab === "collections"} onClick={() => setTab("collections")}>Collections ({collections.length})</TabButton>
         <TabButton active={tab === "all"} onClick={() => setTab("all")}>All ({jobItems.length})</TabButton>
@@ -297,7 +378,7 @@ export default function DriverWorkPage() {
                 }
 
                 if (it.type === "job") {
-                  const job = jobsById[String(it.job_id)] || null;
+                  const job = it.__synthetic_job || jobsById[String(it.job_id)] || null;
                   const busy = actingJobId === String(job?.id || "");
                   const fileState = job?.id ? (photoFilesByJob[String(job.id)] || {}) : {};
                   return (
@@ -346,7 +427,7 @@ function JobCard({ job, index, showIndex, onNavigate, onComplete, busy, photos, 
   const typeLabel =
     job?.type === "delivery" ? "Delivery" :
     job?.type === "collection" ? "Collection" :
-    job?.type === "delivery+collection" ? "Tip return (swap)" :
+    job?.type === "delivery+collection" ? "Swap (tip return)" :
     "Job";
 
   if (!job) return <div style={jobCard}><div style={{ fontWeight: 900 }}>Job missing</div></div>;
