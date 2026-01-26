@@ -22,13 +22,9 @@ function isOutstandingForDate(job, date) {
   const delivered = !!job.delivery_actual_date;
   const collected = !!job.collection_actual_date;
 
-  // If it's due for delivery today and not yet delivered -> outstanding
   if (isDeliveryDue && !delivered) return true;
-
-  // If it's due for collection today and not yet collected -> outstanding
   if (isCollectionDue && !collected) return true;
 
-  // Otherwise not outstanding for today
   return false;
 }
 
@@ -65,6 +61,7 @@ export default async function handler(req, res) {
           "price_inc_vat",
           "payment_type",
           "skip_type_id",
+          "driver_run_group",
         ].join(",")
       )
       .in("id", ids)
@@ -104,6 +101,61 @@ export default async function handler(req, res) {
     return { jobsById, skipTypesById };
   }
 
+  function collapseSwaps(items, jobsById) {
+    // collapse adjacent job items with same driver_run_group into one swap item (collection + delivery)
+    const out = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+
+      if (!it || typeof it !== "object") continue;
+      if (it.type !== "job") {
+        out.push(it);
+        continue;
+      }
+
+      const a = it.job_id ? jobsById[String(it.job_id)] : null;
+      if (!a) continue;
+
+      const group = a.driver_run_group;
+      const next = items[i + 1];
+      if (
+        group != null &&
+        next &&
+        typeof next === "object" &&
+        next.type === "job" &&
+        next.job_id
+      ) {
+        const b = jobsById[String(next.job_id)] || null;
+        if (b && b.driver_run_group === group) {
+          const types = new Set([a.type, b.type]);
+
+          const isPair =
+            (types.has("collection") && types.has("delivery")) ||
+            (types.has("collection") && types.has("delivery+collection")) ||
+            (types.has("delivery") && types.has("delivery+collection"));
+
+          // For our swap convention: one is collection (full), one is delivery (empty)
+          if (isPair && (a.type === "collection" || b.type === "collection") && (a.type === "delivery" || b.type === "delivery")) {
+            const collect = a.type === "collection" ? a : b;
+            const deliver = a.type === "delivery" ? a : b;
+
+            out.push({
+              type: "swap",
+              group,
+              collect_job_id: String(collect.id),
+              deliver_job_id: String(deliver.id),
+            });
+            i++; // skip next
+            continue;
+          }
+        }
+      }
+
+      out.push(it);
+    }
+    return out;
+  }
+
   // 1) driver_runs first (source of truth order)
   const { data: runRow, error: runErr } = await supabase
     .from("driver_runs")
@@ -124,32 +176,39 @@ export default async function handler(req, res) {
     const { jobsById, jobsErr } = await loadJobsAndSkipTypes(jobIds);
     if (jobsErr) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
 
-    // Filter items: hide completed jobs for this date
-    const filteredItems = [];
+    // Filter items: hide completed jobs for this date (but keep breaks)
+    const filtered = [];
     for (const it of runRow.items) {
       if (!it || typeof it !== "object") continue;
 
       if (it.type !== "job") {
-        // keep yard_break / driver_break as-is
-        filteredItems.push(it);
+        filtered.push(it);
         continue;
       }
 
       const j = it.job_id ? jobsById[String(it.job_id)] : null;
       if (!j) continue;
 
-      if (isOutstandingForDate(j, date)) {
-        filteredItems.push(it);
-      }
-      // else: completed -> hide from driver/work
+      if (isOutstandingForDate(j, date)) filtered.push(it);
     }
+
+    const collapsed = collapseSwaps(filtered, jobsById);
+
+    // Also remove swap items if either side is missing/outstanding mismatch
+    const finalItems = collapsed.filter((it) => {
+      if (it.type !== "swap") return true;
+      const c = jobsById[String(it.collect_job_id)];
+      const d = jobsById[String(it.deliver_job_id)];
+      if (!c || !d) return false;
+      return isOutstandingForDate(c, date) || isOutstandingForDate(d, date);
+    });
 
     return res.json({
       ok: true,
       date,
       source: "driver_runs",
       run: { id: runRow.id, run_date: runRow.run_date, updated_at: runRow.updated_at },
-      items: filteredItems,
+      items: finalItems,
       jobsById,
     });
   }
@@ -194,14 +253,16 @@ export default async function handler(req, res) {
   const { jobsById, jobsErr } = await loadJobsAndSkipTypes(jobIds);
   if (jobsErr) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
 
-  const items = outstanding.map((j) => ({ type: "job", job_id: j.id }));
+  // Build items in order then collapse swaps (fallback uses same collapse logic)
+  const rawItems = outstanding.map((j) => ({ type: "job", job_id: j.id }));
+  const collapsed = collapseSwaps(rawItems, jobsById);
 
   return res.json({
     ok: true,
     date,
     source: "jobs_fallback",
     run: null,
-    items,
+    items: collapsed,
     jobsById,
   });
 }
