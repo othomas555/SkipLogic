@@ -14,6 +14,24 @@ function uniq(arr) {
   return Array.from(new Set((arr || []).filter(Boolean)));
 }
 
+function isOutstandingForDate(job, date) {
+  if (!job) return false;
+  const isDeliveryDue = String(job.scheduled_date || "").slice(0, 10) === date;
+  const isCollectionDue = String(job.collection_date || "").slice(0, 10) === date;
+
+  const delivered = !!job.delivery_actual_date;
+  const collected = !!job.collection_actual_date;
+
+  // If it's due for delivery today and not yet delivered -> outstanding
+  if (isDeliveryDue && !delivered) return true;
+
+  // If it's due for collection today and not yet collected -> outstanding
+  if (isCollectionDue && !collected) return true;
+
+  // Otherwise not outstanding for today
+  return false;
+}
+
 export default async function handler(req, res) {
   const auth = await getDriverFromSession(req);
   if (!auth.ok) return res.status(401).json({ ok: false, error: "Not logged in" });
@@ -23,20 +41,6 @@ export default async function handler(req, res) {
 
   const date = typeof req.query.date === "string" && req.query.date ? req.query.date : ymd(new Date());
 
-  // 1) Try to load the run from driver_runs (scheduler source of truth)
-  const { data: runRow, error: runErr } = await supabase
-    .from("driver_runs")
-    .select("id, subscriber_id, driver_id, run_date, items, updated_at")
-    .eq("subscriber_id", driver.subscriber_id)
-    .eq("driver_id", driver.id)
-    .eq("run_date", date)
-    .maybeSingle();
-
-  if (runErr) {
-    return res.status(500).json({ ok: false, error: "Failed to load run" });
-  }
-
-  // Helper: load jobs + skip_types for a set of job ids
   async function loadJobsAndSkipTypes(jobIds) {
     const ids = uniq(jobIds);
     if (!ids.length) return { jobsById: {}, skipTypesById: {} };
@@ -49,6 +53,8 @@ export default async function handler(req, res) {
           "job_number",
           "scheduled_date",
           "collection_date",
+          "delivery_actual_date",
+          "collection_actual_date",
           "site_name",
           "site_address_line1",
           "site_address_line2",
@@ -64,19 +70,13 @@ export default async function handler(req, res) {
       .in("id", ids)
       .eq("subscriber_id", driver.subscriber_id);
 
-    if (jobsErr) {
-      return { jobsById: {}, skipTypesById: {}, jobsErr };
-    }
+    if (jobsErr) return { jobsById: {}, skipTypesById: {}, jobsErr };
 
     const skipTypeIds = uniq((jobs || []).map((j) => j.skip_type_id).filter(Boolean));
 
     let skipTypesById = {};
     if (skipTypeIds.length) {
-      const { data: sts, error: stErr } = await supabase
-        .from("skip_types")
-        .select("id, name")
-        .in("id", skipTypeIds);
-
+      const { data: sts, error: stErr } = await supabase.from("skip_types").select("id, name").in("id", skipTypeIds);
       if (!stErr) {
         for (const st of sts || []) skipTypesById[String(st.id)] = st;
       }
@@ -84,8 +84,8 @@ export default async function handler(req, res) {
 
     const jobsById = {};
     for (const j of jobs || []) {
-      const isDelivery = j.scheduled_date === date;
-      const isCollection = j.collection_date === date;
+      const isDelivery = String(j.scheduled_date || "").slice(0, 10) === date;
+      const isCollection = String(j.collection_date || "").slice(0, 10) === date;
 
       let type = "other";
       if (isDelivery && isCollection) type = "delivery+collection";
@@ -104,7 +104,17 @@ export default async function handler(req, res) {
     return { jobsById, skipTypesById };
   }
 
-  // 2) If run exists, return items in exact JSON order + job details
+  // 1) driver_runs first (source of truth order)
+  const { data: runRow, error: runErr } = await supabase
+    .from("driver_runs")
+    .select("id, subscriber_id, driver_id, run_date, items, updated_at")
+    .eq("subscriber_id", driver.subscriber_id)
+    .eq("driver_id", driver.id)
+    .eq("run_date", date)
+    .maybeSingle();
+
+  if (runErr) return res.status(500).json({ ok: false, error: "Failed to load run" });
+
   if (runRow && Array.isArray(runRow.items)) {
     const jobIds = [];
     for (const it of runRow.items) {
@@ -114,17 +124,37 @@ export default async function handler(req, res) {
     const { jobsById, jobsErr } = await loadJobsAndSkipTypes(jobIds);
     if (jobsErr) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
 
+    // Filter items: hide completed jobs for this date
+    const filteredItems = [];
+    for (const it of runRow.items) {
+      if (!it || typeof it !== "object") continue;
+
+      if (it.type !== "job") {
+        // keep yard_break / driver_break as-is
+        filteredItems.push(it);
+        continue;
+      }
+
+      const j = it.job_id ? jobsById[String(it.job_id)] : null;
+      if (!j) continue;
+
+      if (isOutstandingForDate(j, date)) {
+        filteredItems.push(it);
+      }
+      // else: completed -> hide from driver/work
+    }
+
     return res.json({
       ok: true,
       date,
       source: "driver_runs",
       run: { id: runRow.id, run_date: runRow.run_date, updated_at: runRow.updated_at },
-      items: runRow.items, // MUST stay in exact JSON order
+      items: filteredItems,
       jobsById,
     });
   }
 
-  // 3) Fallback (no run row yet): old behaviour using driver_sort_key etc
+  // 2) fallback if no run row yet: select outstanding jobs only
   const { data, error } = await supabase
     .from("jobs")
     .select(
@@ -133,6 +163,8 @@ export default async function handler(req, res) {
         "job_number",
         "scheduled_date",
         "collection_date",
+        "delivery_actual_date",
+        "collection_actual_date",
         "site_name",
         "site_address_line1",
         "site_address_line2",
@@ -156,12 +188,13 @@ export default async function handler(req, res) {
 
   if (error) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
 
-  const jobIds = (data || []).map((j) => j.id);
+  const outstanding = (data || []).filter((j) => isOutstandingForDate(j, date));
+  const jobIds = outstanding.map((j) => j.id);
+
   const { jobsById, jobsErr } = await loadJobsAndSkipTypes(jobIds);
   if (jobsErr) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
 
-  // Build items array matching the fallback order
-  const items = (data || []).map((j) => ({ type: "job", job_id: j.id }));
+  const items = outstanding.map((j) => ({ type: "job", job_id: j.id }));
 
   return res.json({
     ok: true,
