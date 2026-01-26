@@ -4,6 +4,7 @@ import { useRouter } from "next/router";
 import Link from "next/link";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
+import { getSkipPricesForPostcode } from "../../../lib/getSkipPricesForPostcode";
 
 function fmtDate(d) {
   return d ? String(d) : "—";
@@ -30,7 +31,6 @@ function daysBetween(aYmd, bYmd) {
   return Math.round((b - a) / (1000 * 60 * 60 * 24));
 }
 function todayYMDUTC() {
-  // Match cron behaviour (UTC day boundaries)
   const dt = new Date();
   const y = dt.getUTCFullYear();
   const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
@@ -55,15 +55,31 @@ export default function JobDetailPage() {
   const [customer, setCustomer] = useState(null);
   const [subscriberSettings, setSubscriberSettings] = useState(null);
 
+  // swap linking info
+  const [swapParent, setSwapParent] = useState(null);
+  const [swapChild, setSwapChild] = useState(null);
+
   // term-hire reminder log rows for this job
   const [reminderLogs, setReminderLogs] = useState([]);
 
   // editable fields
   const [siteName, setSiteName] = useState("");
   const [sitePostcode, setSitePostcode] = useState("");
-  const [plannedDelivery, setPlannedDelivery] = useState(""); // jobs.scheduled_date
-  const [plannedCollection, setPlannedCollection] = useState(""); // jobs.collection_date
+  const [plannedDelivery, setPlannedDelivery] = useState("");
+  const [plannedCollection, setPlannedCollection] = useState("");
   const [noteText, setNoteText] = useState("");
+
+  // ---- Swap booking modal state ----
+  const [showSwapModal, setShowSwapModal] = useState(false);
+  const [swapDate, setSwapDate] = useState("");
+  const [swapPostcode, setSwapPostcode] = useState("");
+  const [swapSkips, setSwapSkips] = useState([]);
+  const [swapMsg, setSwapMsg] = useState("");
+  const [lookingUpSwapPostcode, setLookingUpSwapPostcode] = useState(false);
+  const [swapSkipTypeId, setSwapSkipTypeId] = useState("");
+  const [swapPrice, setSwapPrice] = useState("");
+  const [swapNotes, setSwapNotes] = useState("");
+  const [bookingSwap, setBookingSwap] = useState(false);
 
   async function loadAll() {
     if (checking) return;
@@ -71,6 +87,7 @@ export default function JobDetailPage() {
 
     setLoading(true);
     setErrorMsg("");
+    setSuccessMsg("");
 
     const { data: j, error: jErr } = await supabase
       .from("jobs")
@@ -89,6 +106,9 @@ export default function JobDetailPage() {
         collection_actual_date,
         hire_extension_days,
         payment_type,
+        price_inc_vat,
+        skip_type_id,
+        swap_parent_job_id,
         created_at
       `
       )
@@ -125,7 +145,6 @@ export default function JobDetailPage() {
 
     if (sErr) console.error(sErr);
 
-    // Load reminder log for this job (don’t assume created_at exists; order by reminder_date)
     const { data: logs, error: lErr } = await supabase
       .from("term_hire_reminder_log")
       .select("reminder_date, sent_to")
@@ -135,16 +154,45 @@ export default function JobDetailPage() {
 
     if (lErr) console.error(lErr);
 
+    // swap linking lookups
+    let parent = null;
+    let child = null;
+
+    if (j.swap_parent_job_id) {
+      const { data: p } = await supabase
+        .from("jobs")
+        .select("id, job_number, job_status, scheduled_date, collection_date")
+        .eq("subscriber_id", subscriberId)
+        .eq("id", j.swap_parent_job_id)
+        .maybeSingle();
+      parent = p || null;
+    } else {
+      // see if this job is the parent of a swap-delivery job
+      const { data: ch } = await supabase
+        .from("jobs")
+        .select("id, job_number, job_status, scheduled_date, collection_date")
+        .eq("subscriber_id", subscriberId)
+        .eq("swap_parent_job_id", j.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      child = ch || null;
+    }
+
     setJob(j);
     setCustomer(c || null);
     setSubscriberSettings(s || null);
     setReminderLogs(Array.isArray(logs) ? logs : []);
+    setSwapParent(parent);
+    setSwapChild(child);
 
     setSiteName(j.site_name || "");
     setSitePostcode(j.site_postcode || "");
     setPlannedDelivery(j.scheduled_date || "");
     setPlannedCollection(j.collection_date || "");
 
+    // default swap postcode to job postcode
+    setSwapPostcode((j.site_postcode || "").trim());
     setLoading(false);
   }
 
@@ -164,7 +212,6 @@ export default function JobDetailPage() {
     const subDefault = toInt(subscriberSettings?.term_hire_days, 14);
     const override = customer?.term_hire_days_override;
     const exempt = !!customer?.term_hire_exempt;
-
     if (exempt) return null;
     if (override != null && String(override) !== "") return toInt(override, subDefault);
     return subDefault;
@@ -173,12 +220,6 @@ export default function JobDetailPage() {
   const reminderBeforeDays = useMemo(() => {
     return toInt(subscriberSettings?.term_hire_reminder_days_before, 4);
   }, [subscriberSettings]);
-
-  const reminderDay = useMemo(() => {
-    const term = termHireDays;
-    if (!term) return null;
-    return Math.max(0, term - reminderBeforeDays);
-  }, [termHireDays, reminderBeforeDays]);
 
   const deliveryAnchor = useMemo(() => {
     return job?.delivery_actual_date || job?.scheduled_date || null;
@@ -192,7 +233,6 @@ export default function JobDetailPage() {
   const scheduledReminderDate = useMemo(() => {
     if (!deliveryAnchor) return null;
     if (!totalHireDays) return null;
-    // reminder date is delivery + (totalDays - reminderBeforeDays)
     return addDays(deliveryAnchor, Math.max(0, totalHireDays - reminderBeforeDays));
   }, [deliveryAnchor, totalHireDays, reminderBeforeDays]);
 
@@ -227,9 +267,7 @@ export default function JobDetailPage() {
     if (!deliveryAnchor) return { label: "Pending (no delivery date)", tone: "muted" };
     if (!scheduledReminderDate) return { label: "—", tone: "muted" };
 
-    if (reminderLogMatch) {
-      return { label: `Sent (for ${scheduledReminderDate})`, tone: "good" };
-    }
+    if (reminderLogMatch) return { label: `Sent (for ${scheduledReminderDate})`, tone: "good" };
 
     const diff = daysBetween(todayYMDUTC(), scheduledReminderDate);
     if (diff == null) return { label: "—", tone: "muted" };
@@ -238,7 +276,7 @@ export default function JobDetailPage() {
     return { label: `Overdue by ${Math.abs(diff)} day(s)`, tone: "bad" };
   }, [termHireDays, deliveryAnchor, scheduledReminderDate, reminderLogMatch]);
 
-  // Status helpers (YOUR statuses)
+  // Status helpers
   const status = job?.job_status || "";
   const canMarkDelivered = status === "booked";
   const canUndoDelivered = status === "delivered" || !!job?.delivery_actual_date;
@@ -256,8 +294,8 @@ export default function JobDetailPage() {
     const patch = {
       site_name: siteName || null,
       site_postcode: sitePostcode || null,
-      scheduled_date: plannedDelivery || null, // planned delivery
-      collection_date: plannedCollection || null, // planned collection
+      scheduled_date: plannedDelivery || null,
+      collection_date: plannedCollection || null,
     };
 
     const { error } = await supabase
@@ -379,6 +417,122 @@ export default function JobDetailPage() {
     await loadAll();
   }
 
+  // ---- Swap booking helpers ----
+  async function lookupSwapPostcode() {
+    setSwapMsg("");
+    setErrorMsg("");
+
+    const trimmed = String(swapPostcode || "").trim();
+    if (!trimmed) {
+      setSwapMsg("Enter a postcode first.");
+      return;
+    }
+    if (!subscriberId) {
+      setSwapMsg("No subscriber found.");
+      return;
+    }
+
+    try {
+      setLookingUpSwapPostcode(true);
+      const results = await getSkipPricesForPostcode(subscriberId, trimmed);
+
+      if (!results || results.length === 0) {
+        setSwapSkips([]);
+        setSwapMsg("We don't serve this postcode or no prices are set.");
+        setSwapSkipTypeId("");
+        setSwapPrice("");
+        return;
+      }
+
+      setSwapSkips(results);
+      setSwapMsg(`Found ${results.length} skip type(s) for this postcode.`);
+
+      // keep current selection if still valid, else clear
+      if (swapSkipTypeId && !results.some((r) => r.skip_type_id === swapSkipTypeId)) {
+        setSwapSkipTypeId("");
+        setSwapPrice("");
+      }
+    } catch (err) {
+      console.error("lookupSwapPostcode error:", err);
+      setSwapMsg("Error looking up skips for this postcode.");
+    } finally {
+      setLookingUpSwapPostcode(false);
+    }
+  }
+
+  function openSwapModal() {
+    setErrorMsg("");
+    setSuccessMsg("");
+    setSwapMsg("");
+    setSwapSkips([]);
+    setSwapSkipTypeId("");
+    setSwapPrice("");
+    setSwapNotes("");
+    setSwapDate(""); // force user to pick date
+    setSwapPostcode(String(job?.site_postcode || "").trim());
+    setShowSwapModal(true);
+  }
+
+  async function confirmBookSwap() {
+    if (!job?.id) return;
+    if (!subscriberId) return;
+
+    const sd = String(swapDate || "").trim();
+    if (!sd) {
+      setErrorMsg("Pick a swap date.");
+      return;
+    }
+
+    const stid = String(swapSkipTypeId || "").trim();
+    if (!stid) {
+      setErrorMsg("Select a skip type for the swap delivery.");
+      return;
+    }
+
+    const priceNum = Number(swapPrice);
+    if (!Number.isFinite(priceNum) || priceNum <= 0) {
+      setErrorMsg("Swap delivery price must be a positive number.");
+      return;
+    }
+
+    setBookingSwap(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    try {
+      const { data: childId, error } = await supabase.rpc("book_swap", {
+        _subscriber_id: subscriberId,
+        _parent_job_id: job.id,
+        _swap_date: sd,
+        _new_skip_type_id: stid,
+        _price_inc_vat: priceNum,
+        _notes: swapNotes ? String(swapNotes) : null,
+      });
+
+      if (error) {
+        console.error("book_swap error:", error);
+        setErrorMsg(error.message || "Could not book swap.");
+        setBookingSwap(false);
+        return;
+      }
+
+      setShowSwapModal(false);
+      setBookingSwap(false);
+
+      // refresh current job + show success + take you to the new job
+      setSuccessMsg("Swap booked. New swap-delivery job created.");
+      await loadAll();
+
+      if (childId) {
+        router.push(`/app/jobs/${childId}`);
+      }
+    } catch (e) {
+      console.error(e);
+      setErrorMsg("Could not book swap (unexpected error).");
+      setBookingSwap(false);
+    }
+  }
+
   if (checking || loading) {
     return (
       <main style={centerStyle}>
@@ -408,6 +562,8 @@ export default function JobDetailPage() {
       ? { color: "#8a1f1f" }
       : { color: "#555" };
 
+  const hasSwapLink = !!(job?.swap_parent_job_id || swapChild);
+
   return (
     <main style={pageStyle}>
       <header style={headerStyle}>
@@ -436,6 +592,12 @@ export default function JobDetailPage() {
           <button onClick={saveJobEdits} disabled={saving} style={btnPrimary}>
             {saving ? "Saving…" : "Save changes"}
           </button>
+
+          {job?.job_status === "delivered" && (
+            <button onClick={openSwapModal} style={btnSecondary}>
+              Book swap
+            </button>
+          )}
         </div>
       </header>
 
@@ -444,6 +606,48 @@ export default function JobDetailPage() {
           {authError || errorMsg ? <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p> : null}
           {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
         </div>
+      )}
+
+      {hasSwapLink && (
+        <section style={{ ...cardStyle, borderColor: "#cfe8ff", background: "#f2f8ff" }}>
+          <h2 style={{ ...h2Style, marginBottom: 8 }}>Swap link</h2>
+
+          {job.swap_parent_job_id ? (
+            <div style={{ fontSize: 13, color: "#333" }}>
+              <div style={{ marginBottom: 6 }}>
+                This job is the <b>swap delivery</b> linked to a parent job:
+              </div>
+              {swapParent ? (
+                <div>
+                  Parent:{" "}
+                  <a href={`/app/jobs/${swapParent.id}`} style={{ textDecoration: "underline" }}>
+                    {swapParent.job_number || swapParent.id}
+                  </a>{" "}
+                  ({swapParent.job_status})
+                </div>
+              ) : (
+                <div>Parent: {job.swap_parent_job_id}</div>
+              )}
+            </div>
+          ) : (
+            <div style={{ fontSize: 13, color: "#333" }}>
+              <div style={{ marginBottom: 6 }}>
+                This job is the <b>swap collection</b> parent. Swap delivery job:
+              </div>
+              {swapChild ? (
+                <div>
+                  Child:{" "}
+                  <a href={`/app/jobs/${swapChild.id}`} style={{ textDecoration: "underline" }}>
+                    {swapChild.job_number || swapChild.id}
+                  </a>{" "}
+                  ({swapChild.job_status})
+                </div>
+              ) : (
+                <div>No child swap delivery job found.</div>
+              )}
+            </div>
+          )}
+        </section>
       )}
 
       <div style={grid2}>
@@ -519,10 +723,6 @@ export default function JobDetailPage() {
                     <span style={k}>Hire end date</span>
                     <span style={v}>{hireEndDate ? hireEndDate : "—"}</span>
                   </div>
-                  <div style={kv}>
-                    <span style={k}>Reminder day</span>
-                    <span style={v}>{reminderDay != null ? `Day ${reminderDay}` : "—"}</span>
-                  </div>
 
                   <div style={kv}>
                     <span style={k}>Scheduled reminder date</span>
@@ -540,12 +740,7 @@ export default function JobDetailPage() {
                   </div>
                 </div>
 
-                <p style={{ margin: "10px 0", color: "#666" }}>
-                  Reminder logic: scheduled for {scheduledReminderDate || "—"} (based on delivery + term days).
-                  If missed, cron will still send once when overdue.
-                </p>
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                   <button style={btnSecondary} disabled={acting === "extend_7"} onClick={() => extendHire(7)}>
                     {acting === "extend_7" ? "Working…" : "Extend +7 days"}
                   </button>
@@ -627,6 +822,127 @@ export default function JobDetailPage() {
           </label>
         </div>
       </section>
+
+      {/* Swap modal */}
+      {showSwapModal && (
+        <div style={modalBackdrop}>
+          <div style={modalCard}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+              <h2 style={{ margin: 0 }}>Book swap</h2>
+              <button
+                onClick={() => (!bookingSwap ? setShowSwapModal(false) : null)}
+                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "#666" }}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ marginTop: 8, marginBottom: 10, color: "#555", fontSize: 13 }}>
+              This will: (1) set this job to <b>awaiting_swap_collection</b> for the swap date, and
+              (2) create a new <b>swap_delivery</b> job linked to it.
+            </p>
+
+            <div style={gridForm}>
+              <label style={labelStyle}>
+                Swap date *
+                <input type="date" value={swapDate} onChange={(e) => setSwapDate(e.target.value)} style={inputStyle} />
+              </label>
+
+              <label style={labelStyle}>
+                Postcode (pricing lookup) *
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    value={swapPostcode}
+                    onChange={(e) => setSwapPostcode(e.target.value)}
+                    style={{ ...inputStyle, flex: 1 }}
+                    placeholder="CFxx xxx"
+                  />
+                  <button
+                    type="button"
+                    onClick={lookupSwapPostcode}
+                    disabled={lookingUpSwapPostcode}
+                    style={{
+                      ...btnSecondary,
+                      padding: "8px 10px",
+                      opacity: lookingUpSwapPostcode ? 0.6 : 1,
+                    }}
+                  >
+                    {lookingUpSwapPostcode ? "Looking…" : "Find skips"}
+                  </button>
+                </div>
+                {swapMsg ? <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>{swapMsg}</div> : null}
+              </label>
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <label style={labelStyle}>
+                Swap delivery skip type *
+                <select
+                  value={swapSkipTypeId}
+                  onChange={(e) => {
+                    const newId = e.target.value;
+                    setSwapSkipTypeId(newId);
+
+                    const chosen = (swapSkips || []).find((s) => s.skip_type_id === newId);
+                    if (chosen) {
+                      setSwapPrice(chosen.price_inc_vat != null ? String(chosen.price_inc_vat) : "");
+                    } else {
+                      setSwapPrice("");
+                    }
+                  }}
+                  disabled={!swapSkips || swapSkips.length === 0}
+                  style={inputStyle}
+                >
+                  <option value="">
+                    {!swapSkips || swapSkips.length === 0 ? "Look up postcode first" : "Select skip type"}
+                  </option>
+                  {(swapSkips || []).map((s) => (
+                    <option key={s.skip_type_id} value={s.skip_type_id}>
+                      {s.skip_type_name} – £{s.price_inc_vat != null ? Number(s.price_inc_vat).toFixed(2) : "N/A"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label style={{ ...labelStyle, marginTop: 10 }}>
+                Swap delivery price (£) *
+                <input
+                  type="number"
+                  step="0.01"
+                  value={swapPrice}
+                  onChange={(e) => setSwapPrice(e.target.value)}
+                  style={{ ...inputStyle, maxWidth: 220 }}
+                />
+                <div style={{ fontSize: 12, color: "#666" }}>Auto-filled from postcode table. Override if needed.</div>
+              </label>
+
+              <label style={{ ...labelStyle, marginTop: 10 }}>
+                Notes (optional)
+                <input
+                  value={swapNotes}
+                  onChange={(e) => setSwapNotes(e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Swap builders → builders (customer full)"
+                />
+              </label>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button
+                onClick={() => (!bookingSwap ? setShowSwapModal(false) : null)}
+                style={btnSecondary}
+                disabled={bookingSwap}
+              >
+                Cancel
+              </button>
+              <button onClick={confirmBookSwap} style={btnPrimary} disabled={bookingSwap}>
+                {bookingSwap ? "Booking…" : "Confirm swap"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -745,4 +1061,24 @@ const btnDanger = {
   color: "#8a1f1f",
   cursor: "pointer",
   fontSize: 13,
+};
+
+const modalBackdrop = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,0.45)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 16,
+  zIndex: 2000,
+};
+
+const modalCard = {
+  width: "100%",
+  maxWidth: 720,
+  background: "#fff",
+  borderRadius: 12,
+  padding: 16,
+  boxShadow: "0 10px 30px rgba(0,0,0,0.2)",
 };
