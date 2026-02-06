@@ -1,137 +1,119 @@
 // pages/driver/index.js
-import { useState } from "react";
 import { useRouter } from "next/router";
+import { useState } from "react";
 
 export default function DriverLoginPage() {
-const router = useRouter();
-const [email, setEmail] = useState("");
-const [password, setPassword] = useState("");
+  const router = useRouter();
+  const [pin, setPin] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
 
-const [busy, setBusy] = useState(false);
-const [err, setErr] = useState("");
+  async function onSubmit(e) {
+    e.preventDefault();
+    setErr("");
+    if (!pin.trim()) {
+      setErr("Enter your PIN");
+      return;
+    }
 
-async function onSubmit(e) {
-e.preventDefault();
-setErr("");
-setBusy(true);
+    setLoading(true);
+    try {
+      const res = await fetch("/api/driver/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ pin: pin.trim() }),
+      });
 
-try {
-const res = await fetch("/api/driver/login", {
-method: "POST",
-headers: { "Content-Type": "application/json" },
-body: JSON.stringify({ email, password }),
-});
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || "Login failed");
+      }
 
-const json = await res.json().catch(() => ({}));
+      // success: go to menu (preferred)
+      router.push("/driver/menu");
+    } catch (e2) {
+      setErr("Login failed");
+    } finally {
+      setLoading(false);
+    }
+  }
 
-if (!res.ok || !json.ok) {
-setErr(json?.error || "Login failed");
-setBusy(false);
-return;
+  return (
+    <main style={styles.page}>
+      <div style={styles.card}>
+        <h1 style={styles.h1}>Driver login</h1>
+        <p style={styles.sub}>Enter your driver PIN</p>
+
+        <form onSubmit={onSubmit} style={{ marginTop: 14 }}>
+          <label style={styles.label}>PIN</label>
+          <input
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="••••"
+            style={styles.input}
+          />
+
+          {err ? <div style={styles.error}>{err}</div> : null}
+
+          <button type="submit" disabled={loading} style={styles.button}>
+            {loading ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+      </div>
+    </main>
+  );
 }
 
-router.push("/driver/work");
-} catch (e2) {
-setErr("Login failed");
-@@ -33,10 +38,32 @@
-}
-
-return (
-    <main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>
-      <form onSubmit={onSubmit} style={{ width: "100%", maxWidth: 380, background: "#fff", borderRadius: 12, padding: 16, boxShadow: "0 6px 18px rgba(0,0,0,0.08)" }}>
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-        background: "#f6f6f6",
-      }}
-    >
-      <form
-        onSubmit={onSubmit}
-        style={{
-          width: "100%",
-          maxWidth: 380,
-          background: "#fff",
-          borderRadius: 12,
-          padding: 16,
-          boxShadow: "0 6px 18px rgba(0,0,0,0.08)",
-        }}
-      >
-<h1 style={{ margin: 0, fontSize: 22 }}>Driver login</h1>
-        <p style={{ marginTop: 6, marginBottom: 16, color: "#555" }}>Sign in to view today’s work.</p>
-        <p style={{ marginTop: 6, marginBottom: 16, color: "#555" }}>
-          Sign in to view today’s work.
-        </p>
-
-<label style={{ display: "block", fontSize: 14, marginBottom: 6 }}>Email</label>
-<input
-@@ -45,18 +72,44 @@
-inputMode="email"
-autoCapitalize="none"
-autoCorrect="off"
-          style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd", marginBottom: 12 }}
-          style={{
-            width: "100%",
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            marginBottom: 12,
-          }}
-/>
-
-<label style={{ display: "block", fontSize: 14, marginBottom: 6 }}>Password</label>
-<input
-value={password}
-onChange={(e) => setPassword(e.target.value)}
-type="password"
-          style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd", marginBottom: 12 }}
-          style={{
-            width: "100%",
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            marginBottom: 12,
-          }}
-/>
-
-        {err ? <div style={{ background: "#fff3f3", border: "1px solid #ffd2d2", color: "#7a1f1f", borderRadius: 10, padding: 10, marginBottom: 12 }}>{err}</div> : null}
-        {err ? (
-          <div
-            style={{
-              background: "#fff3f3",
-              border: "1px solid #ffd2d2",
-              color: "#7a1f1f",
-              borderRadius: 10,
-              padding: 10,
-              marginBottom: 12,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {err}
-          </div>
-        ) : null}
-
-<button
-type="submit"
-@@ -68,12 +121,16 @@
-border: 0,
-background: busy ? "#999" : "#111",
-color: "#fff",
-            fontWeight: 600,
-            fontWeight: 700,
-cursor: busy ? "default" : "pointer",
-}}
->
-{busy ? "Signing in…" : "Sign in"}
-</button>
-
-        <div style={{ marginTop: 10, color: "#777", fontSize: 12 }}>
-          If you can’t log in, ask the office to reset your driver password.
-        </div>
-</form>
-</main>
-);
+const styles = {
+  page: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+    background: "#f5f5f5",
+  },
+  card: {
+    width: "100%",
+    maxWidth: 420,
+    background: "#fff",
+    borderRadius: 16,
+    padding: 18,
+    boxShadow: "0 8px 22px rgba(0,0,0,0.08)",
+  },
+  h1: { margin: 0, fontSize: 22 },
+  sub: { marginTop: 6, marginBottom: 0, color: "#666", fontSize: 13 },
+  label: { display: "block", fontSize: 13, color: "#555", marginBottom: 6 },
+  input: {
+    width: "100%",
+    padding: 12,
+    borderRadius: 12,
+    border: "1px solid #e6e6e6",
+    fontSize: 16,
+    outline: "none",
+  },
+  button: {
+    marginTop: 12,
+    width: "100%",
+    padding: 12,
+    borderRadius: 12,
+    border: "1px solid #0b57d0",
+    background: "#0b57d0",
+    color: "#fff",
+    fontSize: 16,
+    cursor: "pointer",
+  },
+  error: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 12,
+    background: "#fff2f2",
+    border: "1px solid #ffd3d3",
+    color: "#7a1b1b",
+    fontSize: 13,
+  },
+};
