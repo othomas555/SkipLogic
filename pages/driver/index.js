@@ -1,123 +1,137 @@
 // pages/driver/index.js
-import Link from "next/link";
+import { useState } from "react";
+import { useRouter } from "next/router";
 
-function ymdTodayLocal() {
-  const dt = new Date();
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const d = String(dt.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+export default function DriverLoginPage() {
+const router = useRouter();
+const [email, setEmail] = useState("");
+const [password, setPassword] = useState("");
+
+const [busy, setBusy] = useState(false);
+const [err, setErr] = useState("");
+
+async function onSubmit(e) {
+e.preventDefault();
+setErr("");
+setBusy(true);
+
+try {
+const res = await fetch("/api/driver/login", {
+method: "POST",
+headers: { "Content-Type": "application/json" },
+body: JSON.stringify({ email, password }),
+});
+
+const json = await res.json().catch(() => ({}));
+
+if (!res.ok || !json.ok) {
+setErr(json?.error || "Login failed");
+setBusy(false);
+return;
 }
 
-export default function DriverHomeMenu() {
-  const today = ymdTodayLocal();
-
-  return (
-    <main style={styles.page}>
-      <div style={styles.card}>
-        <div style={styles.header}>
-          <div>
-            <h1 style={styles.h1}>Driver</h1>
-            <div style={styles.sub}>Today: {today}</div>
-          </div>
-
-          <div style={styles.headerRight}>
-            {/* If you have a driver logout route, keep it. If not, remove this link. */}
-            <Link href="/driver/logout" style={styles.linkSmall}>
-              Log out
-            </Link>
-          </div>
-        </div>
-
-        <div style={styles.grid}>
-          <Link href="/driver/run" style={styles.tile}>
-            <div style={styles.tileTitle}>Today’s work</div>
-            <div style={styles.tileDesc}>
-              View your run and complete deliveries, collections & swaps.
-            </div>
-          </Link>
-
-          <Link href="/driver/work" style={styles.tile}>
-            <div style={styles.tileTitle}>Work list</div>
-            <div style={styles.tileDesc}>
-              Outstanding jobs for a selected date (and completed-today later).
-            </div>
-          </Link>
-
-          <Link href="/driver/checks" style={styles.tile}>
-            <div style={styles.tileTitle}>Vehicle checks</div>
-            <div style={styles.tileDesc}>Daily walkaround checks before heading out.</div>
-          </Link>
-
-          <a href="tel:+440000000000" style={styles.tile}>
-            <div style={styles.tileTitle}>Call the office</div>
-            <div style={styles.tileDesc}>
-              If access is blocked, customer issues, breakdowns, etc.
-            </div>
-          </a>
-
-          <div style={{ ...styles.tile, cursor: "default" }}>
-            <div style={styles.tileTitle}>Quick reminders</div>
-            <ul style={styles.list}>
-              <li>Take required photos first, then mark complete</li>
-              <li>If signal is bad: get photos done, retry completion</li>
-              <li>Blocked access: photo it + notes, then call office</li>
-            </ul>
-          </div>
-        </div>
-
-        <div style={styles.footerNote}>
-          Tip: add this page to the iPad Home Screen as “SkipLogic Driver”.
-        </div>
-      </div>
-    </main>
-  );
+router.push("/driver/work");
+} catch (e2) {
+setErr("Login failed");
+@@ -33,10 +38,32 @@
 }
 
-const styles = {
-  page: {
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 18,
-    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
-    background: "#f5f5f5",
-  },
-  card: {
-    width: "100%",
-    maxWidth: 760,
-    background: "#fff",
-    borderRadius: 16,
-    padding: 18,
-    boxShadow: "0 8px 22px rgba(0,0,0,0.08)",
-  },
-  header: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
-    marginBottom: 14,
-  },
-  headerRight: { display: "flex", gap: 10, alignItems: "center" },
-  h1: { margin: 0, fontSize: 22 },
-  sub: { marginTop: 4, color: "#666", fontSize: 13 },
-  linkSmall: { fontSize: 14, color: "#0b57d0", textDecoration: "none" },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 12,
-  },
-  tile: {
-    border: "1px solid #eee",
-    borderRadius: 14,
-    padding: 14,
-    textDecoration: "none",
-    color: "inherit",
-    background: "#fafafa",
-  },
-  tileTitle: { fontSize: 16, fontWeight: 700, marginBottom: 6 },
-  tileDesc: { fontSize: 13, color: "#555", lineHeight: 1.35 },
-  list: { margin: "8px 0 0 16px", padding: 0, color: "#555", fontSize: 13, lineHeight: 1.5 },
-  footerNote: { marginTop: 14, fontSize: 12, color: "#777" },
-};
+return (
+    <main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>
+      <form onSubmit={onSubmit} style={{ width: "100%", maxWidth: 380, background: "#fff", borderRadius: 12, padding: 16, boxShadow: "0 6px 18px rgba(0,0,0,0.08)" }}>
+    <main
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+        background: "#f6f6f6",
+      }}
+    >
+      <form
+        onSubmit={onSubmit}
+        style={{
+          width: "100%",
+          maxWidth: 380,
+          background: "#fff",
+          borderRadius: 12,
+          padding: 16,
+          boxShadow: "0 6px 18px rgba(0,0,0,0.08)",
+        }}
+      >
+<h1 style={{ margin: 0, fontSize: 22 }}>Driver login</h1>
+        <p style={{ marginTop: 6, marginBottom: 16, color: "#555" }}>Sign in to view today’s work.</p>
+        <p style={{ marginTop: 6, marginBottom: 16, color: "#555" }}>
+          Sign in to view today’s work.
+        </p>
+
+<label style={{ display: "block", fontSize: 14, marginBottom: 6 }}>Email</label>
+<input
+@@ -45,18 +72,44 @@
+inputMode="email"
+autoCapitalize="none"
+autoCorrect="off"
+          style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd", marginBottom: 12 }}
+          style={{
+            width: "100%",
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            marginBottom: 12,
+          }}
+/>
+
+<label style={{ display: "block", fontSize: 14, marginBottom: 6 }}>Password</label>
+<input
+value={password}
+onChange={(e) => setPassword(e.target.value)}
+type="password"
+          style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd", marginBottom: 12 }}
+          style={{
+            width: "100%",
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            marginBottom: 12,
+          }}
+/>
+
+        {err ? <div style={{ background: "#fff3f3", border: "1px solid #ffd2d2", color: "#7a1f1f", borderRadius: 10, padding: 10, marginBottom: 12 }}>{err}</div> : null}
+        {err ? (
+          <div
+            style={{
+              background: "#fff3f3",
+              border: "1px solid #ffd2d2",
+              color: "#7a1f1f",
+              borderRadius: 10,
+              padding: 10,
+              marginBottom: 12,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {err}
+          </div>
+        ) : null}
+
+<button
+type="submit"
+@@ -68,12 +121,16 @@
+border: 0,
+background: busy ? "#999" : "#111",
+color: "#fff",
+            fontWeight: 600,
+            fontWeight: 700,
+cursor: busy ? "default" : "pointer",
+}}
+>
+{busy ? "Signing in…" : "Sign in"}
+</button>
+
+        <div style={{ marginTop: 10, color: "#777", fontSize: 12 }}>
+          If you can’t log in, ask the office to reset your driver password.
+        </div>
+</form>
+</main>
+);
