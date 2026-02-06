@@ -10,22 +10,8 @@ function ymd(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function uniq(arr) {
-  return Array.from(new Set((arr || []).filter(Boolean)));
-}
-
-function isOutstandingForDate(job, date) {
-  if (!job) return false;
-  const isDeliveryDue = String(job.scheduled_date || "").slice(0, 10) === date;
-  const isCollectionDue = String(job.collection_date || "").slice(0, 10) === date;
-
-  const delivered = !!job.delivery_actual_date;
-  const collected = !!job.collection_actual_date;
-
-  if (isDeliveryDue && !delivered) return true;
-  if (isCollectionDue && !collected) return true;
-
-  return false;
+function asStr(x) {
+  return x == null ? "" : String(x);
 }
 
 export default async function handler(req, res) {
@@ -37,232 +23,120 @@ export default async function handler(req, res) {
 
   const date = typeof req.query.date === "string" && req.query.date ? req.query.date : ymd(new Date());
 
-  async function loadJobsAndSkipTypes(jobIds) {
-    const ids = uniq(jobIds);
-    if (!ids.length) return { jobsById: {}, skipTypesById: {} };
-
-    const { data: jobs, error: jobsErr } = await supabase
+  try {
+    // Load jobs assigned to this driver for the selected date
+    // Include swap_group_id + type + skip name
+    const { data: jobs, error } = await supabase
       .from("jobs")
       .select(
         [
           "id",
+          "subscriber_id",
+          "assigned_driver_id",
           "job_number",
+          "job_status",
+          "type",
+          "swap_group_id",
           "scheduled_date",
           "collection_date",
           "delivery_actual_date",
           "collection_actual_date",
+          "payment_type",
+          "price_inc_vat",
+          "notes",
           "site_name",
           "site_address_line1",
           "site_address_line2",
           "site_town",
           "site_postcode",
-          "notes",
-          "job_status",
-          "price_inc_vat",
-          "payment_type",
           "skip_type_id",
-          "driver_run_group",
+          "skip_types(name)",
         ].join(",")
       )
-      .in("id", ids)
-      .eq("subscriber_id", driver.subscriber_id);
+      .eq("subscriber_id", driver.subscriber_id)
+      .eq("assigned_driver_id", driver.id)
+      .or(`scheduled_date.eq.${date},collection_date.eq.${date}`)
+      .order("job_number", { ascending: true });
 
-    if (jobsErr) return { jobsById: {}, skipTypesById: {}, jobsErr };
-
-    const skipTypeIds = uniq((jobs || []).map((j) => j.skip_type_id).filter(Boolean));
-
-    let skipTypesById = {};
-    if (skipTypeIds.length) {
-      const { data: sts, error: stErr } = await supabase.from("skip_types").select("id, name").in("id", skipTypeIds);
-      if (!stErr) {
-        for (const st of sts || []) skipTypesById[String(st.id)] = st;
-      }
+    if (error) {
+      console.error("driver/jobs load error", error);
+      return res.status(500).json({ ok: false, error: "Failed to load jobs" });
     }
 
+    const rows = Array.isArray(jobs) ? jobs : [];
+
+    // Build jobsById for the UI
     const jobsById = {};
-    for (const j of jobs || []) {
-      const isDelivery = String(j.scheduled_date || "").slice(0, 10) === date;
-      const isCollection = String(j.collection_date || "").slice(0, 10) === date;
-
-      let type = "other";
-      if (isDelivery && isCollection) type = "delivery+collection";
-      else if (isDelivery) type = "delivery";
-      else if (isCollection) type = "collection";
-
-      const st = j.skip_type_id ? skipTypesById[String(j.skip_type_id)] : null;
-
-      jobsById[String(j.id)] = {
+    for (const j of rows) {
+      jobsById[asStr(j.id)] = {
         ...j,
-        type,
-        skip_type_name: st?.name || null,
+        skip_type_name: j?.skip_types?.name || j?.skip_type_name || null,
       };
     }
 
-    return { jobsById, skipTypesById };
-  }
+    // ---- Group swaps into one item ----
+    // We expect: collection job (type="collection") + delivery job (type="delivery")
+    // with same swap_group_id and both on this date (collection_date / scheduled_date).
+    const usedJobIds = new Set();
+    const swapItems = [];
 
-  function collapseSwaps(items, jobsById) {
-    // collapse adjacent job items with same driver_run_group into one swap item (collection + delivery)
-    const out = [];
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
+    // Map swap_group_id -> { collect?: job, deliver?: job }
+    const byGroup = {};
+    for (const j of rows) {
+      const gid = asStr(j.swap_group_id);
+      if (!gid) continue;
 
-      if (!it || typeof it !== "object") continue;
-      if (it.type !== "job") {
-        out.push(it);
+      if (!byGroup[gid]) byGroup[gid] = {};
+      if (j.type === "collection") byGroup[gid].collect = j;
+      if (j.type === "delivery") byGroup[gid].deliver = j;
+    }
+
+    for (const gid of Object.keys(byGroup)) {
+      const pair = byGroup[gid];
+      if (!pair.collect || !pair.deliver) continue;
+
+      // only create swap item if BOTH jobs are due today (server-side sanity)
+      const collectDue = asStr(pair.collect.collection_date) === date;
+      const deliverDue = asStr(pair.deliver.scheduled_date) === date;
+      if (!collectDue || !deliverDue) continue;
+
+      // also skip if either already completed (optional but helpful)
+      if (pair.collect.collection_actual_date || pair.deliver.delivery_actual_date) {
+        // if one side is complete, we keep them separate so driver can finish remaining
         continue;
       }
 
-      const a = it.job_id ? jobsById[String(it.job_id)] : null;
-      if (!a) continue;
+      swapItems.push({
+        type: "swap",
+        swap_group_id: gid,
+        collect_job_id: pair.collect.id,
+        deliver_job_id: pair.deliver.id,
+      });
 
-      const group = a.driver_run_group;
-      const next = items[i + 1];
-      if (
-        group != null &&
-        next &&
-        typeof next === "object" &&
-        next.type === "job" &&
-        next.job_id
-      ) {
-        const b = jobsById[String(next.job_id)] || null;
-        if (b && b.driver_run_group === group) {
-          const types = new Set([a.type, b.type]);
-
-          const isPair =
-            (types.has("collection") && types.has("delivery")) ||
-            (types.has("collection") && types.has("delivery+collection")) ||
-            (types.has("delivery") && types.has("delivery+collection"));
-
-          // For our swap convention: one is collection (full), one is delivery (empty)
-          if (isPair && (a.type === "collection" || b.type === "collection") && (a.type === "delivery" || b.type === "delivery")) {
-            const collect = a.type === "collection" ? a : b;
-            const deliver = a.type === "delivery" ? a : b;
-
-            out.push({
-              type: "swap",
-              group,
-              collect_job_id: String(collect.id),
-              deliver_job_id: String(deliver.id),
-            });
-            i++; // skip next
-            continue;
-          }
-        }
-      }
-
-      out.push(it);
+      usedJobIds.add(asStr(pair.collect.id));
+      usedJobIds.add(asStr(pair.deliver.id));
     }
-    return out;
+
+    // Remaining jobs become normal job items
+    const jobItems = [];
+    for (const j of rows) {
+      if (usedJobIds.has(asStr(j.id))) continue;
+
+      // Filter out completed items so driver only sees work to do
+      // (Delivered deliveries + Collected collections should disappear)
+      if (j.type === "delivery" && j.delivery_actual_date) continue;
+      if (j.type === "collection" && j.collection_actual_date) continue;
+
+      jobItems.push({ type: "job", job_id: j.id });
+    }
+
+    // Build the run list:
+    // swaps first, then remaining jobs
+    const items = [...swapItems, ...jobItems];
+
+    return res.json({ ok: true, date, items, jobsById });
+  } catch (e) {
+    console.error("driver/jobs unexpected", e);
+    return res.status(500).json({ ok: false, error: "Unexpected error" });
   }
-
-  // 1) driver_runs first (source of truth order)
-  const { data: runRow, error: runErr } = await supabase
-    .from("driver_runs")
-    .select("id, subscriber_id, driver_id, run_date, items, updated_at")
-    .eq("subscriber_id", driver.subscriber_id)
-    .eq("driver_id", driver.id)
-    .eq("run_date", date)
-    .maybeSingle();
-
-  if (runErr) return res.status(500).json({ ok: false, error: "Failed to load run" });
-
-  if (runRow && Array.isArray(runRow.items)) {
-    const jobIds = [];
-    for (const it of runRow.items) {
-      if (it && typeof it === "object" && it.type === "job" && it.job_id) jobIds.push(it.job_id);
-    }
-
-    const { jobsById, jobsErr } = await loadJobsAndSkipTypes(jobIds);
-    if (jobsErr) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
-
-    // Filter items: hide completed jobs for this date (but keep breaks)
-    const filtered = [];
-    for (const it of runRow.items) {
-      if (!it || typeof it !== "object") continue;
-
-      if (it.type !== "job") {
-        filtered.push(it);
-        continue;
-      }
-
-      const j = it.job_id ? jobsById[String(it.job_id)] : null;
-      if (!j) continue;
-
-      if (isOutstandingForDate(j, date)) filtered.push(it);
-    }
-
-    const collapsed = collapseSwaps(filtered, jobsById);
-
-    // Also remove swap items if either side is missing/outstanding mismatch
-    const finalItems = collapsed.filter((it) => {
-      if (it.type !== "swap") return true;
-      const c = jobsById[String(it.collect_job_id)];
-      const d = jobsById[String(it.deliver_job_id)];
-      if (!c || !d) return false;
-      return isOutstandingForDate(c, date) || isOutstandingForDate(d, date);
-    });
-
-    return res.json({
-      ok: true,
-      date,
-      source: "driver_runs",
-      run: { id: runRow.id, run_date: runRow.run_date, updated_at: runRow.updated_at },
-      items: finalItems,
-      jobsById,
-    });
-  }
-
-  // 2) fallback if no run row yet: select outstanding jobs only
-  const { data, error } = await supabase
-    .from("jobs")
-    .select(
-      [
-        "id",
-        "job_number",
-        "scheduled_date",
-        "collection_date",
-        "delivery_actual_date",
-        "collection_actual_date",
-        "site_name",
-        "site_address_line1",
-        "site_address_line2",
-        "site_town",
-        "site_postcode",
-        "notes",
-        "job_status",
-        "price_inc_vat",
-        "payment_type",
-        "skip_type_id",
-        "driver_sort_key",
-        "driver_run_group",
-      ].join(",")
-    )
-    .eq("subscriber_id", driver.subscriber_id)
-    .eq("assigned_driver_id", driver.id)
-    .or(`scheduled_date.eq.${date},collection_date.eq.${date}`)
-    .order("driver_run_group", { ascending: true, nullsFirst: true })
-    .order("driver_sort_key", { ascending: true, nullsFirst: true })
-    .order("job_number", { ascending: true });
-
-  if (error) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
-
-  const outstanding = (data || []).filter((j) => isOutstandingForDate(j, date));
-  const jobIds = outstanding.map((j) => j.id);
-
-  const { jobsById, jobsErr } = await loadJobsAndSkipTypes(jobIds);
-  if (jobsErr) return res.status(500).json({ ok: false, error: "Failed to load jobs" });
-
-  // Build items in order then collapse swaps (fallback uses same collapse logic)
-  const rawItems = outstanding.map((j) => ({ type: "job", job_id: j.id }));
-  const collapsed = collapseSwaps(rawItems, jobsById);
-
-  return res.json({
-    ok: true,
-    date,
-    source: "jobs_fallback",
-    run: null,
-    items: collapsed,
-    jobsById,
-  });
 }
