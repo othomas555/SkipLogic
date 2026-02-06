@@ -7,11 +7,18 @@ export default function DriverLogoutPage() {
 
     async function go() {
       try {
-        await fetch("/api/driver/logout", { method: "POST" });
+        await fetch("/api/driver/logout", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+        });
       } catch (e) {
         // ignore
       } finally {
-        if (!cancelled) window.location.href = "/driver";
+        if (!cancelled) {
+          // Hard redirect + cache bust
+          window.location.href = `/driver?logged_out=1&t=${Date.now()}`;
+        }
       }
     }
 
@@ -45,11 +52,7 @@ export default function DriverLogoutPage() {
       >
         <h1 style={{ margin: 0, fontSize: 18 }}>Logging out…</h1>
         <p style={{ marginTop: 10, marginBottom: 0, color: "#555", fontSize: 14 }}>
-          If this doesn’t redirect, go back to{" "}
-          <a href="/driver" style={{ color: "#0b57d0" }}>
-            /driver
-          </a>
-          .
+          Clearing session cookie…
         </p>
       </div>
     </main>
