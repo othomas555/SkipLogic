@@ -107,6 +107,8 @@ export default function JobsPage() {
         return "Awaiting collection";
       case "collected":
         return "Collected";
+      case "delivered":
+        return "Delivered";
       default:
         return status || "Unknown";
     }
@@ -208,7 +210,8 @@ export default function JobsPage() {
             {refreshing ? " (refreshing…)" : ""}
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             type="button"
             onClick={() => router.push("/app")}
@@ -223,6 +226,24 @@ export default function JobsPage() {
           >
             ← Back to dashboard
           </button>
+
+          <button
+            type="button"
+            onClick={() => router.push("/app/jobs/book-swap")}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 4,
+              border: "1px solid #111",
+              background: "#fff",
+              color: "#111",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 700,
+            }}
+          >
+            ⇄ Book swap
+          </button>
+
           <button
             type="button"
             onClick={() => router.push("/app/jobs/book")}
