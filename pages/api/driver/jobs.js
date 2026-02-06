@@ -84,6 +84,8 @@ export default async function handler(req, res) {
           "payment_type",
           "skip_type_id",
           "assigned_driver_id",
+          "driver_run_group",
+          "driver_sort_key",
         ].join(",")
       )
       .in("id", ids)
