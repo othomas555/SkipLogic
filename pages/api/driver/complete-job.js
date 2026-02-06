@@ -10,8 +10,15 @@ function ymd(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function hasPhoto(photos, kind) {
-  return Array.isArray(photos) && photos.some((p) => p && p.kind === kind && (p.url || p.path));
+function firstPhotoUrl(photos, kind) {
+  if (!Array.isArray(photos)) return null;
+  const p = photos.find((x) => x && x.kind === kind && (x.url || x.path));
+  return p?.url || null;
+}
+
+function requirePhoto(photos, kind) {
+  const url = firstPhotoUrl(photos, kind);
+  return !!url;
 }
 
 export default async function handler(req, res) {
@@ -29,20 +36,36 @@ export default async function handler(req, res) {
   const photos = Array.isArray(body.photos) ? body.photos : [];
 
   try {
+    // ---------------- SWAP: TWO JOB IDS (collection + delivery) ----------------
+    // We keep this for when you implement "two linked jobs rendered as SWAP"
     if (kind === "swap") {
       const collectJobId = String(body.collect_job_id || "");
       const deliverJobId = String(body.deliver_job_id || "");
 
       if (!collectJobId || !deliverJobId) return res.status(400).json({ ok: false, error: "Missing swap job ids" });
 
-      // Enforce photos
-      if (!hasPhoto(photos, "swap_full")) return res.status(400).json({ ok: false, error: "Photo required: full skip (swap_full)" });
-      if (!hasPhoto(photos, "swap_empty")) return res.status(400).json({ ok: false, error: "Photo required: empty skip (swap_empty)" });
+      if (!requirePhoto(photos, "swap_full")) {
+        return res.status(400).json({ ok: false, error: "Photo required: full skip (swap_full)" });
+      }
+      if (!requirePhoto(photos, "swap_empty")) {
+        return res.status(400).json({ ok: false, error: "Photo required: empty skip (swap_empty)" });
+      }
 
-      // Load both jobs (security: must be same subscriber and assigned to this driver)
       const { data: jobs, error: jErr } = await supabase
         .from("jobs")
-        .select("id, subscriber_id, assigned_driver_id, scheduled_date, collection_date, delivery_actual_date, collection_actual_date")
+        .select(
+          [
+            "id",
+            "subscriber_id",
+            "assigned_driver_id",
+            "delivery_actual_date",
+            "collection_actual_date",
+            "delivery_photo_url",
+            "collection_photo_url",
+            "swap_full_photo_url",
+            "swap_empty_photo_url",
+          ].join(",")
+        )
         .in("id", [collectJobId, deliverJobId])
         .eq("subscriber_id", driver.subscriber_id);
 
@@ -59,26 +82,40 @@ export default async function handler(req, res) {
         return res.status(403).json({ ok: false, error: "These jobs are not assigned to you" });
       }
 
-      // Apply updates
+      // Idempotent behaviour: if already done, return ok
+      const cAlready = !!c.collection_actual_date;
+      const dAlready = !!d.delivery_actual_date;
+
+      const fullUrl = firstPhotoUrl(photos, "swap_full");
+      const emptyUrl = firstPhotoUrl(photos, "swap_empty");
+
       const updates = [];
 
-      // collection job: set collection_actual_date
-      if (!c.collection_actual_date) {
+      // Collection job: collect + store swap_full on collection job
+      if (!cAlready) {
         updates.push(
           supabase
             .from("jobs")
-            .update({ collection_actual_date: date, job_status: "collected" })
+            .update({
+              collection_actual_date: date,
+              job_status: "collected",
+              swap_full_photo_url: fullUrl,
+            })
             .eq("id", c.id)
             .eq("subscriber_id", driver.subscriber_id)
         );
       }
 
-      // delivery job: set delivery_actual_date
-      if (!d.delivery_actual_date) {
+      // Delivery job: deliver + store swap_empty on delivery job
+      if (!dAlready) {
         updates.push(
           supabase
             .from("jobs")
-            .update({ delivery_actual_date: date, job_status: "delivered" })
+            .update({
+              delivery_actual_date: date,
+              job_status: "delivered",
+              swap_empty_photo_url: emptyUrl,
+            })
             .eq("id", d.id)
             .eq("subscriber_id", driver.subscriber_id)
         );
@@ -91,22 +128,22 @@ export default async function handler(req, res) {
         return res.status(500).json({ ok: false, error: "Failed to update swap jobs" });
       }
 
-      return res.json({ ok: true });
+      return res.json({ ok: true, already_done: cAlready && dAlready });
     }
 
-    // default: single job complete
+    // ---------------- SINGLE JOB COMPLETE ----------------
     const jobId = String(body.job_id || "");
     const jobType = String(body.job_type || ""); // "delivery" | "collection" | "delivery+collection"
     if (!jobId) return res.status(400).json({ ok: false, error: "Missing job_id" });
 
     // Enforce photos
     if (jobType === "delivery") {
-      if (!hasPhoto(photos, "delivered")) return res.status(400).json({ ok: false, error: "Photo required: delivered" });
+      if (!requirePhoto(photos, "delivered")) return res.status(400).json({ ok: false, error: "Photo required: delivered" });
     } else if (jobType === "collection") {
-      if (!hasPhoto(photos, "collected")) return res.status(400).json({ ok: false, error: "Photo required: collected" });
+      if (!requirePhoto(photos, "collected")) return res.status(400).json({ ok: false, error: "Photo required: collected" });
     } else if (jobType === "delivery+collection") {
-      if (!hasPhoto(photos, "swap_full")) return res.status(400).json({ ok: false, error: "Photo required: full skip (swap_full)" });
-      if (!hasPhoto(photos, "swap_empty")) return res.status(400).json({ ok: false, error: "Photo required: empty skip (swap_empty)" });
+      if (!requirePhoto(photos, "swap_full")) return res.status(400).json({ ok: false, error: "Photo required: full skip (swap_full)" });
+      if (!requirePhoto(photos, "swap_empty")) return res.status(400).json({ ok: false, error: "Photo required: empty skip (swap_empty)" });
     } else {
       return res.status(400).json({ ok: false, error: "Unknown job_type" });
     }
@@ -114,7 +151,19 @@ export default async function handler(req, res) {
     // Load job (security)
     const { data: j, error: jErr } = await supabase
       .from("jobs")
-      .select("id, subscriber_id, assigned_driver_id, scheduled_date, collection_date, delivery_actual_date, collection_actual_date")
+      .select(
+        [
+          "id",
+          "subscriber_id",
+          "assigned_driver_id",
+          "delivery_actual_date",
+          "collection_actual_date",
+          "delivery_photo_url",
+          "collection_photo_url",
+          "swap_full_photo_url",
+          "swap_empty_photo_url",
+        ].join(",")
+      )
       .eq("id", jobId)
       .eq("subscriber_id", driver.subscriber_id)
       .maybeSingle();
@@ -126,19 +175,28 @@ export default async function handler(req, res) {
       return res.status(403).json({ ok: false, error: "This job is not assigned to you" });
     }
 
+    // Idempotent: if already completed for that type, return ok
+    if (jobType === "delivery" && j.delivery_actual_date) return res.json({ ok: true, already_done: true });
+    if (jobType === "collection" && j.collection_actual_date) return res.json({ ok: true, already_done: true });
+    if (jobType === "delivery+collection" && j.delivery_actual_date && j.collection_actual_date) return res.json({ ok: true, already_done: true });
+
     const patch = {};
 
     if (jobType === "delivery") {
       patch.delivery_actual_date = date;
       patch.job_status = "delivered";
+      patch.delivery_photo_url = firstPhotoUrl(photos, "delivered");
     } else if (jobType === "collection") {
       patch.collection_actual_date = date;
       patch.job_status = "collected";
+      patch.collection_photo_url = firstPhotoUrl(photos, "collected");
     } else if (jobType === "delivery+collection") {
-      // Rare in your new model, but keep compatible
+      // Legacy "tip return on one job" mode
       patch.delivery_actual_date = date;
       patch.collection_actual_date = date;
       patch.job_status = "completed";
+      patch.swap_full_photo_url = firstPhotoUrl(photos, "swap_full");
+      patch.swap_empty_photo_url = firstPhotoUrl(photos, "swap_empty");
     }
 
     const { error: uErr } = await supabase
