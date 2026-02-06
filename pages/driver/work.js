@@ -16,53 +16,60 @@ function fmtGBP(n) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(x);
 }
 
-function stableItemsFingerprint(items, jobsById) {
-  const minimal = (Array.isArray(items) ? items : []).map((it) => {
-    if (!it || typeof it !== "object") return { bad: true };
-
-    if (it.type === "job") {
-      const j = it.job_id ? jobsById?.[String(it.job_id)] : null;
-      return {
-        type: "job",
-        job_id: it.job_id,
-        job_number: j?.job_number,
-        job_status: j?.job_status,
-        scheduled_date: j?.scheduled_date,
-        collection_date: j?.collection_date,
-        swap_group_id: j?.swap_group_id,
-      };
-    }
-
-    if (it.type === "swap") {
-      const c = jobsById?.[String(it.collect_job_id)];
-      const d = jobsById?.[String(it.deliver_job_id)];
-      return {
-        type: "swap",
-        swap_group_id: it.swap_group_id,
-        collect_job_id: it.collect_job_id,
-        deliver_job_id: it.deliver_job_id,
-        collect_job_number: c?.job_number,
-        deliver_job_number: d?.job_number,
-      };
-    }
-
-    return { type: it.type };
-  });
-
-  return JSON.stringify(minimal);
-}
-
 function buildAddress(job) {
   if (!job) return "";
-  return [job.site_address_line1, job.site_address_line2, job.site_town, job.site_postcode]
-    .filter(Boolean)
-    .join(", ");
+  return [job.site_address_line1, job.site_address_line2, job.site_town, job.site_postcode].filter(Boolean).join(", ");
 }
 
-function openGoogleMapsFromAddress(addr) {
+function openGoogleMaps(job) {
+  const addr = buildAddress(job);
   if (!addr) return;
   const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}`;
   window.open(url, "_blank", "noopener,noreferrer");
+}
+
+/**
+ * A "work item" is what we render in driver/run.
+ * - job: one job row
+ * - swap: one card representing two linked jobs (collect + deliver)
+ * - yard_break / driver_break: as before
+ */
+function stableItemsFingerprint(items, jobsById, swapByGroup) {
+  const minimal = (Array.isArray(items) ? items : []).map((it) => {
+    if (!it || typeof it !== "object") return { bad: true };
+
+    if (it.type === "swap") {
+      const g = swapByGroup?.[String(it.swap_group_id)];
+      const c = g?.collect ? jobsById?.[String(g.collect.id)] : null;
+      const d = g?.deliver ? jobsById?.[String(g.deliver.id)] : null;
+      return {
+        type: "swap",
+        swap_group_id: it.swap_group_id,
+        collect_job_number: c?.job_number,
+        deliver_job_number: d?.job_number,
+        collect_status: c?.job_status,
+        deliver_status: d?.job_status,
+        collect_date: c?.collection_date,
+        deliver_date: d?.scheduled_date,
+      };
+    }
+
+    if (it.type !== "job") return { type: it.type };
+
+    const j = it.job_id ? jobsById?.[String(it.job_id)] : null;
+    return {
+      type: "job",
+      job_id: it.job_id,
+      job_number: j?.job_number,
+      job_status: j?.job_status,
+      scheduled_date: j?.scheduled_date,
+      collection_date: j?.collection_date,
+      swap_group_id: j?.swap_group_id || null,
+      swap_role: j?.swap_role || null,
+    };
+  });
+
+  return JSON.stringify(minimal);
 }
 
 export default function DriverWorkPage() {
@@ -80,15 +87,13 @@ export default function DriverWorkPage() {
   const [hasUpdate, setHasUpdate] = useState(false);
   const lastFingerprintRef = useRef("");
 
-  const [actingKey, setActingKey] = useState(""); // jobId or swap key
+  const [actingKey, setActingKey] = useState(""); // jobId OR `swap:${swapGroupId}`
   const [toast, setToast] = useState("");
 
-  // photo state per job/swap
-  // job: { delivered | collected | swap_full | swap_empty }
-  // swap: keyed as `swap:${swap_group_id}`
-  const [photoFilesByKey, setPhotoFilesByKey] = useState({});
+  // photo state per key (jobId OR swap:groupId)
+  const [photoFilesByKey, setPhotoFilesByKey] = useState({}); // { [key]: { delivered?, collected?, swap_full?, swap_empty? } }
 
-  function setPhoto(key, kind, file) {
+  function setKeyPhoto(key, kind, file) {
     setPhotoFilesByKey((prev) => ({
       ...prev,
       [key]: {
@@ -120,12 +125,9 @@ export default function DriverWorkPage() {
       const nextItems = Array.isArray(json.items) ? json.items : [];
       const nextJobsById = json.jobsById && typeof json.jobsById === "object" ? json.jobsById : {};
 
-      const fp = stableItemsFingerprint(nextItems, nextJobsById);
-      if (!lastFingerprintRef.current) lastFingerprintRef.current = fp;
-      else if (fp !== lastFingerprintRef.current) setHasUpdate(true);
-
       setItems(nextItems);
       setJobsById(nextJobsById);
+
       setLoading(false);
     } catch {
       setErr("Failed to load jobs");
@@ -133,16 +135,122 @@ export default function DriverWorkPage() {
     }
   }
 
+  useEffect(() => {
+    load({ silent: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
+  useEffect(() => {
+    const t = setInterval(() => load({ silent: true }), 45000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
+  /**
+   * Build swap groups from jobsById.
+   * We only group swaps where we can see BOTH roles:
+   * - collect: swap_role === "collect"
+   * - deliver: swap_role === "deliver"
+   *
+   * And they are due on the selected date:
+   * - collect leg due by collection_date === date, not yet collected
+   * - deliver leg due by scheduled_date === date, not yet delivered
+   */
+  const swapByGroup = useMemo(() => {
+    const m = {};
+    for (const jid of Object.keys(jobsById || {})) {
+      const j = jobsById[jid];
+      if (!j?.swap_group_id) continue;
+
+      const g = String(j.swap_group_id);
+      if (!m[g]) m[g] = { swap_group_id: g, collect: null, deliver: null };
+
+      if (j.swap_role === "collect") m[g].collect = j;
+      if (j.swap_role === "deliver") m[g].deliver = j;
+    }
+    return m;
+  }, [jobsById]);
+
+  function isCollectDue(j) {
+    if (!j) return false;
+    if (String(j.collection_date || "") !== String(date)) return false;
+    if (j.collection_actual_date) return false;
+    if (String(j.job_status || "") === "collected" || String(j.job_status || "") === "completed") return false;
+    return true;
+  }
+
+  function isDeliverDue(j) {
+    if (!j) return false;
+    if (String(j.scheduled_date || "") !== String(date)) return false;
+    if (j.delivery_actual_date) return false;
+    if (String(j.job_status || "") === "delivered" || String(j.job_status || "") === "completed") return false;
+    return true;
+  }
+
+  /**
+   * Convert raw items -> grouped items (swap becomes one card).
+   * Keep breaks in the run ordering.
+   */
+  const groupedItems = useMemo(() => {
+    const out = [];
+    const seenSwap = new Set();
+
+    for (const it of items || []) {
+      if (!it || typeof it !== "object") continue;
+
+      if (it.type !== "job") {
+        out.push(it);
+        continue;
+      }
+
+      const j = it.job_id ? jobsById[String(it.job_id)] : null;
+      if (!j) continue;
+
+      // If it's part of a swap and both legs exist + are due today, collapse to one
+      if (j.swap_group_id) {
+        const gId = String(j.swap_group_id);
+        const g = swapByGroup[gId];
+
+        const c = g?.collect || null;
+        const d = g?.deliver || null;
+
+        const swapIsRenderable = c && d && isCollectDue(c) && isDeliverDue(d);
+
+        if (swapIsRenderable) {
+          if (!seenSwap.has(gId)) {
+            seenSwap.add(gId);
+            out.push({ type: "swap", swap_group_id: gId });
+          }
+          // skip individual leg
+          continue;
+        }
+      }
+
+      // Otherwise just show the job (delivery or collection)
+      out.push({ type: "job", job_id: it.job_id });
+    }
+
+    return out;
+  }, [items, jobsById, swapByGroup, date]);
+
+  // Fingerprint/update banner
+  useEffect(() => {
+    const fp = stableItemsFingerprint(groupedItems, jobsById, swapByGroup);
+    if (!lastFingerprintRef.current) lastFingerprintRef.current = fp;
+    else if (fp !== lastFingerprintRef.current) setHasUpdate(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupedItems, jobsById]);
+
   async function applyUpdateNow() {
     setHasUpdate(false);
     await load({ silent: false });
-    lastFingerprintRef.current = stableItemsFingerprint(items, jobsById);
+    lastFingerprintRef.current = stableItemsFingerprint(groupedItems, jobsById, swapByGroup);
   }
 
   async function hardRefresh() {
     setHasUpdate(false);
     await load({ silent: false });
-    lastFingerprintRef.current = stableItemsFingerprint(items, jobsById);
+    lastFingerprintRef.current = stableItemsFingerprint(groupedItems, jobsById, swapByGroup);
   }
 
   async function logout() {
@@ -152,7 +260,6 @@ export default function DriverWorkPage() {
 
   async function uploadOne(jobId, kind, file) {
     if (!file) return null;
-
     const res = await fetch(
       `/api/driver/upload-photo?job_id=${encodeURIComponent(jobId)}&kind=${encodeURIComponent(kind)}`,
       {
@@ -172,50 +279,115 @@ export default function DriverWorkPage() {
     return { kind, url: json.url, path: json.path };
   }
 
-  async function markJobComplete(job) {
+  async function completeSwap(swapGroupId) {
+    const gId = String(swapGroupId);
+    const g = swapByGroup[gId];
+    const c = g?.collect || null;
+    const d = g?.deliver || null;
+
+    if (!c || !d) return setErr("Swap missing jobs (collect/deliver). Refresh.");
+
+    // hard require both due today (keeps it clean)
+    if (!isCollectDue(c) || !isDeliverDue(d)) {
+      return setErr("This swap is not due today (or already completed).");
+    }
+
+    const key = `swap:${gId}`;
+    const kindSet = photoFilesByKey[key] || {};
+
+    setToast("");
+    setErr("");
+
+    if (!kindSet.swap_full || !kindSet.swap_empty) {
+      return setErr("Photos required for swap: full skip + empty skip.");
+    }
+
+    const ok = confirm(
+      `Are you sure?\n\nSWAP\nCollect: ${c.job_number || ""}\nDeliver: ${d.job_number || ""}\n${buildAddress(d || c)}`
+    );
+    if (!ok) return;
+
+    setActingKey(key);
+
+    try {
+      // Upload photos against sensible job ids:
+      // - swap_full belongs to collection leg
+      // - swap_empty belongs to delivery leg
+      const uploads = [];
+      uploads.push(await uploadOne(String(c.id), "swap_full", kindSet.swap_full));
+      uploads.push(await uploadOne(String(d.id), "swap_empty", kindSet.swap_empty));
+      const photos = uploads.filter(Boolean);
+
+      const res = await fetch("/api/driver/complete-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "swap",
+          date,
+          collect_job_id: c.id,
+          deliver_job_id: d.id,
+          photos,
+        }),
+      });
+
+      if (res.status === 401) {
+        router.replace("/driver");
+        return;
+      }
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json?.error || "Could not mark swap complete");
+
+      setToast("Swap marked complete.");
+      setActingKey("");
+      await hardRefresh();
+    } catch (e) {
+      setErr(e?.message || "Could not mark swap complete");
+      setActingKey("");
+    }
+  }
+
+  async function completeSingleJob(job) {
     if (!job?.id) return;
 
     setToast("");
     setErr("");
 
     const jobId = String(job.id);
-    const key = jobId;
-    const fileSet = photoFilesByKey[key] || {};
-    const t = job.type;
+    const kindSet = photoFilesByKey[jobId] || {};
 
-    if (t === "delivery") {
-      if (!fileSet.delivered) return setErr("Photo required: delivered (take a photo of the skip after it is dropped).");
-    } else if (t === "collection") {
-      if (!fileSet.collected) return setErr("Photo required: collected (take a photo of the skip before lifting).");
-    } else if (t === "delivery+collection") {
-      if (!fileSet.swap_full || !fileSet.swap_empty) return setErr("Photos required for tip return: full skip + empty skip.");
+    // Determine type: in your new model we rely on swap_role / dates
+    const isCollect = job.swap_role === "collect" || (!!job.collection_date && String(job.collection_date) === String(date) && !job.collection_actual_date);
+    const isDeliver = !isCollect;
+
+    // Require files
+    if (isDeliver) {
+      if (!kindSet.delivered) return setErr("Photo required: delivered (take a photo of the skip after it is dropped).");
     } else {
-      return setErr("Cannot complete: unknown job type.");
+      if (!kindSet.collected) return setErr("Photo required: collected (take a photo of the skip before lifting).");
     }
 
     const ok = confirm(`Are you sure?\n\n${job.job_number || ""}\n${buildAddress(job)}`);
     if (!ok) return;
 
-    setActingKey(key);
+    setActingKey(jobId);
 
     try {
       const uploads = [];
-
-      if (t === "delivery") {
-        uploads.push(await uploadOne(jobId, "delivered", fileSet.delivered));
-      } else if (t === "collection") {
-        uploads.push(await uploadOne(jobId, "collected", fileSet.collected));
-      } else if (t === "delivery+collection") {
-        uploads.push(await uploadOne(jobId, "swap_full", fileSet.swap_full));
-        uploads.push(await uploadOne(jobId, "swap_empty", fileSet.swap_empty));
-      }
+      if (isDeliver) uploads.push(await uploadOne(jobId, "delivered", kindSet.delivered));
+      else uploads.push(await uploadOne(jobId, "collected", kindSet.collected));
 
       const photos = uploads.filter(Boolean);
 
       const res = await fetch("/api/driver/complete-job", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: job.id, date, job_type: t, photos }),
+        body: JSON.stringify({
+          job_id: job.id,
+          date,
+          job_type: isDeliver ? "delivery" : "collection",
+          photos,
+        }),
       });
 
       if (res.status === 401) {
@@ -235,106 +407,65 @@ export default function DriverWorkPage() {
     }
   }
 
-  async function markSwapComplete(item) {
-    setToast("");
-    setErr("");
-
-    const swapKey = `swap:${item.swap_group_id || `${item.collect_job_id}:${item.deliver_job_id}`}`;
-    const fileSet = photoFilesByKey[swapKey] || {};
-
-    if (!fileSet.swap_full) return setErr("Photo required: full skip (take a photo of the full skip before lifting).");
-    if (!fileSet.swap_empty) return setErr("Photo required: empty skip (take a photo of the empty skip after drop).");
-
-    const c = jobsById[String(item.collect_job_id)] || null;
-    const d = jobsById[String(item.deliver_job_id)] || null;
-
-    const addr = buildAddress(c) || buildAddress(d);
-
-    const ok = confirm(
-      `Complete swap?\n\nCollect: ${c?.job_number || item.collect_job_id}\nDeliver: ${d?.job_number || item.deliver_job_id}\n${addr || ""}`
-    );
-    if (!ok) return;
-
-    setActingKey(swapKey);
-
-    try {
-      // Upload BOTH photos (use collect job id as the upload target to keep storage grouped)
-      const uploads = [];
-      uploads.push(await uploadOne(String(item.collect_job_id), "swap_full", fileSet.swap_full));
-      uploads.push(await uploadOne(String(item.collect_job_id), "swap_empty", fileSet.swap_empty));
-      const photos = uploads.filter(Boolean);
-
-      const res = await fetch("/api/driver/complete-job", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          kind: "swap",
-          collect_job_id: item.collect_job_id,
-          deliver_job_id: item.deliver_job_id,
-          date,
-          photos,
-        }),
-      });
-
-      if (res.status === 401) {
-        router.replace("/driver");
-        return;
-      }
-
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json.ok) throw new Error(json?.error || "Could not complete swap");
-
-      setToast("Swap marked complete.");
-      setActingKey("");
-      await hardRefresh();
-    } catch (e) {
-      setErr(e?.message || "Could not complete swap");
-      setActingKey("");
-    }
-  }
-
-  useEffect(() => {
-    load({ silent: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date]);
-
-  useEffect(() => {
-    const t = setInterval(() => load({ silent: true }), 45000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date]);
-
-  const swapItems = useMemo(() => (items || []).filter((it) => it && typeof it === "object" && it.type === "swap"), [items]);
-  const jobItems = useMemo(
-    () => (items || []).filter((it) => it && typeof it === "object" && it.type === "job" && it.job_id),
-    [items]
-  );
-
-  const deliveries = useMemo(
-    () =>
-      jobItems.filter((it) => {
-        const j = jobsById[String(it.job_id)];
-        return j?.type === "delivery" || j?.type === "delivery+collection";
-      }),
-    [jobItems, jobsById]
-  );
-
-  const collections = useMemo(
-    () =>
-      jobItems.filter((it) => {
-        const j = jobsById[String(it.job_id)];
-        return j?.type === "collection" || j?.type === "delivery+collection";
-      }),
-    [jobItems, jobsById]
-  );
-
   const shown = useMemo(() => {
-    if (tab === "deliveries") return deliveries.map((it) => ({ type: "job", job_id: it.job_id }));
-    if (tab === "collections") return collections.map((it) => ({ type: "job", job_id: it.job_id }));
-    if (tab === "swaps") return swapItems;
-    if (tab === "all") return [...swapItems, ...jobItems.map((it) => ({ type: "job", job_id: it.job_id }))];
-    return items;
-  }, [tab, items, deliveries, collections, jobItems, swapItems]);
+    // For tabs: treat swap as both delivery+collection
+    if (tab === "deliveries") {
+      return groupedItems.filter((it) => {
+        if (it.type === "swap") return true;
+        if (it.type !== "job") return false;
+        const j = jobsById[String(it.job_id)];
+        return isDeliverDue(j);
+      });
+    }
+
+    if (tab === "collections") {
+      return groupedItems.filter((it) => {
+        if (it.type === "swap") return true;
+        if (it.type !== "job") return false;
+        const j = jobsById[String(it.job_id)];
+        return isCollectDue(j);
+      });
+    }
+
+    if (tab === "all") {
+      return groupedItems.filter((it) => it.type === "job" || it.type === "swap");
+    }
+
+    return groupedItems;
+  }, [tab, groupedItems, jobsById, date]);
+
+  const deliveriesCount = useMemo(() => {
+    let n = 0;
+    for (const it of groupedItems) {
+      if (it.type === "swap") n += 1;
+      else if (it.type === "job") {
+        const j = jobsById[String(it.job_id)];
+        if (isDeliverDue(j)) n += 1;
+      }
+    }
+    return n;
+  }, [groupedItems, jobsById, date]);
+
+  const collectionsCount = useMemo(() => {
+    let n = 0;
+    for (const it of groupedItems) {
+      if (it.type === "swap") n += 1;
+      else if (it.type === "job") {
+        const j = jobsById[String(it.job_id)];
+        if (isCollectDue(j)) n += 1;
+      }
+    }
+    return n;
+  }, [groupedItems, jobsById, date]);
+
+  if (loading) {
+    return (
+      <main style={pageStyle}>
+        <TopNav current="work" onLogout={logout} />
+        <div style={cardStyle}>Loading…</div>
+      </main>
+    );
+  }
 
   return (
     <main style={pageStyle}>
@@ -348,9 +479,7 @@ export default function DriverWorkPage() {
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value || today)} style={dateInput} />
-          <button onClick={hardRefresh} style={btnSecondary} type="button">
-            Refresh
-          </button>
+          <button onClick={hardRefresh} style={btnSecondary} type="button">Refresh</button>
         </div>
       </header>
 
@@ -360,9 +489,7 @@ export default function DriverWorkPage() {
             <div style={{ fontWeight: 900 }}>Schedule updated</div>
             <div style={{ color: "#444", fontSize: 13, marginTop: 2 }}>The office changed your run. Tap to refresh.</div>
           </div>
-          <button onClick={applyUpdateNow} style={btnPrimary} type="button">
-            Update now
-          </button>
+          <button onClick={applyUpdateNow} style={btnPrimary} type="button">Update now</button>
         </div>
       ) : null}
 
@@ -370,87 +497,91 @@ export default function DriverWorkPage() {
       {err ? <div style={alertError}>{err}</div> : null}
 
       <div style={tabsRow}>
-        <TabButton active={tab === "run"} onClick={() => setTab("run")}>
-          Run ({items.length})
-        </TabButton>
-        <TabButton active={tab === "swaps"} onClick={() => setTab("swaps")}>
-          Swaps ({swapItems.length})
-        </TabButton>
-        <TabButton active={tab === "deliveries"} onClick={() => setTab("deliveries")}>
-          Deliveries ({deliveries.length})
-        </TabButton>
-        <TabButton active={tab === "collections"} onClick={() => setTab("collections")}>
-          Collections ({collections.length})
-        </TabButton>
-        <TabButton active={tab === "all"} onClick={() => setTab("all")}>
-          All ({swapItems.length + jobItems.length})
-        </TabButton>
+        <TabButton active={tab === "run"} onClick={() => setTab("run")}>Run ({groupedItems.length})</TabButton>
+        <TabButton active={tab === "deliveries"} onClick={() => setTab("deliveries")}>Deliveries ({deliveriesCount})</TabButton>
+        <TabButton active={tab === "collections"} onClick={() => setTab("collections")}>Collections ({collectionsCount})</TabButton>
+        <TabButton active={tab === "all"} onClick={() => setTab("all")}>All</TabButton>
       </div>
 
-      {loading ? (
-        <div style={cardStyle}>Loading…</div>
-      ) : (
-        <section style={cardStyle}>
-          {!shown.length ? (
-            <div style={{ color: "#666" }}>None</div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {shown.map((it, idx) => {
-                if (!it || typeof it !== "object") return null;
+      <section style={cardStyle}>
+        {!shown.length ? (
+          <div style={{ color: "#666" }}>None</div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {shown.map((it, idx) => {
+              if (!it || typeof it !== "object") return null;
 
-                if (it.type === "swap") {
-                  const c = jobsById[String(it.collect_job_id)] || null;
-                  const d = jobsById[String(it.deliver_job_id)] || null;
+              if (it.type === "yard_break") {
+                return (
+                  <div key={`yb:${idx}`} style={{ ...jobCard, borderStyle: "dashed" }}>
+                    <div style={{ fontWeight: 900 }}>Return to yard / Tip return</div>
+                  </div>
+                );
+              }
 
-                  const swapKey = `swap:${it.swap_group_id || `${it.collect_job_id}:${it.deliver_job_id}`}`;
-                  const busy = actingKey === swapKey;
-                  const photos = photoFilesByKey[swapKey] || {};
+              if (it.type === "driver_break") {
+                return (
+                  <div key={`db:${idx}`} style={{ ...jobCard, borderStyle: "dashed" }}>
+                    <div style={{ fontWeight: 900 }}>Break</div>
+                  </div>
+                );
+              }
 
-                  const addr = buildAddress(c) || buildAddress(d);
+              if (it.type === "swap") {
+                const gId = String(it.swap_group_id);
+                const g = swapByGroup[gId];
+                const c = g?.collect || null;
+                const d = g?.deliver || null;
 
-                  return (
-                    <SwapCard
-                      key={swapKey}
-                      index={idx + 1}
-                      showIndex={tab === "run"}
-                      collectJob={c}
-                      deliverJob={d}
-                      address={addr}
-                      photos={photos}
-                      busy={busy}
-                      onSetPhoto={(kind, file) => setPhoto(swapKey, kind, file)}
-                      onNavigate={() => openGoogleMapsFromAddress(addr)}
-                      onComplete={() => markSwapComplete(it)}
-                    />
-                  );
-                }
+                const key = `swap:${gId}`;
+                const busy = actingKey === key;
+                const photos = photoFilesByKey[key] || {};
 
-                if (it.type === "job") {
-                  const job = jobsById[String(it.job_id)] || null;
-                  const busy = actingKey === String(job?.id || "");
-                  const key = String(job?.id || it.job_id || "");
-                  const photos = photoFilesByKey[key] || {};
-                  return (
-                    <JobCard
-                      key={String(it.job_id) + ":" + idx}
-                      job={job}
-                      index={idx + 1}
-                      showIndex={tab === "run"}
-                      busy={busy}
-                      photos={photos}
-                      onSetPhoto={(kind, file) => setPhoto(key, kind, file)}
-                      onNavigate={() => openGoogleMapsFromAddress(buildAddress(job))}
-                      onComplete={() => markJobComplete(job)}
-                    />
-                  );
-                }
+                return (
+                  <SwapCard
+                    key={`swap:${gId}:${idx}`}
+                    collect={c}
+                    deliver={d}
+                    index={idx + 1}
+                    showIndex={tab === "run"}
+                    busy={busy}
+                    photos={photos}
+                    onSetPhoto={(kind, file) => setKeyPhoto(key, kind, file)}
+                    onNavigate={() => openGoogleMaps(d || c)}
+                    onComplete={() => completeSwap(gId)}
+                  />
+                );
+              }
 
-                return null;
-              })}
-            </div>
-          )}
-        </section>
-      )}
+              if (it.type === "job") {
+                const job = jobsById[String(it.job_id)] || null;
+                if (!job) return null;
+
+                const key = String(job.id);
+                const busy = actingKey === key;
+                const photos = photoFilesByKey[key] || {};
+
+                return (
+                  <JobCard
+                    key={String(it.job_id) + ":" + idx}
+                    job={job}
+                    index={idx + 1}
+                    showIndex={tab === "run"}
+                    busy={busy}
+                    photos={photos}
+                    onSetPhoto={(kind, file) => setKeyPhoto(String(job.id), kind, file)}
+                    onNavigate={() => openGoogleMaps(job)}
+                    onComplete={() => completeSingleJob(job)}
+                    date={date}
+                  />
+                );
+              }
+
+              return null;
+            })}
+          </div>
+        )}
+      </section>
     </main>
   );
 }
@@ -460,56 +591,58 @@ function TopNav({ current, onLogout }) {
   return (
     <div style={topNav}>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button type="button" onClick={() => router.push("/driver/work")} style={current === "work" ? navBtnActive : navBtn}>
-          Run
-        </button>
-        <button type="button" onClick={() => router.push("/driver/checks")} style={current === "checks" ? navBtnActive : navBtn}>
-          Vehicle checks
-        </button>
+        <button type="button" onClick={() => router.push("/driver/work")} style={current === "work" ? navBtnActive : navBtn}>Run</button>
+        <button type="button" onClick={() => router.push("/driver/checks")} style={current === "checks" ? navBtnActive : navBtn}>Vehicle checks</button>
       </div>
-      <button type="button" onClick={onLogout} style={navBtnDanger}>
-        Logout
-      </button>
+      <button type="button" onClick={onLogout} style={navBtnDanger}>Logout</button>
     </div>
   );
 }
 
 function TabButton({ active, onClick, children }) {
-  return (
-    <button type="button" onClick={onClick} style={active ? tabBtnActive : tabBtn}>
-      {children}
-    </button>
-  );
+  return <button type="button" onClick={onClick} style={active ? tabBtnActive : tabBtn}>{children}</button>;
 }
 
-function SwapCard({ index, showIndex, collectJob, deliverJob, address, onNavigate, onComplete, busy, photos, onSetPhoto }) {
+function SwapCard({ collect, deliver, index, showIndex, onNavigate, onComplete, busy, photos, onSetPhoto }) {
+  const addr = buildAddress(deliver || collect);
+  const price = deliver?.price_inc_vat;
+
   return (
-    <div style={{ ...jobCard, border: "1px solid #111" }}>
+    <div style={{ ...jobCard, borderLeft: "6px solid #111" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
         <div>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             {showIndex ? <span style={pillIndex}>{index}</span> : null}
-            <div style={{ fontWeight: 900 }}>Swap</div>
-            <span style={{ ...pillType, border: "1px solid #111" }}>Collect + Deliver</span>
+            <div style={{ fontWeight: 900 }}>SWAP</div>
+            <span style={pillType}>Tip return (swap)</span>
           </div>
 
-          <div style={{ marginTop: 8, fontSize: 13 }}>
-            <div><b>Collect:</b> {collectJob?.job_number || "—"} ({collectJob?.skip_type_name || "—"})</div>
-            <div><b>Deliver:</b> {deliverJob?.job_number || "—"} ({deliverJob?.skip_type_name || "—"})</div>
+          <div style={{ marginTop: 6, color: "#111", fontWeight: 800 }}>
+            Collect: {collect?.job_number || "—"} → Deliver: {deliver?.job_number || "—"}
           </div>
 
-          <div style={{ marginTop: 8, color: "#555", lineHeight: 1.3 }}>{address || "—"}</div>
+          <div style={{ marginTop: 4, color: "#555", lineHeight: 1.3 }}>
+            {addr || "—"}
+          </div>
+
+          <div style={{ marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13, color: "#222" }}>
+            <div><b>Payment:</b> {deliver?.payment_type || collect?.payment_type || "—"}</div>
+            <div><b>New skip:</b> {deliver?.skip_type_name || "—"}</div>
+          </div>
         </div>
 
         <div style={{ textAlign: "right", minWidth: 90 }}>
-          <div style={{ fontWeight: 900 }}>{fmtGBP(deliverJob?.price_inc_vat)}</div>
-          <div style={{ marginTop: 6, color: "#777", fontSize: 12 }}>swap</div>
+          <div style={{ fontWeight: 900 }}>{fmtGBP(price)}</div>
+          {(collect?.job_status || deliver?.job_status) ? (
+            <div style={{ marginTop: 6, color: "#777", fontSize: 12 }}>
+              {collect?.job_status || deliver?.job_status}
+            </div>
+          ) : null}
         </div>
       </div>
 
       <div style={photoBox}>
         <div style={{ fontWeight: 900, marginBottom: 8 }}>Required photos</div>
-
         <div style={{ display: "grid", gap: 10 }}>
           <label style={photoRow}>
             <div style={{ fontWeight: 900 }}>Photo of full skip</div>
@@ -544,40 +677,25 @@ function SwapCard({ index, showIndex, collectJob, deliverJob, address, onNavigat
       </div>
 
       <div style={actionsRow}>
-        <button type="button" style={btnSecondarySmall} onClick={onNavigate} disabled={!address}>
-          Navigate
-        </button>
+        <button type="button" style={btnSecondarySmall} onClick={onNavigate} disabled={!addr}>Navigate</button>
         <button type="button" style={btnPrimarySmall} onClick={onComplete} disabled={busy}>
-          {busy ? "Working…" : "Mark swap complete"}
+          {busy ? "Working…" : "Mark complete"}
         </button>
       </div>
     </div>
   );
 }
 
-function JobCard({ job, index, showIndex, onNavigate, onComplete, busy, photos, onSetPhoto }) {
-  const typeLabel =
-    job?.type === "delivery"
-      ? "Delivery"
-      : job?.type === "collection"
-      ? "Collection"
-      : job?.type === "delivery+collection"
-      ? "Tip return (swap)"
-      : "Job";
+function JobCard({ job, index, showIndex, onNavigate, onComplete, busy, photos, onSetPhoto, date }) {
+  const isCollect = job.swap_role === "collect" || (!!job.collection_date && String(job.collection_date) === String(date) && !job.collection_actual_date);
+  const typeLabel = isCollect ? "Collection" : "Delivery";
+
+  // Photo requirements
+  const req = isCollect
+    ? [{ kind: "collected", label: "Photo before collection", hint: "Take a photo of the skip before lifting." }]
+    : [{ kind: "delivered", label: "Photo after delivery", hint: "Take a photo of the skip once it’s dropped." }];
 
   if (!job) return <div style={jobCard}><div style={{ fontWeight: 900 }}>Job missing</div></div>;
-
-  const req =
-    job.type === "delivery"
-      ? [{ kind: "delivered", label: "Photo after delivery", hint: "Take a photo of the skip once it’s dropped." }]
-      : job.type === "collection"
-      ? [{ kind: "collected", label: "Photo before collection", hint: "Take a photo of the skip before lifting." }]
-      : job.type === "delivery+collection"
-      ? [
-          { kind: "swap_full", label: "Photo of full skip", hint: "Take a photo of the full skip before lifting." },
-          { kind: "swap_empty", label: "Photo of empty skip", hint: "Take a photo of the empty skip after drop." },
-        ]
-      : [];
 
   return (
     <div style={jobCard}>
@@ -595,12 +713,8 @@ function JobCard({ job, index, showIndex, onNavigate, onComplete, busy, photos, 
           </div>
 
           <div style={{ marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13, color: "#222" }}>
-            <div>
-              <b>Payment:</b> {job.payment_type || "—"}
-            </div>
-            <div>
-              <b>Skip:</b> {job.skip_type_name || "—"}
-            </div>
+            <div><b>Payment:</b> {job.payment_type || "—"}</div>
+            <div><b>Skip:</b> {job.skip_type_name || "—"}</div>
           </div>
         </div>
 
@@ -617,34 +731,30 @@ function JobCard({ job, index, showIndex, onNavigate, onComplete, busy, photos, 
         </details>
       ) : null}
 
-      {req.length ? (
-        <div style={photoBox}>
-          <div style={{ fontWeight: 900, marginBottom: 8 }}>Required photos</div>
-          <div style={{ display: "grid", gap: 10 }}>
-            {req.map((r) => (
-              <label key={r.kind} style={photoRow}>
-                <div style={{ fontWeight: 900 }}>{r.label}</div>
-                <div style={{ fontSize: 12, color: "#555" }}>{r.hint}</div>
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={(e) => onSetPhoto(r.kind, e.target.files?.[0] || null)}
-                  style={{ marginTop: 6 }}
-                />
-                <div style={{ fontSize: 12, color: photos?.[r.kind] ? "#1f6b2a" : "#8a1f1f", marginTop: 4 }}>
-                  {photos?.[r.kind] ? "Selected ✓" : "Not selected"}
-                </div>
-              </label>
-            ))}
-          </div>
+      <div style={photoBox}>
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>Required photos</div>
+        <div style={{ display: "grid", gap: 10 }}>
+          {req.map((r) => (
+            <label key={r.kind} style={photoRow}>
+              <div style={{ fontWeight: 900 }}>{r.label}</div>
+              <div style={{ fontSize: 12, color: "#555" }}>{r.hint}</div>
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={(e) => onSetPhoto(r.kind, e.target.files?.[0] || null)}
+                style={{ marginTop: 6 }}
+              />
+              <div style={{ fontSize: 12, color: photos?.[r.kind] ? "#1f6b2a" : "#8a1f1f", marginTop: 4 }}>
+                {photos?.[r.kind] ? "Selected ✓" : "Not selected"}
+              </div>
+            </label>
+          ))}
         </div>
-      ) : null}
+      </div>
 
       <div style={actionsRow}>
-        <button type="button" style={btnSecondarySmall} onClick={onNavigate} disabled={!buildAddress(job)}>
-          Navigate
-        </button>
+        <button type="button" style={btnSecondarySmall} onClick={onNavigate} disabled={!buildAddress(job)}>Navigate</button>
         <button type="button" style={btnPrimarySmall} onClick={onComplete} disabled={busy}>
           {busy ? "Working…" : "Mark complete"}
         </button>
