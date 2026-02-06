@@ -10,6 +10,12 @@ function ymd(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function truthyFlag(v) {
+  if (v === true) return true;
+  if (typeof v !== "string") return false;
+  return ["1", "true", "yes", "y", "on"].includes(v.toLowerCase());
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
@@ -20,6 +26,7 @@ export default async function handler(req, res) {
   const supabase = getSupabaseAdmin();
 
   const date = typeof req.query?.date === "string" && req.query.date ? req.query.date : ymd(new Date());
+  const includeCompleted = truthyFlag(req.query?.include_completed);
 
   try {
     // Pull assigned jobs for that day:
@@ -67,20 +74,22 @@ export default async function handler(req, res) {
 
     const rows = Array.isArray(jobs) ? jobs : [];
 
-    // Filter to "work to be done" (hide already completed legs)
-    const due = rows.filter((j) => {
-      // delivery due today
-      const deliverDue = String(j.scheduled_date || "") === String(date) && !j.delivery_actual_date;
-      // collection due today
-      const collectDue = String(j.collection_date || "") === String(date) && !j.collection_actual_date;
-
-      return deliverDue || collectDue;
-    });
+    // Default: return only "work to be done" (hide already completed legs)
+    // include_completed=1: return BOTH due + completed, for driver day review.
+    const picked = includeCompleted
+      ? rows
+      : rows.filter((j) => {
+          // delivery due today
+          const deliverDue = String(j.scheduled_date || "") === String(date) && !j.delivery_actual_date;
+          // collection due today
+          const collectDue = String(j.collection_date || "") === String(date) && !j.collection_actual_date;
+          return deliverDue || collectDue;
+        });
 
     // Optional: add skip type names (best effort, no crash if table differs)
     let skipNameById = {};
     try {
-      const ids = [...new Set(due.map((j) => j.skip_type_id).filter(Boolean))];
+      const ids = [...new Set(picked.map((j) => j.skip_type_id).filter(Boolean))];
       if (ids.length) {
         const { data: st, error: stErr } = await supabase
           .from("skip_types")
@@ -97,7 +106,7 @@ export default async function handler(req, res) {
     }
 
     const jobsById = {};
-    for (const j of due) {
+    for (const j of picked) {
       jobsById[String(j.id)] = {
         ...j,
         skip_type_name: skipNameById[String(j.skip_type_id)] || j.skip_type_name || null,
@@ -105,9 +114,9 @@ export default async function handler(req, res) {
     }
 
     // items list (simple). The driver/work UI will collapse swap pairs into one card.
-    const items = due.map((j) => ({ type: "job", job_id: j.id }));
+    const items = picked.map((j) => ({ type: "job", job_id: j.id }));
 
-    return res.json({ ok: true, date, items, jobsById });
+    return res.json({ ok: true, date, include_completed: includeCompleted, items, jobsById });
   } catch (e) {
     console.error("driver/jobs unexpected", e);
     return res.status(500).json({ ok: false, error: "Failed to load jobs" });
