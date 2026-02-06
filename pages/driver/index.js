@@ -1,9 +1,19 @@
 // pages/driver/index.js
 import { useRouter } from "next/router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+function ymdTodayLocal() {
+  const dt = new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
 
 export default function DriverLoginPage() {
   const router = useRouter();
+  const today = useMemo(() => ymdTodayLocal(), []);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -11,7 +21,6 @@ export default function DriverLoginPage() {
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
 
-  // If they just logged out we can show a message (optional)
   useEffect(() => {
     if (router?.query?.logged_out) setInfo("Logged out.");
   }, [router?.query?.logged_out]);
@@ -29,6 +38,7 @@ export default function DriverLoginPage() {
 
     setLoading(true);
     try {
+      // 1) Login
       const res = await fetch("/api/driver/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -37,18 +47,34 @@ export default function DriverLoginPage() {
       });
 
       if (!res.ok) {
-        // try to show server message if present
         let msg = "Login failed";
         try {
           const j = await res.json();
           if (j?.error) msg = j.error;
-        } catch (_) {
-          // ignore
-        }
+        } catch (_) {}
         throw new Error(msg);
       }
 
-      // success → menu
+      // 2) Verify session is actually set (cookie present + readable by server)
+      const verify = await fetch(`/api/driver/jobs?date=${encodeURIComponent(today)}`, {
+        method: "GET",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (verify.status === 401) {
+        throw new Error(
+          "Login did not create a session (cookie not set). Check /api/driver/login Set-Cookie."
+        );
+      }
+
+      if (!verify.ok) {
+        // not ideal but at least it's not a 401
+        // allow through, but show warning
+        setInfo("Logged in, but jobs could not be loaded yet.");
+      }
+
+      // 3) Go to menu
       router.push("/driver/menu");
     } catch (e2) {
       setErr(e2?.message || "Login failed");
