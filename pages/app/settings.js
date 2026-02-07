@@ -11,6 +11,13 @@ function clampInt(n, min, max) {
   return Math.max(min, Math.min(max, Math.trunc(x)));
 }
 
+async function getAccessToken() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) return null;
+  const token = data?.session?.access_token || null;
+  return token;
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
@@ -23,6 +30,13 @@ export default function SettingsPage() {
 
   const [termHireDays, setTermHireDays] = useState(14);
   const [reminderDaysBefore, setReminderDaysBefore] = useState(4);
+
+  // Xero UI state
+  const [xeroLoading, setXeroLoading] = useState(false);
+  const [xeroStatus, setXeroStatus] = useState(null); // { connected, tenant_id, tenants[] }
+  const [xeroErr, setXeroErr] = useState("");
+  const [xeroOk, setXeroOk] = useState("");
+  const [selectedTenantId, setSelectedTenantId] = useState("");
 
   const reminderDayNumber = useMemo(() => {
     const term = clampInt(termHireDays, 1, 365);
@@ -103,6 +117,174 @@ export default function SettingsPage() {
     setSuccessMsg("Saved.");
   }
 
+  async function loadXeroStatus({ silent = false } = {}) {
+    if (!user) return;
+
+    if (!silent) {
+      setXeroErr("");
+      setXeroOk("");
+      setXeroLoading(true);
+    }
+
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setXeroStatus(null);
+        setXeroErr("You must be signed in.");
+        setXeroLoading(false);
+        return;
+      }
+
+      const res = await fetch("/api/xero/status", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        setXeroStatus(null);
+        setXeroErr(json?.error || "Failed to load Xero status");
+        setXeroLoading(false);
+        return;
+      }
+
+      setXeroStatus(json);
+      setSelectedTenantId(json?.tenant_id || "");
+      setXeroLoading(false);
+    } catch (e) {
+      setXeroStatus(null);
+      setXeroErr("Failed to load Xero status");
+      setXeroLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!checking && user) {
+      loadXeroStatus({ silent: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking, user]);
+
+  async function connectXero() {
+    setXeroErr("");
+    setXeroOk("");
+    setXeroLoading(true);
+
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setXeroErr("You must be signed in.");
+        setXeroLoading(false);
+        return;
+      }
+
+      const res = await fetch("/api/xero/connect", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok || !json.url) {
+        setXeroErr(json?.error || "Could not start Xero connection");
+        setXeroLoading(false);
+        return;
+      }
+
+      // Redirect to Xero OAuth
+      window.location.href = json.url;
+    } catch (e) {
+      setXeroErr("Could not start Xero connection");
+      setXeroLoading(false);
+    }
+  }
+
+  async function saveTenantSelection() {
+    setXeroErr("");
+    setXeroOk("");
+    setXeroLoading(true);
+
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setXeroErr("You must be signed in.");
+        setXeroLoading(false);
+        return;
+      }
+
+      if (!selectedTenantId) {
+        setXeroErr("Select an organisation.");
+        setXeroLoading(false);
+        return;
+      }
+
+      const res = await fetch("/api/xero/select-tenant", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ tenant_id: selectedTenantId }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        setXeroErr(json?.error || "Could not save organisation");
+        setXeroLoading(false);
+        return;
+      }
+
+      setXeroOk("Organisation selected.");
+      await loadXeroStatus({ silent: true });
+      setXeroLoading(false);
+    } catch (e) {
+      setXeroErr("Could not save organisation");
+      setXeroLoading(false);
+    }
+  }
+
+  async function disconnectXero() {
+    const ok = confirm("Disconnect Xero for this SkipLogic account?");
+    if (!ok) return;
+
+    setXeroErr("");
+    setXeroOk("");
+    setXeroLoading(true);
+
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setXeroErr("You must be signed in.");
+        setXeroLoading(false);
+        return;
+      }
+
+      const res = await fetch("/api/xero/disconnect", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        setXeroErr(json?.error || "Could not disconnect");
+        setXeroLoading(false);
+        return;
+      }
+
+      setXeroOk("Disconnected.");
+      await loadXeroStatus({ silent: true });
+      setXeroLoading(false);
+    } catch (e) {
+      setXeroErr("Could not disconnect");
+      setXeroLoading(false);
+    }
+  }
+
+  const xeroNeedsOrgPick = useMemo(() => {
+    const tenants = xeroStatus?.tenants;
+    const tenantId = xeroStatus?.tenant_id;
+    return xeroStatus?.connected && Array.isArray(tenants) && tenants.length > 1 && !tenantId;
+  }, [xeroStatus]);
+
   if (checking || loading) {
     return (
       <main style={centerStyle}>
@@ -132,7 +314,7 @@ export default function SettingsPage() {
           </Link>
           <h1 style={{ margin: "10px 0 0" }}>Settings</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            Skip hire terms (defaults).
+            Skip hire terms + integrations.
           </p>
         </div>
 
@@ -152,6 +334,107 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* Xero section */}
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <h2 style={h2Style}>Xero</h2>
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
+              Connect your Xero organisation so SkipLogic can raise invoices.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button style={btnSecondary} onClick={() => loadXeroStatus()} disabled={xeroLoading}>
+              {xeroLoading ? "Loading…" : "Refresh"}
+            </button>
+
+            {xeroStatus?.connected ? (
+              <button style={btnDanger} onClick={disconnectXero} disabled={xeroLoading}>
+                Disconnect
+              </button>
+            ) : (
+              <button style={btnPrimaryDark} onClick={connectXero} disabled={xeroLoading}>
+                Connect Xero
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          {xeroErr ? <p style={{ color: "#8a1f1f", margin: "0 0 8px" }}>{xeroErr}</p> : null}
+          {xeroOk ? <p style={{ color: "#1f6b2a", margin: "0 0 8px" }}>{xeroOk}</p> : null}
+
+          <div style={xeroStatusRow}>
+            <div>
+              <div style={miniLabel}>Status</div>
+              <div style={{ fontWeight: 800 }}>
+                {xeroStatus?.connected ? "Connected" : "Not connected"}
+              </div>
+            </div>
+
+            <div>
+              <div style={miniLabel}>Selected organisation</div>
+              <div style={{ fontWeight: 800 }}>
+                {xeroStatus?.tenant_id ? "Selected" : (xeroStatus?.connected ? "Not selected" : "—")}
+              </div>
+            </div>
+
+            <div>
+              <div style={miniLabel}>Organisations found</div>
+              <div style={{ fontWeight: 800 }}>
+                {Array.isArray(xeroStatus?.tenants) ? xeroStatus.tenants.length : "—"}
+              </div>
+            </div>
+          </div>
+
+          {xeroStatus?.connected && Array.isArray(xeroStatus?.tenants) && xeroStatus.tenants.length > 0 ? (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>Organisation</div>
+
+              {xeroStatus.tenants.length === 1 ? (
+                <div style={{ color: "#333", fontSize: 13 }}>
+                  Only one organisation was found. It will be selected automatically.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 10, maxWidth: 520 }}>
+                  <select
+                    value={selectedTenantId}
+                    onChange={(e) => setSelectedTenantId(e.target.value)}
+                    style={selectStyle}
+                    disabled={xeroLoading}
+                  >
+                    <option value="">Select…</option>
+                    {xeroStatus.tenants.map((t) => (
+                      <option key={String(t.tenantId)} value={String(t.tenantId)}>
+                        {String(t.tenantName || t.tenantId)}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      style={btnPrimaryDark}
+                      onClick={saveTenantSelection}
+                      disabled={xeroLoading || !selectedTenantId}
+                    >
+                      Save organisation
+                    </button>
+
+                    {xeroNeedsOrgPick ? (
+                      <div style={{ color: "#8a1f1f", fontSize: 13, alignSelf: "center" }}>
+                        You must pick an organisation before invoices can sync.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      {/* Existing term settings */}
       <section style={cardStyle}>
         <h2 style={h2Style}>Default skip hire term</h2>
 
@@ -266,6 +549,14 @@ const inputStyle = {
   background: "#fff",
 };
 
+const selectStyle = {
+  padding: "10px 12px",
+  borderRadius: 10,
+  border: "1px solid #ccc",
+  background: "#fff",
+  fontSize: 13,
+};
+
 const hintBox = {
   marginTop: 12,
   padding: 12,
@@ -284,6 +575,17 @@ const btnPrimary = {
   fontSize: 13,
 };
 
+const btnPrimaryDark = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #111",
+  background: "#111",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 800,
+};
+
 const btnSecondary = {
   padding: "8px 12px",
   borderRadius: 8,
@@ -293,3 +595,26 @@ const btnSecondary = {
   cursor: "pointer",
   fontSize: 13,
 };
+
+const btnDanger = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #8a1f1f",
+  background: "#8a1f1f",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 800,
+};
+
+const xeroStatusRow = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+  gap: 10,
+  border: "1px solid #eee",
+  borderRadius: 10,
+  padding: 10,
+  background: "#fafafa",
+};
+
+const miniLabel = { fontSize: 11, color: "#666", marginBottom: 4 };
