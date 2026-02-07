@@ -1,30 +1,30 @@
 // pages/api/xero/status.js
-import { getValidXeroClient, getXeroConnection } from "../../../lib/xeroOAuth";
-import { getUserFromSession } from "../../../lib/auth"; // same note
+import { requireOfficeUser } from "../../../lib/requireOfficeUser";
+import { getXeroConnection, getValidXeroClient } from "../../../lib/xeroOAuth";
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
-  const auth = await getUserFromSession(req);
-  if (!auth?.ok) return res.status(401).json({ ok: false, error: "Not signed in" });
+  const auth = await requireOfficeUser(req);
+  if (!auth.ok) return res.status(401).json({ ok: false, error: "Not signed in" });
 
-  const subscriberId = auth.subscriber_id || auth.subscriberId;
-  if (!subscriberId) return res.status(400).json({ ok: false, error: "Missing subscriber id" });
+  const subscriberId = auth.subscriber_id;
 
   try {
     const row = await getXeroConnection(subscriberId);
     if (!row) return res.json({ ok: true, connected: false });
 
-    // prove we can refresh if needed
+    // also proves we can refresh token if needed
     const client = await getValidXeroClient(subscriberId);
 
     return res.json({
       ok: true,
       connected: true,
       tenant_id: client.tenantId,
+      tenants: Array.isArray(row.tenants) ? row.tenants : [],
       expires_at: row.expires_at,
     });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e?.message || "Failed" });
+    return res.status(500).json({ ok: false, error: e?.message || "Failed to load status" });
   }
 }
