@@ -1,14 +1,16 @@
 // pages/api/xero/callback.js
-import { exchangeCodeForToken, fetchTenantId, saveXeroConnection } from "../../../lib/xeroOAuth";
-import { getUserFromSession } from "../../../lib/auth"; // <-- same note as connect.js
+import { exchangeCodeForToken, fetchConnections, saveXeroConnection } from "../../../lib/xeroOAuth";
+import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 
 function parseCookies(req) {
   const out = {};
   const raw = req.headers.cookie || "";
   raw.split(";").forEach((part) => {
-    const [k, ...rest] = part.trim().split("=");
-    if (!k) return;
-    out[k] = decodeURIComponent(rest.join("=") || "");
+    const idx = part.indexOf("=");
+    if (idx === -1) return;
+    const k = part.slice(0, idx).trim();
+    const v = part.slice(idx + 1).trim();
+    out[k] = decodeURIComponent(v || "");
   });
   return out;
 }
@@ -20,12 +22,10 @@ function clearCookie(res, name) {
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).send("Method not allowed");
 
-  // Office auth required
-  const auth = await getUserFromSession(req);
-  if (!auth?.ok) return res.status(401).send("Not signed in");
+  const auth = await requireOfficeUser(req);
+  if (!auth.ok) return res.status(401).send("Not signed in");
 
-  const subscriberId = auth.subscriber_id || auth.subscriberId;
-  if (!subscriberId) return res.status(400).send("Missing subscriber id");
+  const subscriberId = auth.subscriber_id;
 
   const code = typeof req.query?.code === "string" ? req.query.code : "";
   const state = typeof req.query?.state === "string" ? req.query.state : "";
@@ -36,33 +36,34 @@ export default async function handler(req, res) {
   const expectedState = cookies.xero_oauth_state || "";
   const verifier = cookies.xero_oauth_verifier || "";
 
-  if (!expectedState || !verifier) {
-    return res.status(400).send("Missing OAuth verifier (try connect again)");
-  }
-  if (state !== expectedState) {
-    return res.status(400).send("State mismatch (try connect again)");
-  }
+  if (!expectedState || !verifier) return res.status(400).send("Missing OAuth verifier (try connect again)");
+  if (state !== expectedState) return res.status(400).send("State mismatch (try connect again)");
 
   try {
     const tok = await exchangeCodeForToken({ code, codeVerifier: verifier });
-    const tenantId = await fetchTenantId(tok.access_token);
+
+    const tenants = await fetchConnections(tok.access_token);
+    const selectedTenantId = tenants.length === 1 ? tenants[0].tenantId : null;
 
     const expiresAtIso = new Date(Date.now() + tok.expires_in * 1000).toISOString();
 
     await saveXeroConnection({
       subscriberId,
-      tenantId,
+      tenantId: selectedTenantId,
+      tenants,
       accessToken: tok.access_token,
       refreshToken: tok.refresh_token,
       expiresAtIso,
     });
 
-    // clear oauth cookies
     clearCookie(res, "xero_oauth_state");
     clearCookie(res, "xero_oauth_verifier");
 
-    // redirect back to settings page (adjust if you have one)
-    res.redirect("/app/settings?xero=connected");
+    if (!selectedTenantId && tenants.length > 1) {
+      return res.redirect("/app/settings?xero=choose_org");
+    }
+
+    return res.redirect("/app/settings?xero=connected");
   } catch (e) {
     console.error("xero/callback failed", e);
     clearCookie(res, "xero_oauth_state");
