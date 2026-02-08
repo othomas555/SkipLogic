@@ -1,26 +1,23 @@
 // pages/api/xero/xero_apply_payment.js
 //
-// POST { job_id, paid_method?, amount? }
+// POST { job_id, paid_method, amount? }
 // Auth: Office user via Authorization: Bearer <supabase access token>
 //
-// Applies a Xero Payment to an existing Xero invoice for a job.
-// - Requires job.xero_invoice_id
-// - Blocks payment_type === "account" (monthly DRAFT invoice flow)
-// - Prevents double-payment using jobs.xero_payment_id
+// Applies a Payment in Xero against the job's Xero invoice.
 //
-// Account selection (from invoice_settings):
-// - paid_method == "cash" -> cash_bank_account_code (MUST be a BANK account in Xero)
-// - paid_method starts with "card" -> card_clearing_account_code
+// IMPORTANT:
+// - Xero Payments must post to a BANK-type account.
+// - In some orgs, BANK accounts do not have a "Code" via /Accounts (Code may be null).
+// - Therefore we support invoice_settings.cash_bank_account_code storing either:
+//   - a chart account Code (legacy), OR
+//   - a Xero AccountID (UUID) for a BANK account.
 //
-// Amount:
-// - If body.amount provided and > 0, uses that
-// - Else pays AmountDue from Xero invoice
+// paid_method (for now):
+// - "cash" only (uses invoice_settings.cash_bank_account_code)
 //
-// Writes back:
-// - jobs.xero_payment_id
-//
-// Returns:
-// { ok:true, payment_id, account_code, amount, invoice_id, invoice_number, invoice_status }
+// Response:
+// { ok:true, job, xero: { invoice_id, payment_id, amount_paid, amount_due_after, invoice_status } }
+// or { ok:false, error, details? }
 
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
@@ -28,22 +25,13 @@ import { getValidXeroClient } from "../../../lib/xeroOAuth";
 
 const XERO_API_BASE = "https://api.xero.com/api.xro/2.0";
 
-const ENV_CARD_CLEARING_FALLBACK = process.env.XERO_CARD_CLEARING_ACCOUNT_CODE || "800";
-const ENV_CASH_BANK_FALLBACK = process.env.XERO_CASH_BANK_ACCOUNT_CODE || "";
-
-function assert(cond, msg) {
-  if (!cond) throw new Error(msg);
-}
-
 function asText(x) {
   return typeof x === "string" ? x.trim() : "";
 }
 
-function looksLikeAccountCode(x) {
+function looksLikeUuid(x) {
   const v = asText(x);
-  if (!v) return false;
-  if (v.length > 50) return false;
-  return /^[A-Za-z0-9_-]+$/.test(v);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
 function ymdTodayUTC() {
@@ -52,10 +40,6 @@ function ymdTodayUTC() {
   const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const d = String(dt.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
-}
-
-function escapeForXeroWhere(s) {
-  return String(s || "").replace(/"/g, '\\"');
 }
 
 async function xeroRequest({ accessToken, tenantId, path, method = "GET", body = null }) {
@@ -82,13 +66,9 @@ async function xeroRequest({ accessToken, tenantId, path, method = "GET", body =
   }
 
   if (!res.ok) {
-    // Keep original text because Xero error payloads are useful
-    const err = new Error(`Xero request failed: ${res.status} ${res.statusText} – ${text}`);
-    err.status = res.status;
-    err.xero = json;
-    err.raw = text;
-    throw err;
+    throw new Error(`Xero request failed: ${res.status} ${res.statusText} – ${text}`);
   }
+
   return json;
 }
 
@@ -99,91 +79,51 @@ async function getInvoiceById({ accessToken, tenantId, invoiceId }) {
   return inv;
 }
 
-async function getAccountByCode({ accessToken, tenantId, code }) {
-  const where = encodeURIComponent(`Code=="${escapeForXeroWhere(code)}"`);
-  const res = await xeroRequest({ accessToken, tenantId, path: `/Accounts?where=${where}`, method: "GET" });
-  const acc = Array.isArray(res?.Accounts) ? res.Accounts[0] : null;
-  return acc || null;
-}
-
-async function createPaymentInXero({ accessToken, tenantId, invoiceId, amount, accountCode }) {
-  assert(Number(amount) > 0, "Payment amount must be > 0");
-  assert(looksLikeAccountCode(accountCode), "Payment account code is missing/invalid");
-
-  const payload = {
-    Payments: [
-      {
-        Invoice: { InvoiceID: String(invoiceId) },
-        Account: { Code: String(accountCode) },
-        Date: ymdTodayUTC(),
-        Amount: Number(amount),
-      },
-    ],
-  };
-
-  const out = await xeroRequest({
-    accessToken,
-    tenantId,
-    path: "/Payments",
-    method: "PUT",
-    body: payload,
-  });
-
-  const p = Array.isArray(out?.Payments) ? out.Payments[0] : null;
-  const paymentId = p?.PaymentID ? String(p.PaymentID) : null;
-  return { paymentId, raw: out };
-}
-
-async function loadPaymentAccountCodes({ supabase, subscriberId }) {
-  const defaults = {
-    cardClearingAccountCode: ENV_CARD_CLEARING_FALLBACK,
-    cashBankAccountCode: ENV_CASH_BANK_FALLBACK,
-    useDefaultsWhenMissing: true,
-    source: "env_fallback",
-  };
-
+async function loadCashBankSetting({ supabase, subscriberId }) {
   const { data, error } = await supabase
     .from("invoice_settings")
-    .select("card_clearing_account_code, cash_bank_account_code, use_defaults_when_missing")
+    .select("cash_bank_account_code")
     .eq("subscriber_id", subscriberId)
     .maybeSingle();
 
-  if (error) return { ...defaults, source: "env_fallback_error" };
-  if (!data) return { ...defaults, source: "env_fallback_missing_row" };
+  if (error) throw new Error("Failed to load invoice_settings");
+  const v = asText(data?.cash_bank_account_code);
 
-  const useDefaultsWhenMissing = data.use_defaults_when_missing === false ? false : true;
-
-  const c1 = asText(data.card_clearing_account_code);
-  const c2 = asText(data.cash_bank_account_code);
-
-  const resolved = {
-    cardClearingAccountCode:
-      looksLikeAccountCode(c1) ? c1 : useDefaultsWhenMissing ? ENV_CARD_CLEARING_FALLBACK : "",
-    cashBankAccountCode: looksLikeAccountCode(c2) ? c2 : useDefaultsWhenMissing ? ENV_CASH_BANK_FALLBACK : "",
-    useDefaultsWhenMissing,
-    source: "invoice_settings",
-  };
-
-  if (!useDefaultsWhenMissing) {
-    if (!looksLikeAccountCode(resolved.cardClearingAccountCode)) {
-      throw new Error("Missing invoicing setting: card_clearing_account_code");
-    }
-    if (!looksLikeAccountCode(resolved.cashBankAccountCode)) {
-      throw new Error("Missing invoicing setting: cash_bank_account_code");
-    }
+  if (!v) {
+    throw new Error(
+      'Missing invoice_settings.cash_bank_account_code. Set it to a Xero BANK AccountID (preferred) or an account Code.'
+    );
   }
 
-  return resolved;
+  return v;
 }
 
-function normalizePaidMethod(x) {
-  return asText(x).toLowerCase();
-}
+async function createPaymentInXero({ accessToken, tenantId, invoiceId, amount, bankAccountKey }) {
+  // bankAccountKey may be an AccountID (uuid) or Code (legacy)
+  const isId = looksLikeUuid(bankAccountKey);
 
-function chooseAccountCode({ paidMethod, cardClearingAccountCode, cashBankAccountCode }) {
-  if (paidMethod === "cash") return { accountCode: cashBankAccountCode, accountKind: "cash_bank" };
-  if (paidMethod.startsWith("card")) return { accountCode: cardClearingAccountCode, accountKind: "card_clearing" };
-  return { accountCode: cardClearingAccountCode, accountKind: "card_clearing_default" };
+  const payment = {
+    Invoice: { InvoiceID: String(invoiceId) },
+    Date: ymdTodayUTC(),
+    Amount: Number(amount),
+  };
+
+  if (isId) {
+    payment.Account = { AccountID: String(bankAccountKey) };
+  } else {
+    payment.Account = { Code: String(bankAccountKey) };
+  }
+
+  const payload = { Payments: [payment] };
+
+  // Xero uses PUT for /Payments
+  const res = await xeroRequest({ accessToken, tenantId, path: "/Payments", method: "PUT", body: payload });
+  const pay = Array.isArray(res?.Payments) ? res.Payments[0] : null;
+
+  // PaymentID can be missing in some responses; still treat as ok if request succeeded
+  return {
+    paymentId: pay?.PaymentID ? String(pay.PaymentID) : null,
+  };
 }
 
 export default async function handler(req, res) {
@@ -194,11 +134,20 @@ export default async function handler(req, res) {
     if (!auth.ok) return res.status(401).json({ ok: false, error: auth.error });
 
     const subscriberId = String(auth.subscriber_id || "");
-    if (!subscriberId) return res.status(401).json({ ok: false, error: "No subscriber in auth context" });
+    const officeUserId = String(auth.user_id || auth.id || "");
 
     const body = req.body && typeof req.body === "object" ? req.body : {};
-    const jobId = String(body.job_id || "");
+    const jobId = asText(body.job_id);
+    const paidMethod = asText(body.paid_method) || "cash";
+    const amountIn = body.amount == null ? null : Number(body.amount);
+
     if (!jobId) return res.status(400).json({ ok: false, error: "job_id is required" });
+    if (paidMethod !== "cash") {
+      return res.status(400).json({
+        ok: false,
+        error: `Unsupported paid_method "${paidMethod}" (currently only "cash" is enabled).`,
+      });
+    }
 
     const supabase = getSupabaseAdmin();
 
@@ -210,6 +159,7 @@ export default async function handler(req, res) {
         subscriber_id,
         job_number,
         payment_type,
+        price_inc_vat,
         xero_invoice_id,
         xero_invoice_number,
         xero_invoice_status,
@@ -218,174 +168,113 @@ export default async function handler(req, res) {
       )
       .eq("id", jobId)
       .eq("subscriber_id", subscriberId)
-      .maybeSingle();
+      .single();
 
-    if (jobErr) {
-      console.error("xero_apply_payment load job error:", jobErr);
-      return res.status(500).json({ ok: false, error: "Failed to load job" });
-    }
-    if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+    if (jobErr || !job) return res.status(404).json({ ok: false, error: "Job not found" });
 
-    if (String(job.payment_type || "").toLowerCase() === "account") {
-      return res.status(400).json({
-        ok: false,
-        error: "Account jobs cannot be paid job-by-job (monthly DRAFT invoice flow).",
-      });
-    }
-
-    const invoiceId = job.xero_invoice_id ? String(job.xero_invoice_id) : "";
-    if (!invoiceId) {
+    if (!job.xero_invoice_id) {
       return res.status(400).json({ ok: false, error: "Job has no xero_invoice_id to pay" });
     }
 
-    if (job.xero_payment_id) {
-      return res.status(200).json({
-        ok: true,
-        mode: "already",
-        payment_id: String(job.xero_payment_id),
-        invoice_id: invoiceId,
-        invoice_number: job.xero_invoice_number || null,
-        invoice_status: job.xero_invoice_status || null,
-      });
-    }
-
     const xc = await getValidXeroClient(subscriberId);
-    if (!xc?.tenantId) throw new Error("Xero connected but no organisation selected");
+    if (!xc?.tenantId) return res.status(400).json({ ok: false, error: "Xero connected but no organisation selected" });
 
     const accessToken = xc.accessToken;
     const tenantId = xc.tenantId;
 
-    const inv = await getInvoiceById({ accessToken, tenantId, invoiceId });
+    // Determine amount to pay: default pay AmountDue
+    const invBefore = await getInvoiceById({ accessToken, tenantId, invoiceId: String(job.xero_invoice_id) });
+    const amountDue = Number(invBefore?.AmountDue ?? 0);
 
-    const invStatus = String(inv.Status || "");
-    const amountDue = Number(inv.AmountDue || 0);
-
-    if (invStatus !== "AUTHORISED" && invStatus !== "PAID") {
-      return res.status(400).json({ ok: false, error: `Invoice is not payable (Status is "${invStatus}")` });
+    if (!Number.isFinite(amountDue) || amountDue <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invoice has no amount due to pay",
+        details: { amount_due: invBefore?.AmountDue, status: invBefore?.Status },
+      });
     }
 
-    const requestedAmount = body.amount == null ? null : Number(body.amount);
-    const amountToPay =
-      Number.isFinite(requestedAmount) && requestedAmount > 0 ? requestedAmount : Number(amountDue);
+    const amountToPay = amountIn == null ? amountDue : amountIn;
 
     if (!Number.isFinite(amountToPay) || amountToPay <= 0) {
+      return res.status(400).json({ ok: false, error: "amount must be a positive number" });
+    }
+    if (amountToPay > amountDue + 0.0001) {
       return res.status(400).json({
         ok: false,
-        error: "Nothing to pay (invoice AmountDue is 0 and no amount provided).",
-        details: { amount_due: amountDue, invoice_status: invStatus },
+        error: "amount exceeds AmountDue",
+        details: { amount: amountToPay, amount_due: amountDue },
       });
     }
 
-    const settings = await loadPaymentAccountCodes({ supabase, subscriberId });
-    const paidMethod = normalizePaidMethod(body.paid_method || "card");
+    const cashBankAccountKey = await loadCashBankSetting({ supabase, subscriberId });
 
-    const { accountCode, accountKind } = chooseAccountCode({
-      paidMethod,
-      cardClearingAccountCode: settings.cardClearingAccountCode,
-      cashBankAccountCode: settings.cashBankAccountCode,
-    });
-
-    if (accountKind === "cash_bank" && !looksLikeAccountCode(accountCode)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing cash_bank_account_code in invoice_settings for this subscriber.",
-      });
-    }
-
-    if ((accountKind === "card_clearing" || accountKind === "card_clearing_default") && !looksLikeAccountCode(accountCode)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing card_clearing_account_code in invoice_settings for this subscriber.",
-      });
-    }
-
-    // ✅ NEW: Validate account in Xero so we fail with a clean message
-    const acc = await getAccountByCode({ accessToken, tenantId, code: accountCode });
-    if (!acc?.Code) {
-      return res.status(400).json({
-        ok: false,
-        error: `Xero account code "${accountCode}" was not found in Chart of Accounts.`,
-        details: { account_kind: accountKind },
-      });
-    }
-
-    const accType = String(acc.Type || "");
-    if (accountKind === "cash_bank" && accType !== "BANK") {
-      return res.status(400).json({
-        ok: false,
-        error:
-          `cash_bank_account_code "${accountCode}" is Xero account Type "${accType}". ` +
-          `Xero Payments require a BANK account. Set cash_bank_account_code to your bank/cash account code in Xero.`,
-        details: { account: { Code: acc.Code, Name: acc.Name, Type: acc.Type, BankAccountNumber: acc.BankAccountNumber || null } },
-      });
-    }
-
-    // Create payment
     const payOut = await createPaymentInXero({
       accessToken,
       tenantId,
-      invoiceId,
+      invoiceId: String(job.xero_invoice_id),
       amount: amountToPay,
-      accountCode,
+      bankAccountKey: cashBankAccountKey,
     });
 
-    const paymentId = payOut.paymentId || null;
+    const invAfter = await getInvoiceById({ accessToken, tenantId, invoiceId: String(job.xero_invoice_id) });
+    const amountDueAfter = Number(invAfter?.AmountDue ?? 0);
 
-    if (paymentId) {
-      const { error: updErr } = await supabase
-        .from("jobs")
-        .update({ xero_payment_id: paymentId })
-        .eq("id", jobId)
-        .eq("subscriber_id", subscriberId);
+    // Update job (SkipLogic-side paid markers + xero fields we know)
+    const updatePayload = {
+      xero_invoice_status: invAfter?.Status ? String(invAfter.Status) : job.xero_invoice_status,
+      xero_payment_id: payOut.paymentId || job.xero_payment_id || null,
 
-      if (updErr) {
-        console.error("xero_apply_payment failed to write xero_payment_id:", updErr);
-        return res.status(500).json({
-          ok: false,
-          error: "Payment created in Xero but failed to write xero_payment_id to job",
-          details: updErr.message || String(updErr),
-        });
-      }
-    }
+      paid_at: new Date().toISOString(),
+      paid_by_user_id: officeUserId || null,
+      paid_method: paidMethod,
+      paid_reference: asText(body.paid_reference) || null,
+    };
 
-    const invAfter = await getInvoiceById({ accessToken, tenantId, invoiceId });
+    const { data: updatedJob, error: upErr } = await supabase
+      .from("jobs")
+      .update(updatePayload)
+      .eq("id", job.id)
+      .eq("subscriber_id", subscriberId)
+      .select(
+        `
+        id,
+        job_number,
+        payment_type,
+        xero_invoice_id,
+        xero_invoice_number,
+        xero_invoice_status,
+        xero_payment_id,
+        paid_at,
+        paid_method,
+        paid_reference
+      `
+      )
+      .single();
 
-    // Keep job invoice fields in sync (non-fatal if fails)
-    try {
-      await supabase
-        .from("jobs")
-        .update({
-          xero_invoice_number: invAfter?.InvoiceNumber ? String(invAfter.InvoiceNumber) : job.xero_invoice_number || null,
-          xero_invoice_status: invAfter?.Status ? String(invAfter.Status) : job.xero_invoice_status || null,
-        })
-        .eq("id", jobId)
-        .eq("subscriber_id", subscriberId);
-    } catch (e) {
-      console.error("xero_apply_payment invoice field sync warning:", e);
+    if (upErr) {
+      return res.status(500).json({
+        ok: false,
+        error: "Payment created in Xero, but failed to update job in SkipLogic",
+        details: String(upErr?.message || upErr),
+      });
     }
 
     return res.status(200).json({
       ok: true,
-      payment_id: paymentId,
-      account_code: accountCode,
-      account_kind: accountKind,
-      amount: amountToPay,
-      invoice_id: String(invAfter.InvoiceID),
-      invoice_number: invAfter.InvoiceNumber || null,
-      invoice_status: invAfter.Status || null,
-      amount_due_after: Number(invAfter.AmountDue || 0),
+      job: updatedJob,
+      xero: {
+        invoice_id: String(job.xero_invoice_id),
+        payment_id: payOut.paymentId,
+        amount_paid: amountToPay,
+        amount_due_after: amountDueAfter,
+        invoice_status: invAfter?.Status ? String(invAfter.Status) : null,
+      },
+      account_used: looksLikeUuid(cashBankAccountKey)
+        ? { type: "AccountID", value: cashBankAccountKey }
+        : { type: "Code", value: cashBankAccountKey },
     });
   } catch (err) {
-    // If it was a Xero 400, surface as 400 (not 500) so it’s actionable
-    const status = Number(err?.status);
-    if (status === 400) {
-      return res.status(400).json({
-        ok: false,
-        error: "Xero rejected the payment request",
-        details: String(err?.raw || err?.message || err),
-      });
-    }
-
     console.error("xero_apply_payment error:", err);
     return res.status(500).json({
       ok: false,
