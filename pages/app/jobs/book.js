@@ -99,9 +99,16 @@ export default function BookJobPage() {
   // Create invoice toggle (NOW WIRED) — DEFAULT ON
   const [createInvoice, setCreateInvoice] = useState(true);
 
+  // Mark paid toggle (NEW) — DEFAULT OFF
+  const [markPaidNow, setMarkPaidNow] = useState(false);
+
   // Invoice result messaging
   const [invoiceMsg, setInvoiceMsg] = useState("");
   const [invoiceErr, setInvoiceErr] = useState("");
+
+  // Payment result messaging (NEW)
+  const [paymentMsg, setPaymentMsg] = useState("");
+  const [paymentErr, setPaymentErr] = useState("");
 
   // “Same as customer address”
   const [sameAsCustomerAddress, setSameAsCustomerAddress] = useState(false);
@@ -425,6 +432,19 @@ export default function BookJobPage() {
     return Number.isFinite(total) ? total : 0;
   }, [numericSkipPriceIncVat, permitCostNoVat]);
 
+  const canShowMarkPaid = useMemo(() => {
+    // Keep deterministic and simple:
+    // Only allow "mark paid now" for cash/card bookings (not account).
+    // This page does not have "cash on delivery" in paymentType options.
+    return paymentType === "cash" || paymentType === "card";
+  }, [paymentType]);
+
+  useEffect(() => {
+    // If payment type changes to something we don't support for marking paid, force it off.
+    if (!canShowMarkPaid && markPaidNow) setMarkPaidNow(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canShowMarkPaid]);
+
   async function handleAddJob(e) {
     e.preventDefault();
     setErrorMsg("");
@@ -432,6 +452,8 @@ export default function BookJobPage() {
     setLastJob(null);
     setInvoiceMsg("");
     setInvoiceErr("");
+    setPaymentMsg("");
+    setPaymentErr("");
 
     const newErrors = {};
 
@@ -561,6 +583,7 @@ export default function BookJobPage() {
       }
 
       // If requested, create invoice immediately (cash/card/account handled in the API)
+      let invoiceCreatedOk = false;
       if (createInvoice) {
         try {
           const token = await getAccessToken();
@@ -581,6 +604,7 @@ export default function BookJobPage() {
               const detail = json?.details || json?.error || "Invoice creation failed";
               setInvoiceErr(String(detail));
             } else {
+              invoiceCreatedOk = true;
               setInvoiceMsg(
                 `Invoice created in Xero (${json.mode}): ${json.invoiceNumber || json.invoiceId || "OK"}`
               );
@@ -588,6 +612,44 @@ export default function BookJobPage() {
           }
         } catch (e) {
           setInvoiceErr("Job booked but invoice creation failed unexpectedly.");
+        }
+      }
+
+      // If requested, apply payment in Xero (only after invoice creation succeeded in this flow)
+      if (markPaidNow) {
+        if (!createInvoice) {
+          setPaymentErr("Payment not applied: you must tick “Create invoice in Xero” to mark paid now.");
+        } else if (!invoiceCreatedOk) {
+          setPaymentErr("Payment not applied: invoice was not created successfully.");
+        } else {
+          try {
+            const token = await getAccessToken();
+            if (!token) {
+              setPaymentErr("Payment not applied: not signed in.");
+            } else {
+              const res = await fetch("/api/xero/xero_apply_payment", {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + token,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  job_id: inserted.id,
+                  paid_method: paymentType,
+                }),
+              });
+
+              const json = await res.json().catch(() => ({}));
+              if (!res.ok || !json.ok) {
+                const detail = json?.error || json?.details || "Payment application failed";
+                setPaymentErr(String(detail));
+              } else {
+                setPaymentMsg(`Marked as paid in Xero (${paymentType}).`);
+              }
+            }
+          } catch (e) {
+            setPaymentErr("Payment application failed unexpectedly.");
+          }
         }
       }
 
@@ -636,6 +698,10 @@ export default function BookJobPage() {
       setPostcodeMsg("");
       setJobPrice("");
       setSameAsCustomerAddress(false);
+
+      // IMPORTANT: keep markPaidNow as-is? (but it depends on paymentType, which resets to card)
+      // Leave it as the user's preference for the next booking, but ensure it remains valid.
+      // Since paymentType is reset to "card", markPaidNow remains allowed (card/cash only) so we leave it untouched.
 
       setSaving(false);
       setFieldErrors({});
@@ -695,13 +761,31 @@ export default function BookJobPage() {
             border: invoiceErr ? "1px solid #ffccc7" : "1px solid #b7eb8f",
           }}
         >
-          <div style={{ fontWeight: 800, marginBottom: 6 }}>
-            Xero invoice
-          </div>
+          <div style={{ fontWeight: 800, marginBottom: 6 }}>Xero invoice</div>
           {invoiceErr ? (
             <div style={{ color: "#8a1f1f", fontSize: 13, whiteSpace: "pre-wrap" }}>{invoiceErr}</div>
           ) : (
             <div style={{ color: "#1f6b2a", fontSize: 13 }}>{invoiceMsg}</div>
+          )}
+        </section>
+      )}
+
+      {/* Payment status (NEW) */}
+      {(paymentMsg || paymentErr) && (
+        <section
+          style={{
+            marginBottom: 16,
+            padding: 12,
+            borderRadius: 6,
+            background: paymentErr ? "#fff1f0" : "#e6ffed",
+            border: paymentErr ? "1px solid #ffccc7" : "1px solid #b7eb8f",
+          }}
+        >
+          <div style={{ fontWeight: 800, marginBottom: 6 }}>Payment</div>
+          {paymentErr ? (
+            <div style={{ color: "#8a1f1f", fontSize: 13, whiteSpace: "pre-wrap" }}>{paymentErr}</div>
+          ) : (
+            <div style={{ color: "#1f6b2a", fontSize: 13 }}>{paymentMsg}</div>
           )}
         </section>
       )}
@@ -737,7 +821,9 @@ export default function BookJobPage() {
               <>
                 <br />
                 Permit (NO VAT): £
-                {lastJob.permit_price_no_vat != null ? Number(lastJob.permit_price_no_vat).toFixed(2) : "0.00"}
+                {lastJob.permit_price_no_vat != null
+                  ? Number(lastJob.permit_price_no_vat).toFixed(2)
+                  : "0.00"}
               </>
             ) : null}
           </p>
@@ -837,11 +923,14 @@ export default function BookJobPage() {
                 </option>
                 {postcodeSkips.map((s) => (
                   <option key={s.skip_type_id} value={s.skip_type_id}>
-                    {s.skip_type_name} – £{s.price_inc_vat != null ? Number(s.price_inc_vat).toFixed(2) : "N/A"}
+                    {s.skip_type_name} – £
+                    {s.price_inc_vat != null ? Number(s.price_inc_vat).toFixed(2) : "N/A"}
                   </option>
                 ))}
               </select>
-              {fieldErrors.skipType && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.skipType}</div>}
+              {fieldErrors.skipType && (
+                <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.skipType}</div>
+              )}
             </div>
 
             <div>
@@ -863,7 +952,9 @@ export default function BookJobPage() {
                 }}
               />
               <div style={{ marginTop: 4, fontSize: 12 }}>Auto-filled from postcode table. You can override if needed.</div>
-              {fieldErrors.jobPrice && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.jobPrice}</div>}
+              {fieldErrors.jobPrice && (
+                <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.jobPrice}</div>
+              )}
             </div>
           </div>
 
@@ -916,7 +1007,9 @@ export default function BookJobPage() {
                 + New
               </button>
             </div>
-            {fieldErrors.customer && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.customer}</div>}
+            {fieldErrors.customer && (
+              <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.customer}</div>
+            )}
           </div>
 
           {/* Same as customer address */}
@@ -1045,7 +1138,8 @@ export default function BookJobPage() {
                 ) : (
                   permitSettings.map((p) => (
                     <option key={p.id} value={`permit:${p.id}`}>
-                      {p.name} — £{Number(p.price_no_vat || 0).toFixed(2)} (NO VAT), {Number(p.delay_business_days || 0)} business day(s)
+                      {p.name} — £{Number(p.price_no_vat || 0).toFixed(2)} (NO VAT),{" "}
+                      {Number(p.delay_business_days || 0)} business day(s)
                     </option>
                   ))
                 )}
@@ -1054,13 +1148,16 @@ export default function BookJobPage() {
 
             {placementType === "permit" && permitInfo ? (
               <div style={{ marginTop: 6, fontSize: 12, color: "#333" }}>
-                Permit: <b>{permitInfo.name}</b> — £{Number(permitInfo.price_no_vat || 0).toFixed(2)} (NO VAT).<br />
-                Typical approval delay: <b>{Number(permitInfo.delay_business_days || 0)}</b> business day(s). Earliest delivery:{" "}
-                <b>{earliestAllowedDateYmd || "—"}</b> (unless overridden).
+                Permit: <b>{permitInfo.name}</b> — £{Number(permitInfo.price_no_vat || 0).toFixed(2)} (NO VAT).
+                <br />
+                Typical approval delay: <b>{Number(permitInfo.delay_business_days || 0)}</b> business day(s). Earliest
+                delivery: <b>{earliestAllowedDateYmd || "—"}</b> (unless overridden).
               </div>
             ) : null}
 
-            {fieldErrors.placement && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.placement}</div>}
+            {fieldErrors.placement && (
+              <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.placement}</div>
+            )}
           </div>
 
           {/* Overrides */}
@@ -1144,7 +1241,9 @@ export default function BookJobPage() {
             <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
               Weekends are blocked by default. Permit delays count Mon–Fri only.
             </div>
-            {fieldErrors.scheduledDate && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.scheduledDate}</div>}
+            {fieldErrors.scheduledDate && (
+              <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.scheduledDate}</div>
+            )}
           </div>
 
           {/* Payment type */}
@@ -1172,15 +1271,21 @@ export default function BookJobPage() {
             {!selectedCustomerId && (
               <div style={{ fontSize: 12, marginTop: 4, color: "#666" }}>Select a customer to choose payment type.</div>
             )}
-            {fieldErrors.paymentType && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.paymentType}</div>}
+            {fieldErrors.paymentType && (
+              <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.paymentType}</div>
+            )}
           </div>
 
           {/* Totals */}
           <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
             <div style={{ fontWeight: 800, marginBottom: 6 }}>Charges</div>
             <div style={{ fontSize: 13, color: "#333", lineHeight: 1.6 }}>
-              <div>Skip hire (inc VAT): <b>£{numericSkipPriceIncVat.toFixed(2)}</b></div>
-              <div>Permit (NO VAT): <b>£{permitCostNoVat.toFixed(2)}</b></div>
+              <div>
+                Skip hire (inc VAT): <b>£{numericSkipPriceIncVat.toFixed(2)}</b>
+              </div>
+              <div>
+                Permit (NO VAT): <b>£{permitCostNoVat.toFixed(2)}</b>
+              </div>
               <div style={{ marginTop: 6, fontSize: 14 }}>
                 Total to charge: <b>£{totalChargeDisplay.toFixed(2)}</b>
               </div>
@@ -1188,17 +1293,38 @@ export default function BookJobPage() {
           </div>
 
           {/* Create invoice toggle (REQUIRED, DEFAULT ON) */}
-          <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
+          <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
             <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 800 }}>
-              <input
-                type="checkbox"
-                checked={createInvoice}
-                onChange={(e) => setCreateInvoice(e.target.checked)}
-              />
+              <input type="checkbox" checked={createInvoice} onChange={(e) => setCreateInvoice(e.target.checked)} />
               Create invoice in Xero
             </label>
             <div style={{ fontSize: 12, marginTop: 6, color: "#666", lineHeight: 1.4 }}>
               If ticked, SkipLogic will create the invoice immediately after booking.
+            </div>
+          </div>
+
+          {/* Mark paid now (NEW, DEFAULT OFF) */}
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                fontWeight: 800,
+                opacity: canShowMarkPaid ? 1 : 0.5,
+              }}
+              title={canShowMarkPaid ? "" : "Mark paid is only available for cash/card bookings"}
+            >
+              <input
+                type="checkbox"
+                checked={markPaidNow}
+                disabled={!canShowMarkPaid}
+                onChange={(e) => setMarkPaidNow(e.target.checked)}
+              />
+              Mark invoice as paid now (applies payment in Xero)
+            </label>
+            <div style={{ fontSize: 12, marginTop: 6, color: "#666", lineHeight: 1.4 }}>
+              Only use this if you have taken the payment now (cash/card). Requires “Create invoice in Xero”.
             </div>
           </div>
 
