@@ -23,12 +23,10 @@ import { getValidXeroClient } from "../../../lib/xeroOAuth";
 
 const XERO_API_BASE = "https://api.xero.com/api.xro/2.0";
 
-// SALES ACCOUNTS
-const XERO_SKIP_SALES_ACCOUNT_CODE = process.env.XERO_SALES_ACCOUNT_CODE || "200";
-const XERO_PERMIT_SALES_ACCOUNT_CODE = process.env.XERO_PERMIT_SALES_ACCOUNT_CODE || "215";
-
-// PAYMENTS
-const XERO_CARD_CLEARING_ACCOUNT_CODE = process.env.XERO_CARD_CLEARING_ACCOUNT_CODE || "800";
+// ENV DEFAULTS (used only as fallback if subscriber settings allow)
+const ENV_SKIP_SALES_FALLBACK = process.env.XERO_SALES_ACCOUNT_CODE || "200";
+const ENV_PERMIT_SALES_FALLBACK = process.env.XERO_PERMIT_SALES_ACCOUNT_CODE || "215";
+const ENV_CARD_CLEARING_FALLBACK = process.env.XERO_CARD_CLEARING_ACCOUNT_CODE || "800";
 
 // TAX RATE NAMES (as seen in Xero)
 const TAX_RATE_NAME_VAT_INCOME = "20% (VAT on Income)";
@@ -48,6 +46,78 @@ function ymdTodayUTC() {
   const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const d = String(dt.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function asText(x) {
+  return typeof x === "string" ? x.trim() : "";
+}
+
+function looksLikeAccountCode(x) {
+  const v = asText(x);
+  if (!v) return false;
+  if (v.length > 50) return false;
+  return /^[A-Za-z0-9_-]+$/.test(v);
+}
+
+async function loadInvoiceAccountCodes({ supabase, subscriberId }) {
+  // Default to env fallbacks unless subscriber settings override
+  const defaults = {
+    skipHireSalesAccountCode: ENV_SKIP_SALES_FALLBACK,
+    permitSalesAccountCode: ENV_PERMIT_SALES_FALLBACK,
+    cardClearingAccountCode: ENV_CARD_CLEARING_FALLBACK,
+    useDefaultsWhenMissing: true,
+  };
+
+  const { data, error } = await supabase
+    .from("invoice_settings")
+    .select(
+      "skip_hire_sales_account_code, permit_sales_account_code, card_clearing_account_code, use_defaults_when_missing"
+    )
+    .eq("subscriber_id", subscriberId)
+    .maybeSingle();
+
+  // If settings row doesn't exist yet, we keep fallbacks.
+  // (Your Settings UI/GET route will normally create it.)
+  if (error) {
+    // Fail closed? No — keep existing behaviour by using defaults.
+    return { ...defaults, source: "env_fallback_error" };
+  }
+
+  if (!data) {
+    return { ...defaults, source: "env_fallback_missing_row" };
+  }
+
+  const useDefaultsWhenMissing = data.use_defaults_when_missing === false ? false : true;
+
+  const s1 = asText(data.skip_hire_sales_account_code);
+  const s2 = asText(data.permit_sales_account_code);
+  const s3 = asText(data.card_clearing_account_code);
+
+  const resolved = {
+    skipHireSalesAccountCode:
+      looksLikeAccountCode(s1) ? s1 : useDefaultsWhenMissing ? ENV_SKIP_SALES_FALLBACK : "",
+    permitSalesAccountCode:
+      looksLikeAccountCode(s2) ? s2 : useDefaultsWhenMissing ? ENV_PERMIT_SALES_FALLBACK : "",
+    cardClearingAccountCode:
+      looksLikeAccountCode(s3) ? s3 : useDefaultsWhenMissing ? ENV_CARD_CLEARING_FALLBACK : "",
+    useDefaultsWhenMissing,
+    source: "invoice_settings",
+  };
+
+  // If strict mode and anything missing, throw a clear error (deterministic)
+  if (!useDefaultsWhenMissing) {
+    if (!looksLikeAccountCode(resolved.skipHireSalesAccountCode)) {
+      throw new Error("Missing invoicing setting: skip_hire_sales_account_code");
+    }
+    if (!looksLikeAccountCode(resolved.permitSalesAccountCode)) {
+      throw new Error("Missing invoicing setting: permit_sales_account_code");
+    }
+    if (!looksLikeAccountCode(resolved.cardClearingAccountCode)) {
+      throw new Error("Missing invoicing setting: card_clearing_account_code");
+    }
+  }
+
+  return resolved;
 }
 
 async function xeroRequest({ accessToken, tenantId, path, method = "GET", body = null }) {
@@ -197,14 +267,15 @@ async function updateInvoiceLinesInXero({ accessToken, tenantId, invoiceId, line
   return inv;
 }
 
-async function createPaymentInXero({ accessToken, tenantId, invoiceId, amount }) {
+async function createPaymentInXero({ accessToken, tenantId, invoiceId, amount, cardClearingAccountCode }) {
   assert(amount > 0, "Payment amount must be > 0");
+  assert(looksLikeAccountCode(cardClearingAccountCode), "Card clearing account code is missing/invalid");
 
   const payload = {
     Payments: [
       {
         Invoice: { InvoiceID: invoiceId },
-        Account: { Code: XERO_CARD_CLEARING_ACCOUNT_CODE },
+        Account: { Code: String(cardClearingAccountCode) },
         Date: ymdTodayUTC(),
         Amount: Number(amount),
       },
@@ -241,6 +312,12 @@ export default async function handler(req, res) {
     if (!jobId) return res.status(400).json({ ok: false, error: "job_id is required" });
 
     const supabase = getSupabaseAdmin();
+
+    // Load per-subscriber invoice account settings (ONLY change to existing logic)
+    const invoiceAccounts = await loadInvoiceAccountCodes({ supabase, subscriberId });
+    const XERO_SKIP_SALES_ACCOUNT_CODE = invoiceAccounts.skipHireSalesAccountCode;
+    const XERO_PERMIT_SALES_ACCOUNT_CODE = invoiceAccounts.permitSalesAccountCode;
+    const XERO_CARD_CLEARING_ACCOUNT_CODE = invoiceAccounts.cardClearingAccountCode;
 
     const { data: job, error: jobErr } = await supabase
       .from("jobs")
@@ -334,6 +411,9 @@ export default async function handler(req, res) {
       if (permitRow?.name) permitName = permitRow.name;
     }
 
+    assert(looksLikeAccountCode(XERO_SKIP_SALES_ACCOUNT_CODE), "Skip hire sales account code is missing/invalid");
+    assert(looksLikeAccountCode(XERO_PERMIT_SALES_ACCOUNT_CODE), "Permit sales account code is missing/invalid");
+
     const skipLine = {
       Description: buildSkipLineDescription(job, customer),
       Quantity: 1,
@@ -396,7 +476,15 @@ export default async function handler(req, res) {
 
       if (paymentType === "card") {
         const totalToPay = skipAmountIncVat + (permitLine ? Number(permitAmountNoVat) : 0);
-        await createPaymentInXero({ accessToken, tenantId, invoiceId: String(inv.InvoiceID), amount: totalToPay });
+
+        await createPaymentInXero({
+          accessToken,
+          tenantId,
+          invoiceId: String(inv.InvoiceID),
+          amount: totalToPay,
+          cardClearingAccountCode: XERO_CARD_CLEARING_ACCOUNT_CODE,
+        });
+
         const invAfter = await getInvoiceById({ accessToken, tenantId, invoiceId: String(inv.InvoiceID) });
         await writeJobXeroFields(invAfter);
 
