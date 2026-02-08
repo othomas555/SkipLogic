@@ -75,10 +75,17 @@ export default function BookSwapPage() {
   const [createInvoice, setCreateInvoice] = useState(true);
   const [weekendOverride, setWeekendOverride] = useState(false);
 
+  // Mark paid (NEW) — default OFF
+  const [markPaidNow, setMarkPaidNow] = useState(false);
+
   const [submitting, setSubmitting] = useState(false);
 
   const [newJobId, setNewJobId] = useState("");
   const [invoiceMsg, setInvoiceMsg] = useState("");
+
+  // Payment result messaging (NEW)
+  const [paymentMsg, setPaymentMsg] = useState("");
+  const [paymentErr, setPaymentErr] = useState("");
 
   const selectedOldJob = useMemo(
     () => eligibleJobs.find((j) => String(j.id) === String(selectedOldJobId)) || null,
@@ -91,6 +98,19 @@ export default function BookSwapPage() {
     return customers.find((c) => String(c.id) === cid) || null;
   }, [customers, selectedOldJob]);
 
+  const canShowMarkPaid = useMemo(() => {
+    // Swap booking invoice/payment method is based on the old job payment_type.
+    // Only allow mark paid for cash/card jobs, never for account.
+    const pt = String(selectedOldJob?.payment_type || "").trim();
+    return pt === "cash" || pt === "card";
+  }, [selectedOldJob]);
+
+  useEffect(() => {
+    // If selected job changes to an ineligible payment type, force toggle off.
+    if (!canShowMarkPaid && markPaidNow) setMarkPaidNow(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canShowMarkPaid]);
+
   async function loadPageData() {
     if (checking || !subscriberId) return;
 
@@ -99,6 +119,8 @@ export default function BookSwapPage() {
     setSuccessMsg("");
     setNewJobId("");
     setInvoiceMsg("");
+    setPaymentMsg("");
+    setPaymentErr("");
 
     // Customers
     const { data: cust, error: custErr } = await supabase
@@ -155,6 +177,13 @@ export default function BookSwapPage() {
       setNewSkipTypeId("");
       setPriceStr("");
 
+      setErrorMsg("");
+      setSuccessMsg("");
+      setNewJobId("");
+      setInvoiceMsg("");
+      setPaymentMsg("");
+      setPaymentErr("");
+
       if (!pc) {
         setPostcodeMsg("Selected job has no postcode. Edit the job and add one first.");
         return;
@@ -170,6 +199,8 @@ export default function BookSwapPage() {
     setSuccessMsg("");
     setNewJobId("");
     setInvoiceMsg("");
+    setPaymentMsg("");
+    setPaymentErr("");
 
     const raw = String(forcedPostcode != null ? forcedPostcode : postcode).trim();
     if (!raw) {
@@ -209,6 +240,8 @@ export default function BookSwapPage() {
     setSuccessMsg("");
     setNewJobId("");
     setInvoiceMsg("");
+    setPaymentMsg("");
+    setPaymentErr("");
 
     if (!subscriberId) {
       setErrorMsg("No subscriber found.");
@@ -236,6 +269,12 @@ export default function BookSwapPage() {
     // UI hint (API enforces too)
     if (isWeekendYmd(swapDate) && !weekendOverride) {
       setErrorMsg("Swap date is a weekend. Tick Weekend override to allow weekend booking.");
+      return;
+    }
+
+    // UI guard: cannot mark paid unless old job payment type is cash/card
+    if (markPaidNow && !canShowMarkPaid) {
+      setErrorMsg("Mark paid is only available for cash/card jobs (not account).");
       return;
     }
 
@@ -271,9 +310,12 @@ export default function BookSwapPage() {
       const jid = json?.new_job?.id ? String(json.new_job.id) : "";
       if (jid) setNewJobId(jid);
 
+      let invoiceCreatedOk = false;
+
       if (createInvoice) {
         const invOk = json?.invoice?.json?.ok;
         if (invOk) {
+          invoiceCreatedOk = true;
           const inv = json.invoice.json || {};
           const invNo = inv.invoiceNumber || inv.invoice_number || null;
           const mode = inv.mode || "";
@@ -287,6 +329,46 @@ export default function BookSwapPage() {
         }
       } else {
         setInvoiceMsg("Invoice: not created (toggle off).");
+      }
+
+      // Apply payment if requested: only after invoice created OK and we have new job id
+      if (markPaidNow) {
+        if (!createInvoice) {
+          setPaymentErr("Payment not applied: you must leave “Create invoice in Xero” ON to mark paid now.");
+        } else if (!invoiceCreatedOk) {
+          setPaymentErr("Payment not applied: invoice was not created successfully.");
+        } else if (!jid) {
+          setPaymentErr("Payment not applied: new job id not returned.");
+        } else {
+          const paidMethod = String(selectedOldJob?.payment_type || "").trim();
+          if (paidMethod !== "cash" && paidMethod !== "card") {
+            setPaymentErr("Payment not applied: job payment type is not cash/card.");
+          } else {
+            try {
+              const payRes = await fetch("/api/xero/xero_apply_payment", {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + token,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  job_id: jid,
+                  paid_method: paidMethod,
+                }),
+              });
+
+              const payJson = await payRes.json().catch(() => ({}));
+              if (!payRes.ok || !payJson.ok) {
+                const detail = payJson?.error || payJson?.details || `Payment failed (HTTP ${payRes.status})`;
+                setPaymentErr(String(detail));
+              } else {
+                setPaymentMsg(`Marked as paid in Xero (${paidMethod}).`);
+              }
+            } catch (e) {
+              setPaymentErr("Payment application failed unexpectedly.");
+            }
+          }
+        }
       }
 
       setSuccessMsg("Swap booked. Collection + new delivery created.");
@@ -338,13 +420,33 @@ export default function BookSwapPage() {
         <div style={{ fontSize: 13, color: "#555" }}>{user.email}</div>
       </header>
 
-      {(errorMsg || successMsg || invoiceMsg) && (
+      {(errorMsg || successMsg || invoiceMsg || paymentMsg || paymentErr) && (
         <div style={{ marginBottom: 14 }}>
           {errorMsg ? <div style={styles.alertError}>{errorMsg}</div> : null}
+
           {successMsg ? (
             <div style={styles.alertSuccess}>
               <div>{successMsg}</div>
+
               {invoiceMsg ? <div style={{ marginTop: 6 }}>{invoiceMsg}</div> : null}
+
+              {(paymentMsg || paymentErr) ? (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: 10,
+                    borderRadius: 12,
+                    border: paymentErr ? "1px solid #f0b4b4" : "1px solid #bfe7c0",
+                    background: paymentErr ? "#fff5f5" : "#f2fff2",
+                    color: paymentErr ? "#8a1f1f" : "#1f6b2a",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Payment</div>
+                  {paymentErr ? paymentErr : paymentMsg}
+                </div>
+              ) : null}
+
               {newJobId ? (
                 <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
                   <button type="button" onClick={() => router.push(`/app/jobs/${newJobId}`)} style={styles.btnPrimary}>
@@ -396,6 +498,9 @@ export default function BookSwapPage() {
                 </div>
                 <div>
                   <b>Status:</b> {selectedOldJob.job_status || "—"}
+                </div>
+                <div>
+                  <b>Payment type:</b> {selectedOldJob.payment_type || "—"}
                 </div>
               </div>
             ) : null}
@@ -479,6 +584,30 @@ export default function BookSwapPage() {
 
             <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
               If ON: the new delivery job will be invoiced immediately using your subscriber invoicing settings.
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <label
+                style={{
+                  display: "inline-flex",
+                  gap: 10,
+                  alignItems: "center",
+                  fontSize: 14,
+                  opacity: canShowMarkPaid ? 1 : 0.5,
+                }}
+                title={canShowMarkPaid ? "" : "Mark paid is only available when the selected job is cash/card (not account)."}
+              >
+                <input
+                  type="checkbox"
+                  checked={!!markPaidNow}
+                  disabled={!canShowMarkPaid}
+                  onChange={(e) => setMarkPaidNow(e.target.checked)}
+                />
+                Mark invoice as paid now (applies payment in Xero) — default OFF
+              </label>
+              <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+                Uses the existing job’s payment type (cash/card). Requires “Create invoice in Xero”.
+              </div>
             </div>
 
             <div style={{ marginTop: 12 }}>
