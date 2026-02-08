@@ -30,6 +30,13 @@ async function getNextDriverRunGroup(supabase, subscriberId, swapDate) {
   return (Number.isFinite(maxGroup) ? maxGroup : 0) + 1;
 }
 
+function getBaseUrlFromReq(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || "https");
+  const host = String(req.headers["x-forwarded-host"] || req.headers["host"] || "");
+  if (!host) return null;
+  return `${proto}://${host}`;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
@@ -44,6 +51,9 @@ export default async function handler(req, res) {
     const newSkipTypeId = String(body.new_skip_type_id || "");
     const swapDate = String(body.swap_date || "");
     const priceIncVat = Number(body.price_inc_vat);
+
+    // OPTION 2: caller controls invoicing (default true)
+    const createInvoice = body.create_invoice === false ? false : true;
 
     assert(subscriberId, "Missing subscriber_id");
     assert(oldJobId, "Missing old_job_id");
@@ -77,7 +87,7 @@ export default async function handler(req, res) {
 
     const swapGroupId = crypto.randomUUID();
 
-    // NEW: create a numeric run group for this swap date,
+    // Create a numeric run group for this swap date,
     // so both legs can be treated as one “swap” on scheduler/driver views.
     const driverRunGroup = await getNextDriverRunGroup(supabase, subscriberId, swapDate);
 
@@ -116,18 +126,16 @@ export default async function handler(req, res) {
 
           scheduled_date: swapDate,
           notes: body.notes ? String(body.notes) : "Swap delivery booked",
-          payment_type: body.payment_type
-            ? String(body.payment_type)
-            : oldJob.payment_type || "card",
+          payment_type: body.payment_type ? String(body.payment_type) : oldJob.payment_type || "card",
           price_inc_vat: priceIncVat,
 
-          // NEW: if old job is already assigned, keep the same driver for the new leg
+          // If old job is already assigned, keep the same driver for the new leg
           assigned_driver_id: oldJob.assigned_driver_id || null,
 
           swap_group_id: swapGroupId,
           swap_role: "deliver",
 
-          // NEW: same group number for both legs
+          // Same group number for both legs
           driver_run_group: driverRunGroup,
         },
       ])
@@ -156,11 +164,56 @@ export default async function handler(req, res) {
       throw new Error("Swap created but delivery event failed");
     }
 
+    // 3) OPTIONAL: Create Xero invoice for NEW delivery job only
+    // (collection leg is the original job and is assumed already invoiced / not invoiced here)
+    let invoice = null;
+    let invoice_warning = null;
+
+    if (createInvoice) {
+      const authHeader = String(req.headers.authorization || "");
+      if (!authHeader.startsWith("Bearer ")) {
+        invoice_warning =
+          "create_invoice requested but no Authorization: Bearer token was provided to this endpoint, so Xero invoice creation was skipped.";
+      } else {
+        const baseUrl = getBaseUrlFromReq(req);
+        if (!baseUrl) {
+          invoice_warning =
+            "create_invoice requested but could not determine base URL from request headers; Xero invoice creation was skipped.";
+        } else {
+          try {
+            const invRes = await fetch(`${baseUrl}/api/xero/xero_create_invoice`, {
+              method: "POST",
+              headers: {
+                Authorization: authHeader,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ job_id: newJob.id }),
+            });
+
+            const invJson = await invRes.json().catch(() => ({}));
+            invoice = {
+              status: invRes.status,
+              json: invJson,
+            };
+
+            if (!invRes.ok || !invJson?.ok) {
+              invoice_warning = invJson?.details || invJson?.error || "Xero invoice creation failed";
+            }
+          } catch (e) {
+            invoice_warning = "Xero invoice creation failed unexpectedly";
+          }
+        }
+      }
+    }
+
     return res.json({
       ok: true,
       swap_group_id: swapGroupId,
       driver_run_group: driverRunGroup,
       new_job: newJob,
+      create_invoice: createInvoice,
+      invoice,
+      invoice_warning,
     });
   } catch (e) {
     return res.status(400).json({ ok: false, error: e?.message || "Unknown error" });
