@@ -8,19 +8,10 @@ import { useAuthProfile } from "../../../lib/useAuthProfile";
 function fmtDate(d) {
   return d ? String(d) : "—";
 }
-
-function fmtDateTime(x) {
-  if (!x) return "—";
-  const dt = new Date(x);
-  if (!Number.isFinite(dt.getTime())) return String(x);
-  return dt.toISOString().replace("T", " ").replace("Z", " UTC");
-}
-
 function toInt(x, fallback = 0) {
   const n = Number(x);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
-
 function addDays(ymd, days) {
   if (!ymd) return null;
   const dt = new Date(ymd + "T00:00:00Z");
@@ -31,7 +22,6 @@ function addDays(ymd, days) {
   const d = String(dt.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
-
 function daysBetween(aYmd, bYmd) {
   if (!aYmd || !bYmd) return null;
   const a = new Date(aYmd + "T00:00:00Z").getTime();
@@ -39,7 +29,6 @@ function daysBetween(aYmd, bYmd) {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   return Math.round((b - a) / (1000 * 60 * 60 * 24));
 }
-
 function todayYMDUTC() {
   const dt = new Date();
   const y = dt.getUTCFullYear();
@@ -79,10 +68,10 @@ export default function JobDetailPage() {
   const [plannedCollection, setPlannedCollection] = useState("");
   const [noteText, setNoteText] = useState("");
 
-  // Payment UI state (NEW)
-  const [paying, setPaying] = useState(false);
+  // Payment UI (office only)
   const [payMethod, setPayMethod] = useState("cash"); // "cash" | "card"
   const [payReference, setPayReference] = useState("");
+  const [paying, setPaying] = useState(false);
   const [payMsg, setPayMsg] = useState("");
   const [payErr, setPayErr] = useState("");
 
@@ -92,6 +81,9 @@ export default function JobDetailPage() {
 
     setLoading(true);
     setErrorMsg("");
+    setSuccessMsg("");
+    setPayMsg("");
+    setPayErr("");
 
     const { data: j, error: jErr } = await supabase
       .from("jobs")
@@ -119,12 +111,12 @@ export default function JobDetailPage() {
         xero_invoice_id,
         xero_invoice_number,
         xero_invoice_status,
+        xero_payment_id,
 
         paid_at,
         paid_by_user_id,
         paid_method,
-        paid_reference,
-        xero_payment_id
+        paid_reference
       `
       )
       .eq("id", id)
@@ -179,12 +171,11 @@ export default function JobDetailPage() {
     setPlannedDelivery(j.scheduled_date || "");
     setPlannedCollection(j.collection_date || "");
 
-    // Default method for the payment UI based on job.payment_type (only if not paid)
-    if (!j.paid_at) {
-      const pt = String(j.payment_type || "").toLowerCase();
-      if (pt === "card") setPayMethod("card");
-      else setPayMethod("cash");
-    }
+    // sensible default for payment method:
+    // - if job.payment_type is card, default to card, else cash
+    const pt = String(j.payment_type || "").toLowerCase();
+    if (pt === "card") setPayMethod("card");
+    else setPayMethod("cash");
 
     setLoading(false);
   }
@@ -278,17 +269,6 @@ export default function JobDetailPage() {
     return { label: `Overdue by ${Math.abs(diff)} day(s)`, tone: "bad" };
   }, [termHireDays, deliveryAnchor, scheduledReminderDate, reminderLogMatch]);
 
-  // Billing helpers
-  const isPaid = useMemo(() => {
-    return !!job?.paid_at;
-  }, [job]);
-
-  const billingTone = useMemo(() => {
-    if (isPaid) return "paid";
-    if (String(job?.xero_invoice_status || "").toUpperCase() === "PAID") return "attention";
-    return "unpaid";
-  }, [isPaid, job]);
-
   // Status helpers (YOUR statuses)
   const status = job?.job_status || "";
   const canMarkDelivered = status === "booked";
@@ -296,6 +276,8 @@ export default function JobDetailPage() {
   const canRequestCollection = status === "delivered";
   const canMarkCollected = status === "delivered" || status === "awaiting_collection";
   const canUndoCollected = status === "collected" || !!job?.collection_actual_date;
+
+  const isPaid = !!job?.paid_at;
 
   async function saveJobEdits() {
     if (!job?.id) return;
@@ -459,7 +441,7 @@ export default function JobDetailPage() {
     await loadAll();
   }
 
-  async function markPaidViaXero() {
+  async function markAsPaidFromJobPage() {
     if (!job?.id) return;
 
     setPayMsg("");
@@ -469,46 +451,51 @@ export default function JobDetailPage() {
       setPayErr("Cannot mark as paid because this job has no Xero invoice linked yet.");
       return;
     }
+    if (isPaid) {
+      setPayErr("This job is already marked as paid.");
+      return;
+    }
+
+    const token = await getAccessToken();
+    if (!token) {
+      setPayErr("Not signed in. Please refresh and log in again.");
+      return;
+    }
 
     setPaying(true);
     try {
-      const token = await getAccessToken();
-      if (!token) {
-        setPayErr("Not signed in.");
-        setPaying(false);
-        return;
-      }
-
-      const payload = {
-        job_id: job.id,
-        paid_method: String(payMethod || "cash"),
-        paid_reference: String(payReference || "").trim() || undefined,
-      };
-
-      const res = await fetch("/api/xero/xero_apply_payment", {
+      const resp = await fetch("/api/xero/xero_apply_payment", {
         method: "POST",
         headers: {
           Authorization: "Bearer " + token,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          job_id: job.id,
+          paid_method: payMethod,
+          paid_reference: payReference || null,
+        }),
       });
 
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json.ok) {
-        const detail = json?.details || json?.error || `Payment failed (HTTP ${res.status})`;
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok || !json.ok) {
+        const detail = json?.details || json?.error || "Payment failed";
         setPayErr(String(detail));
         setPaying(false);
         return;
       }
 
-      setPayMsg("Marked as PAID. Xero payment applied.");
-      setPayReference("");
+      const invStatus = json?.xero?.invoice_status ? ` (${json.xero.invoice_status})` : "";
+      const amtPaid = json?.xero?.amount_paid != null ? Number(json.xero.amount_paid).toFixed(2) : null;
+
+      setPayMsg(
+        `Payment applied in Xero${invStatus}${amtPaid ? ` — £${amtPaid}` : ""}. Job marked paid.`
+      );
+      setPaying(false);
       await loadAll();
     } catch (e) {
       console.error(e);
-      setPayErr("Payment failed unexpectedly.");
-    } finally {
+      setPayErr(String(e?.message || e));
       setPaying(false);
     }
   }
@@ -541,13 +528,6 @@ export default function JobDetailPage() {
       : reminderStatus.tone === "bad"
       ? { color: "#8a1f1f" }
       : { color: "#555" };
-
-  const billingCardStyle =
-    billingTone === "paid"
-      ? { ...cardStyle, border: "1px solid #bfe7c0", background: "#f2fff2" }
-      : billingTone === "attention"
-      ? { ...cardStyle, border: "1px solid #ffe58f", background: "#fffbe6" }
-      : { ...cardStyle, border: "1px solid #f0b4b4", background: "#fff5f5" };
 
   return (
     <main style={pageStyle}>
@@ -587,24 +567,24 @@ export default function JobDetailPage() {
         </div>
       )}
 
-      {/* Billing / Payments */}
-      <section style={billingCardStyle}>
-        <h2 style={h2Style}>Billing</h2>
+      {/* PAYMENT PANEL */}
+      <section style={cardStyle}>
+        <h2 style={h2Style}>Payment</h2>
 
         <div style={kvGrid}>
           <div style={kv}>
-            <span style={k}>Payment type</span>
-            <span style={v}>{job.payment_type || "—"}</span>
-          </div>
-
-          <div style={kv}>
-            <span style={k}>Paid status (SkipLogic)</span>
+            <span style={k}>Paid status</span>
             <span style={{ ...v, color: isPaid ? "#1f6b2a" : "#8a1f1f" }}>{isPaid ? "PAID" : "UNPAID"}</span>
           </div>
 
           <div style={kv}>
+            <span style={k}>Payment type (booking)</span>
+            <span style={v}>{job.payment_type || "—"}</span>
+          </div>
+
+          <div style={kv}>
             <span style={k}>Paid at</span>
-            <span style={v}>{fmtDateTime(job.paid_at)}</span>
+            <span style={v}>{job.paid_at ? String(job.paid_at) : "—"}</span>
           </div>
 
           <div style={kv}>
@@ -618,110 +598,77 @@ export default function JobDetailPage() {
           </div>
 
           <div style={kv}>
-            <span style={k}>Paid by (user id)</span>
-            <span style={{ ...v, wordBreak: "break-all" }} title={job.paid_by_user_id || ""}>
-              {job.paid_by_user_id || "—"}
+            <span style={k}>Xero invoice</span>
+            <span style={v}>
+              {job.xero_invoice_number ? String(job.xero_invoice_number) : job.xero_invoice_id ? "Linked" : "—"}
             </span>
           </div>
-        </div>
 
-        <div style={{ marginTop: 12 }}>
-          <h3 style={h3Style}>Xero invoice / payment</h3>
-          <div style={kvGrid}>
-            <div style={kv}>
-              <span style={k}>Xero invoice status</span>
-              <span style={v}>{job.xero_invoice_status || "—"}</span>
-            </div>
-            <div style={kv}>
-              <span style={k}>Xero invoice number</span>
-              <span style={v}>{job.xero_invoice_number || "—"}</span>
-            </div>
-            <div style={kv}>
-              <span style={k}>Xero invoice id</span>
-              <span style={{ ...v, wordBreak: "break-all" }}>{job.xero_invoice_id || "—"}</span>
-            </div>
-            <div style={kv}>
-              <span style={k}>Xero payment id</span>
-              <span style={{ ...v, wordBreak: "break-all" }}>{job.xero_payment_id || "—"}</span>
-            </div>
+          <div style={kv}>
+            <span style={k}>Xero invoice status</span>
+            <span style={v}>{job.xero_invoice_status || "—"}</span>
           </div>
 
-          {billingTone === "attention" ? (
-            <p style={{ margin: "10px 0 0", color: "#8a6d00", fontSize: 13 }}>
-              Note: Xero shows PAID but SkipLogic has no paid_at. (This can happen if the invoice was paid directly in Xero.)
-            </p>
-          ) : null}
+          <div style={kv}>
+            <span style={k}>Xero payment id</span>
+            <span style={v}>{job.xero_payment_id || "—"}</span>
+          </div>
         </div>
 
-        {/* Mark as paid control (NEW) */}
-        {!isPaid ? (
-          <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-            <h3 style={h3Style}>Mark as paid</h3>
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 12, border: "1px solid #eee", background: "#fafafa" }}>
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>Mark as paid (creates Xero payment)</div>
 
-            <div style={{ fontSize: 12, color: "#555", marginBottom: 10, lineHeight: 1.4 }}>
-              Use this when payment is taken manually (e.g. COD paid later, cash in office, card over phone). This applies a
-              payment in Xero and marks the job as paid in SkipLogic.
+          {!job.xero_invoice_id ? (
+            <div style={{ fontSize: 13, color: "#8a1f1f" }}>
+              This job has no Xero invoice linked yet. Create the invoice first, then come back here to mark paid.
             </div>
+          ) : isPaid ? (
+            <div style={{ fontSize: 13, color: "#1f6b2a" }}>Already paid.</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+                <label style={{ ...labelStyle, minWidth: 220 }}>
+                  Paid method
+                  <select value={payMethod} onChange={(e) => setPayMethod(e.target.value)} style={inputStyle}>
+                    <option value="cash">Cash</option>
+                    <option value="card">Card</option>
+                  </select>
+                </label>
 
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-              <label style={{ ...labelStyle, minWidth: 200 }}>
-                Method
-                <select
-                  value={payMethod}
-                  onChange={(e) => setPayMethod(e.target.value)}
-                  style={{ ...inputStyle, height: 34 }}
-                  disabled={paying}
+                <label style={{ ...labelStyle, flex: 1, minWidth: 260 }}>
+                  Reference (optional)
+                  <input
+                    value={payReference}
+                    onChange={(e) => setPayReference(e.target.value)}
+                    placeholder="e.g. COD collected, receipt #123, phone payment"
+                    style={inputStyle}
+                  />
+                </label>
+
+                <button onClick={markAsPaidFromJobPage} disabled={paying} style={btnPrimary}>
+                  {paying ? "Applying…" : "Mark as paid"}
+                </button>
+              </div>
+
+              {(payMsg || payErr) && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: 10,
+                    borderRadius: 10,
+                    border: payErr ? "1px solid #f0b4b4" : "1px solid #bfe7c0",
+                    background: payErr ? "#fff5f5" : "#f2fff2",
+                    color: payErr ? "#8a1f1f" : "#1f6b2a",
+                    whiteSpace: "pre-wrap",
+                    fontSize: 13,
+                  }}
                 >
-                  <option value="cash">Cash</option>
-                  <option value="card">Card</option>
-                </select>
-              </label>
-
-              <label style={{ ...labelStyle, minWidth: 260 }}>
-                Reference (optional)
-                <input
-                  value={payReference}
-                  onChange={(e) => setPayReference(e.target.value)}
-                  placeholder="e.g. COD collected, receipt #123, last 4 digits…"
-                  style={inputStyle}
-                  disabled={paying}
-                />
-              </label>
-
-              <button
-                type="button"
-                onClick={markPaidViaXero}
-                disabled={paying}
-                style={paying ? btnPrimaryDisabled : btnPrimary}
-              >
-                {paying ? "Applying payment…" : "Mark as paid"}
-              </button>
-            </div>
-
-            {!job.xero_invoice_id ? (
-              <div style={{ marginTop: 10, fontSize: 13, color: "#8a1f1f" }}>
-                This job has no Xero invoice linked yet, so it can’t be paid from here.
-              </div>
-            ) : null}
-
-            {(payMsg || payErr) ? (
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: 10,
-                  borderRadius: 10,
-                  border: payErr ? "1px solid #f0b4b4" : "1px solid #bfe7c0",
-                  background: payErr ? "#fff5f5" : "#f2fff2",
-                  color: payErr ? "#8a1f1f" : "#1f6b2a",
-                  whiteSpace: "pre-wrap",
-                  fontSize: 13,
-                }}
-              >
-                {payErr ? payErr : payMsg}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+                  {payErr ? payErr : payMsg}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </section>
 
       <div style={grid2}>
@@ -1063,17 +1010,6 @@ const btnPrimary = {
   color: "#fff",
   cursor: "pointer",
   fontSize: 13,
-};
-
-const btnPrimaryDisabled = {
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: "1px solid #0070f3",
-  background: "#0070f3",
-  color: "#fff",
-  cursor: "default",
-  fontSize: 13,
-  opacity: 0.65,
 };
 
 const btnSecondary = {
