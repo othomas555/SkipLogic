@@ -3,19 +3,11 @@
 // GET
 // Auth: Office user via Authorization: Bearer <supabase access token>
 //
-// Debug + utility:
-// - Returns type_counts for all accounts
-// - Returns bank_accounts as RAW slices so we can see what fields exist
-// - Returns bank_candidates where ANY field stringifies to include "BANK" (sanity check)
+// Returns BANK accounts from Xero with AccountID (UUID) so we can use it for Payments.
+// (Some orgs do not populate Account Code for bank accounts.)
 //
 // Response:
-// {
-//   ok:true,
-//   total_accounts,
-//   type_counts,
-//   bank_accounts_raw: [ ... up to 25 ],
-//   bank_candidates_raw: [ ... up to 25 ]
-// }
+// { ok:true, accounts:[{ AccountID, Code, Name, Type, Status, BankAccountNumber }] }
 
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getValidXeroClient } from "../../../lib/xeroOAuth";
@@ -51,15 +43,6 @@ async function xeroRequest({ accessToken, tenantId, path, method = "GET" }) {
   return json;
 }
 
-function looksBankAnywhere(obj) {
-  try {
-    const s = JSON.stringify(obj);
-    return s.toUpperCase().includes("BANK");
-  } catch {
-    return false;
-  }
-}
-
 export default async function handler(req, res) {
   try {
     if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Method Not Allowed" });
@@ -71,9 +54,7 @@ export default async function handler(req, res) {
     if (!subscriberId) return res.status(401).json({ ok: false, error: "No subscriber in auth context" });
 
     const xc = await getValidXeroClient(subscriberId);
-    if (!xc?.tenantId) {
-      return res.status(400).json({ ok: false, error: "Xero connected but no organisation selected" });
-    }
+    if (!xc?.tenantId) return res.status(400).json({ ok: false, error: "Xero connected but no organisation selected" });
 
     const out = await xeroRequest({
       accessToken: xc.accessToken,
@@ -84,33 +65,20 @@ export default async function handler(req, res) {
 
     const accounts = Array.isArray(out?.Accounts) ? out.Accounts : [];
 
-    const type_counts = {};
-    for (const a of accounts) {
-      const t = norm(a?.Type);
-      type_counts[t] = (type_counts[t] || 0) + 1;
-    }
+    const bank = accounts
+      .filter((a) => norm(a?.Type) === "BANK")
+      .map((a) => ({
+        AccountID: a?.AccountID ? String(a.AccountID) : null,
+        Code: a?.Code != null && String(a.Code).trim() !== "" ? String(a.Code) : null,
+        Name: a?.Name ? String(a.Name) : null,
+        Type: a?.Type ? String(a.Type) : null,
+        Status: a?.Status ? String(a.Status) : null,
+        BankAccountNumber: a?.BankAccountNumber ? String(a.BankAccountNumber) : null,
+      }))
+      .filter((a) => a.AccountID) // MUST have AccountID
+      .sort((a, b) => String(a.Name || "").localeCompare(String(b.Name || "")));
 
-    // Collect the ones we *think* are BANK based on the same logic used in counts
-    const bank_accounts_raw = [];
-    for (const a of accounts) {
-      if (norm(a?.Type) === "BANK") bank_accounts_raw.push(a);
-      if (bank_accounts_raw.length >= 25) break;
-    }
-
-    // Sanity: any object that contains "BANK" anywhere in its JSON
-    const bank_candidates_raw = [];
-    for (const a of accounts) {
-      if (looksBankAnywhere(a)) bank_candidates_raw.push(a);
-      if (bank_candidates_raw.length >= 25) break;
-    }
-
-    return res.status(200).json({
-      ok: true,
-      total_accounts: accounts.length,
-      type_counts,
-      bank_accounts_raw,
-      bank_candidates_raw,
-    });
+    return res.status(200).json({ ok: true, accounts: bank });
   } catch (err) {
     console.error("xero_list_bank_accounts error:", err);
     return res.status(500).json({
