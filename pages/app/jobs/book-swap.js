@@ -26,6 +26,12 @@ function money(n) {
   return x.toFixed(2);
 }
 
+async function getAccessToken() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) return null;
+  return data?.session?.access_token || null;
+}
+
 export default function BookSwapPage() {
   const router = useRouter();
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
@@ -54,6 +60,13 @@ export default function BookSwapPage() {
 
   const [saving, setSaving] = useState(false);
 
+  // Invoicing (Step B): default ON
+  const [createInvoice, setCreateInvoice] = useState(true);
+
+  // Result info (so you can see green confirmation before navigating)
+  const [lastNewJobId, setLastNewJobId] = useState("");
+  const [lastInvoiceSummary, setLastInvoiceSummary] = useState(""); // human message
+
   const oldJob = useMemo(() => {
     return eligibleJobs.find((j) => String(j.id) === String(oldJobId)) || null;
   }, [eligibleJobs, oldJobId]);
@@ -70,6 +83,8 @@ export default function BookSwapPage() {
     setLoading(true);
     setErrorMsg("");
     setSuccessMsg("");
+    setLastNewJobId("");
+    setLastInvoiceSummary("");
 
     // Customers (for labels)
     const { data: customerData, error: cErr } = await supabase
@@ -202,6 +217,8 @@ export default function BookSwapPage() {
     e.preventDefault();
     setErrorMsg("");
     setSuccessMsg("");
+    setLastNewJobId("");
+    setLastInvoiceSummary("");
 
     if (!subscriberId) return setErrorMsg("No subscriber found.");
     if (!oldJobId) return setErrorMsg("Pick the existing job (the skip that is currently on site).");
@@ -212,9 +229,19 @@ export default function BookSwapPage() {
 
     setSaving(true);
     try {
+      const token = await getAccessToken();
+      if (!token) {
+        setSaving(false);
+        setErrorMsg("You must be signed in via /login to book a swap.");
+        return;
+      }
+
       const res = await fetch("/api/jobs/book-swap", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + token,
+        },
         body: JSON.stringify({
           subscriber_id: subscriberId,
           old_job_id: oldJobId,
@@ -222,6 +249,7 @@ export default function BookSwapPage() {
           swap_date: swapDate,
           price_inc_vat: priceNum,
           notes: notes || null,
+          create_invoice: !!createInvoice,
           // payment_type omitted on purpose (API will default to old job payment_type)
         }),
       });
@@ -231,12 +259,31 @@ export default function BookSwapPage() {
         throw new Error(json?.error || "Swap booking failed");
       }
 
-      setSuccessMsg("Swap booked. Collection + new delivery created.");
-      // take you straight to the NEW job
-      if (json?.new_job?.id) {
-        router.push(`/app/jobs/${json.new_job.id}`);
-        return;
+      const newId = json?.new_job?.id ? String(json.new_job.id) : "";
+      if (newId) setLastNewJobId(newId);
+
+      // Invoice result messaging
+      if (!createInvoice) {
+        setLastInvoiceSummary("Invoice: not created (toggle off).");
+      } else if (json?.invoice?.json?.ok) {
+        const invJson = json.invoice.json;
+        const invNo = invJson?.invoiceNumber || invJson?.invoice_number || null;
+        const mode = invJson?.mode || "";
+        setLastInvoiceSummary(
+          `Invoice: created${invNo ? ` (${invNo})` : ""}${mode ? ` — ${mode}` : ""}.`
+        );
+      } else if (json?.invoice_warning) {
+        setLastInvoiceSummary(`Invoice: not created — ${String(json.invoice_warning)}`);
+      } else if (json?.invoice && json?.invoice?.status) {
+        setLastInvoiceSummary(`Invoice: failed (HTTP ${json.invoice.status}).`);
+      } else {
+        setLastInvoiceSummary("Invoice: not created (unknown reason).");
       }
+
+      setSuccessMsg("Swap booked. Collection + new delivery created.");
+
+      // Leave you on this page so you SEE the green + invoice summary.
+      // Provide a button/link to open the new job instead of auto-redirect.
     } catch (err) {
       console.error(err);
       setErrorMsg(err?.message || "Swap booking failed");
@@ -282,10 +329,33 @@ export default function BookSwapPage() {
         <div style={{ fontSize: 13, color: "#555" }}>{user.email}</div>
       </header>
 
-      {(authError || errorMsg || successMsg) && (
+      {(authError || errorMsg || successMsg || lastInvoiceSummary) && (
         <div style={{ marginBottom: 14 }}>
           {(authError || errorMsg) ? <div style={alertError}>{authError || errorMsg}</div> : null}
-          {successMsg ? <div style={alertOk}>{successMsg}</div> : null}
+          {successMsg ? (
+            <div style={alertOk}>
+              <div>{successMsg}</div>
+              {lastInvoiceSummary ? <div style={{ marginTop: 6 }}>{lastInvoiceSummary}</div> : null}
+              {lastNewJobId ? (
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => router.push(`/app/jobs/${lastNewJobId}`)}
+                    style={btnPrimary}
+                  >
+                    View new job →
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => loadData()}
+                    style={btnSecondary}
+                  >
+                    Refresh eligible jobs
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -386,6 +456,22 @@ export default function BookSwapPage() {
                   Auto-filled from postcode table. Override only if needed.
                 </div>
               </label>
+            </div>
+          </div>
+
+          {/* Invoicing */}
+          <div style={stepBox}>
+            <div style={stepTitle}>Invoicing</div>
+            <label style={{ display: "inline-flex", gap: 10, alignItems: "center", fontSize: 14 }}>
+              <input
+                type="checkbox"
+                checked={!!createInvoice}
+                onChange={(e) => setCreateInvoice(e.target.checked)}
+              />
+              Create invoice in Xero (default ON)
+            </label>
+            <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+              If ON: the new delivery job will be invoiced immediately using your subscriber invoicing settings.
             </div>
           </div>
 
