@@ -1,9 +1,5 @@
 // pages/api/xero/callback.js
-import {
-  exchangeCodeForToken,
-  fetchConnections,
-  saveXeroConnection,
-} from "../../../lib/xeroOAuth";
+import { exchangeCodeForToken, fetchConnections, saveXeroConnection } from "../../../lib/xeroOAuth";
 
 function parseCookies(req) {
   const out = {};
@@ -18,18 +14,27 @@ function parseCookies(req) {
   return out;
 }
 
-function clearCookie(res, name) {
-  // MUST match SameSite=None + Path=/
-  res.setHeader(
-    "Set-Cookie",
-    `${name}=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0`
-  );
+function clearCookieStr(name) {
+  // Must match the cookie attributes used when setting:
+  // SameSite=None; Secure; Path=/
+  return `${name}=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0`;
+}
+
+function appendSetCookie(res, cookieStr) {
+  const prev = res.getHeader("Set-Cookie");
+  if (!prev) {
+    res.setHeader("Set-Cookie", cookieStr);
+    return;
+  }
+  if (Array.isArray(prev)) {
+    res.setHeader("Set-Cookie", [...prev, cookieStr]);
+    return;
+  }
+  res.setHeader("Set-Cookie", [prev, cookieStr]);
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    return res.status(405).send("Method not allowed");
-  }
+  if (req.method !== "GET") return res.status(405).send("Method not allowed");
 
   const code = typeof req.query?.code === "string" ? req.query.code : "";
   const state = typeof req.query?.state === "string" ? req.query.state : "";
@@ -43,9 +48,7 @@ export default async function handler(req, res) {
   const verifier = cookies.xero_oauth_verifier || "";
 
   if (!expectedState || !verifier) {
-    return res.status(400).send(
-      "Missing OAuth verifier/state. Please reconnect from Settings."
-    );
+    return res.status(400).send("Missing OAuth verifier/state. Please reconnect from Settings.");
   }
 
   if (state !== expectedState) {
@@ -53,23 +56,14 @@ export default async function handler(req, res) {
   }
 
   const subscriberId = String(state).split(":")[0];
-  if (!subscriberId) {
-    return res.status(400).send("Invalid OAuth state");
-  }
+  if (!subscriberId) return res.status(400).send("Invalid OAuth state");
 
   try {
-    const tok = await exchangeCodeForToken({
-      code,
-      codeVerifier: verifier,
-    });
-
+    const tok = await exchangeCodeForToken({ code, codeVerifier: verifier });
     const tenants = await fetchConnections(tok.access_token);
-    const selectedTenantId =
-      tenants.length === 1 ? tenants[0].tenantId : null;
 
-    const expiresAtIso = new Date(
-      Date.now() + tok.expires_in * 1000
-    ).toISOString();
+    const selectedTenantId = tenants.length === 1 ? tenants[0].tenantId : null;
+    const expiresAtIso = new Date(Date.now() + tok.expires_in * 1000).toISOString();
 
     await saveXeroConnection({
       subscriberId,
@@ -80,8 +74,9 @@ export default async function handler(req, res) {
       expiresAtIso,
     });
 
-    clearCookie(res, "xero_oauth_state");
-    clearCookie(res, "xero_oauth_verifier");
+    // Clear BOTH cookies (must APPEND Set-Cookie, not overwrite)
+    appendSetCookie(res, clearCookieStr("xero_oauth_state"));
+    appendSetCookie(res, clearCookieStr("xero_oauth_verifier"));
 
     if (!selectedTenantId && tenants.length > 1) {
       return res.redirect("/app/settings?xero=choose_org");
@@ -90,10 +85,11 @@ export default async function handler(req, res) {
     return res.redirect("/app/settings?xero=connected");
   } catch (e) {
     console.error("xero/callback failed", e);
-    clearCookie(res, "xero_oauth_state");
-    clearCookie(res, "xero_oauth_verifier");
-    return res.status(500).send(
-      e?.message || "Xero connection failed"
-    );
+
+    // Clear cookies even on failure
+    appendSetCookie(res, clearCookieStr("xero_oauth_state"));
+    appendSetCookie(res, clearCookieStr("xero_oauth_verifier"));
+
+    return res.status(500).send(e?.message || "Xero connection failed");
   }
 }
