@@ -1,0 +1,591 @@
+// pages/app/settings/invoicing.js
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/router";
+import { supabase } from "../../../lib/supabaseClient";
+import { useAuthProfile } from "../../../lib/useAuthProfile";
+
+function asText(x) {
+  return typeof x === "string" ? x.trim() : "";
+}
+
+function safeArray(x) {
+  return Array.isArray(x) ? x : [];
+}
+
+async function getAccessToken() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) return null;
+  return data?.session?.access_token || null;
+}
+
+function normalizeCategories(arr) {
+  const items = safeArray(arr)
+    .map((x) => ({
+      key: asText(x?.key),
+      label: asText(x?.label),
+      account_code: asText(x?.account_code),
+      enabled: x?.enabled === false ? false : true,
+      sort: Number.isFinite(Number(x?.sort)) ? Number(x.sort) : 0,
+      vat_rate: asText(x?.vat_rate), // optional for later
+    }))
+    .filter((x) => x.key || x.label || x.account_code);
+
+  // ensure stable order
+  items.sort((a, b) => (a.sort || 0) - (b.sort || 0) || String(a.key).localeCompare(String(b.key)));
+  return items;
+}
+
+function validateAccountCode(code, name) {
+  const v = asText(code);
+  if (!v) return `${name} is required`;
+  if (!/^[A-Za-z0-9_-]+$/.test(v)) return `${name} has invalid characters`;
+  if (v.length > 50) return `${name} is too long`;
+  return null;
+}
+
+function validateCategoryRow(row, idx) {
+  const key = asText(row.key);
+  const label = asText(row.label);
+  const account = asText(row.account_code);
+
+  if (!key) return `Category #${idx + 1}: key is required (e.g. haulage)`;
+  if (!/^[a-z0-9_-]+$/.test(key)) return `Category #${idx + 1}: key must be lower-case letters/numbers/_/-`;
+  if (!label) return `Category #${idx + 1}: label is required`;
+  if (!account) return `Category #${idx + 1}: account_code is required`;
+  if (!/^[A-Za-z0-9_-]+$/.test(account)) return `Category #${idx + 1}: account_code has invalid characters`;
+  return null;
+}
+
+export default function InvoicingSettingsPage() {
+  const router = useRouter();
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const [errorMsg, setErrorMsg] = useState("");
+  const [okMsg, setOkMsg] = useState("");
+
+  const [skipHireCode, setSkipHireCode] = useState("200");
+  const [permitCode, setPermitCode] = useState("215");
+  const [cardClearingCode, setCardClearingCode] = useState("800");
+  const [useDefaultsWhenMissing, setUseDefaultsWhenMissing] = useState(true);
+
+  const [categories, setCategories] = useState([]);
+
+  const categoriesSorted = useMemo(() => {
+    return normalizeCategories(categories);
+  }, [categories]);
+
+  useEffect(() => {
+    async function load() {
+      if (checking) return;
+
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+
+      if (!subscriberId) {
+        setErrorMsg("No subscriber found for this user.");
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setErrorMsg("");
+      setOkMsg("");
+
+      const token = await getAccessToken();
+      if (!token) {
+        setErrorMsg("You must be signed in.");
+        setLoading(false);
+        return;
+      }
+
+      const res = await fetch("/api/settings/invoicing", {
+        method: "GET",
+        headers: { Authorization: "Bearer " + token },
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        setErrorMsg(json?.error || "Could not load invoicing settings.");
+        setLoading(false);
+        return;
+      }
+
+      const s = json.settings || {};
+      setSkipHireCode(asText(s.skip_hire_sales_account_code) || "200");
+      setPermitCode(asText(s.permit_sales_account_code) || "215");
+      setCardClearingCode(asText(s.card_clearing_account_code) || "800");
+      setUseDefaultsWhenMissing(s.use_defaults_when_missing === false ? false : true);
+      setCategories(normalizeCategories(s.sales_categories));
+
+      setLoading(false);
+    }
+
+    load();
+  }, [checking, user, subscriberId]);
+
+  function addCategory() {
+    const next = [
+      ...categoriesSorted,
+      { key: "", label: "", account_code: "", enabled: true, sort: (categoriesSorted.length + 1) * 10, vat_rate: "" },
+    ];
+    setCategories(next);
+    setOkMsg("");
+    setErrorMsg("");
+  }
+
+  function updateCategory(idx, patch) {
+    const next = categoriesSorted.map((c, i) => (i === idx ? { ...c, ...patch } : c));
+    setCategories(next);
+    setOkMsg("");
+    setErrorMsg("");
+  }
+
+  function deleteCategory(idx) {
+    const next = categoriesSorted.filter((_, i) => i !== idx);
+    setCategories(next);
+    setOkMsg("");
+    setErrorMsg("");
+  }
+
+  async function save() {
+    setSaving(true);
+    setErrorMsg("");
+    setOkMsg("");
+
+    // validate required account codes
+    const errors = [];
+    const e1 = validateAccountCode(skipHireCode, "Skip hire sales account code");
+    const e2 = validateAccountCode(permitCode, "Permit sales account code");
+    const e3 = validateAccountCode(cardClearingCode, "Card clearing account code");
+    if (e1) errors.push(e1);
+    if (e2) errors.push(e2);
+    if (e3) errors.push(e3);
+
+    // validate categories
+    const seenKeys = new Set();
+    for (let i = 0; i < categoriesSorted.length; i++) {
+      const row = categoriesSorted[i];
+      const err = validateCategoryRow(row, i);
+      if (err) errors.push(err);
+
+      const k = asText(row.key);
+      if (k) {
+        if (seenKeys.has(k)) errors.push(`Duplicate category key: "${k}"`);
+        seenKeys.add(k);
+      }
+    }
+
+    if (errors.length) {
+      setSaving(false);
+      setErrorMsg(errors[0]); // deterministic: show first error only
+      return;
+    }
+
+    const token = await getAccessToken();
+    if (!token) {
+      setSaving(false);
+      setErrorMsg("You must be signed in.");
+      return;
+    }
+
+    const payload = {
+      skip_hire_sales_account_code: asText(skipHireCode),
+      permit_sales_account_code: asText(permitCode),
+      card_clearing_account_code: asText(cardClearingCode),
+      use_defaults_when_missing: !!useDefaultsWhenMissing,
+      sales_categories: categoriesSorted.map((c) => ({
+        key: asText(c.key),
+        label: asText(c.label),
+        account_code: asText(c.account_code),
+        enabled: c.enabled === false ? false : true,
+        sort: Number.isFinite(Number(c.sort)) ? Number(c.sort) : 0,
+        ...(asText(c.vat_rate) ? { vat_rate: asText(c.vat_rate) } : {}),
+      })),
+    };
+
+    const res = await fetch("/api/settings/invoicing", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const json = await res.json().catch(() => ({}));
+    setSaving(false);
+
+    if (!res.ok || !json.ok) {
+      setErrorMsg(json?.error || "Could not save invoicing settings.");
+      return;
+    }
+
+    const s = json.settings || {};
+    setSkipHireCode(asText(s.skip_hire_sales_account_code) || "200");
+    setPermitCode(asText(s.permit_sales_account_code) || "215");
+    setCardClearingCode(asText(s.card_clearing_account_code) || "800");
+    setUseDefaultsWhenMissing(s.use_defaults_when_missing === false ? false : true);
+    setCategories(normalizeCategories(s.sales_categories));
+
+    setOkMsg("Saved.");
+  }
+
+  if (checking || loading) {
+    return (
+      <main style={centerStyle}>
+        <p>Loading invoicing settings…</p>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main style={pageStyle}>
+        <h1>Invoicing</h1>
+        <p>You must be signed in.</p>
+        <button style={btnSecondary} onClick={() => router.push("/login")}>
+          Go to login
+        </button>
+      </main>
+    );
+  }
+
+  return (
+    <main style={pageStyle}>
+      <header style={headerStyle}>
+        <div>
+          <Link href="/app/settings" style={linkStyle}>
+            ← Back to Settings
+          </Link>
+          <h1 style={{ margin: "10px 0 0" }}>Invoicing</h1>
+          <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
+            Per-subscriber invoice account codes + future sales categories.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={btnPrimary} onClick={save} disabled={saving || !!authError}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </header>
+
+      {(authError || errorMsg || okMsg) && (
+        <div style={{ marginBottom: 14 }}>
+          {(authError || errorMsg) ? (
+            <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p>
+          ) : null}
+          {okMsg ? <p style={{ color: "green", margin: 0 }}>{okMsg}</p> : null}
+        </div>
+      )}
+
+      <section style={cardStyle}>
+        <h2 style={h2Style}>Required account codes</h2>
+
+        <div style={gridStyle}>
+          <label style={labelStyle}>
+            Skip hire sales account code
+            <input
+              type="text"
+              value={skipHireCode}
+              onChange={(e) => setSkipHireCode(e.target.value)}
+              placeholder="e.g. 200"
+              style={inputStyle}
+            />
+            <div style={tinyHint}>Default: 200</div>
+          </label>
+
+          <label style={labelStyle}>
+            Permit sales account code (NO VAT)
+            <input
+              type="text"
+              value={permitCode}
+              onChange={(e) => setPermitCode(e.target.value)}
+              placeholder="e.g. 215"
+              style={inputStyle}
+            />
+            <div style={tinyHint}>Default: 215</div>
+          </label>
+
+          <label style={labelStyle}>
+            Card clearing account code
+            <input
+              type="text"
+              value={cardClearingCode}
+              onChange={(e) => setCardClearingCode(e.target.value)}
+              placeholder="e.g. 800"
+              style={inputStyle}
+            />
+            <div style={tinyHint}>Default: 800</div>
+          </label>
+        </div>
+
+        <div style={{ marginTop: 12, ...hintBox }}>
+          <div style={{ fontWeight: 800, marginBottom: 6 }}>Notes</div>
+          <div style={{ fontSize: 13, color: "#333", lineHeight: 1.5 }}>
+            <div>
+              These codes are read by invoice creation logic (no hard-coded codes). If you change them here, the next
+              invoices will use these mappings.
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <label style={{ display: "inline-flex", gap: 10, alignItems: "center", fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={!!useDefaultsWhenMissing}
+              onChange={(e) => setUseDefaultsWhenMissing(e.target.checked)}
+            />
+            Allow fallback to env defaults when a setting is missing (rollout safety)
+          </label>
+        </div>
+      </section>
+
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <h2 style={h2Style}>Additional sales categories</h2>
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
+              Future-proof mappings for haulage, grab, extras, etc. Stored now, wiring later.
+            </p>
+          </div>
+
+          <button style={btnSecondary} onClick={addCategory}>
+            Add category
+          </button>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+          Key should be a stable slug (e.g. <b>haulage</b>). Label is what staff see. Sort controls order.
+        </div>
+
+        {categoriesSorted.length === 0 ? (
+          <div style={{ marginTop: 12, fontSize: 13, color: "#666" }}>
+            No categories yet. Add “haulage”, “grab”, “extras” etc.
+          </div>
+        ) : (
+          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+            {categoriesSorted.map((c, idx) => (
+              <div key={`${c.key || "row"}-${idx}`} style={subCard}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 900 }}>
+                    {c.label ? c.label : "New category"}
+                    {c.key ? <span style={{ marginLeft: 8, fontWeight: 600, color: "#666", fontSize: 12 }}>({c.key})</span> : null}
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={c.enabled !== false}
+                        onChange={(e) => updateCategory(idx, { enabled: e.target.checked })}
+                      />
+                      Enabled
+                    </label>
+
+                    <button style={btnDanger} onClick={() => deleteCategory(idx)}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                  <label style={labelStyle}>
+                    Key (slug)
+                    <input
+                      type="text"
+                      value={c.key || ""}
+                      onChange={(e) => updateCategory(idx, { key: e.target.value })}
+                      placeholder="e.g. haulage"
+                      style={inputStyle}
+                    />
+                    <div style={tinyHint}>lower-case letters/numbers/_/-</div>
+                  </label>
+
+                  <label style={labelStyle}>
+                    Label
+                    <input
+                      type="text"
+                      value={c.label || ""}
+                      onChange={(e) => updateCategory(idx, { label: e.target.value })}
+                      placeholder="e.g. Haulage"
+                      style={inputStyle}
+                    />
+                    <div style={tinyHint}>Shown to staff</div>
+                  </label>
+
+                  <label style={labelStyle}>
+                    Xero account code
+                    <input
+                      type="text"
+                      value={c.account_code || ""}
+                      onChange={(e) => updateCategory(idx, { account_code: e.target.value })}
+                      placeholder="e.g. 201"
+                      style={inputStyle}
+                    />
+                    <div style={tinyHint}>Where line items will post</div>
+                  </label>
+
+                  <label style={labelStyle}>
+                    Sort
+                    <input
+                      type="number"
+                      value={Number.isFinite(Number(c.sort)) ? Number(c.sort) : 0}
+                      onChange={(e) => updateCategory(idx, { sort: Number(e.target.value) })}
+                      style={inputStyle}
+                    />
+                    <div style={tinyHint}>10, 20, 30…</div>
+                  </label>
+
+                  <label style={labelStyle}>
+                    VAT rate (optional, future)
+                    <input
+                      type="text"
+                      value={c.vat_rate || ""}
+                      onChange={(e) => updateCategory(idx, { vat_rate: e.target.value })}
+                      placeholder="(leave blank)"
+                      style={inputStyle}
+                    />
+                    <div style={tinyHint}>Stored now, wired later</div>
+                  </label>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+const pageStyle = {
+  minHeight: "100vh",
+  padding: 24,
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+  background: "#f7f7f7",
+};
+
+const centerStyle = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontFamily: "system-ui, sans-serif",
+};
+
+const headerStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 12,
+  flexWrap: "wrap",
+  marginBottom: 16,
+};
+
+const linkStyle = {
+  textDecoration: "underline",
+  color: "#0070f3",
+  fontSize: 13,
+};
+
+const cardStyle = {
+  background: "#fff",
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 14,
+  marginBottom: 14,
+  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+};
+
+const subCard = {
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 12,
+  background: "#fafafa",
+};
+
+const h2Style = { fontSize: 16, margin: "0 0 10px" };
+
+const gridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+  gap: 10,
+};
+
+const labelStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  fontSize: 12,
+  color: "#333",
+};
+
+const tinyHint = {
+  fontSize: 11,
+  color: "#666",
+};
+
+const inputStyle = {
+  padding: "8px 10px",
+  borderRadius: 8,
+  border: "1px solid #ccc",
+  fontSize: 13,
+  background: "#fff",
+};
+
+const hintBox = {
+  marginTop: 12,
+  padding: 12,
+  borderRadius: 10,
+  border: "1px solid #f0f0f0",
+  background: "#fafafa",
+};
+
+const btnPrimary = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #0070f3",
+  background: "#0070f3",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnSecondary = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #ccc",
+  background: "#f5f5f5",
+  color: "#111",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnDanger = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #8a1f1f",
+  background: "#8a1f1f",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 800,
+};
+
+const btnPrimaryDark = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #111",
+  background: "#111",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 800,
+};
