@@ -60,7 +60,6 @@ function looksLikeAccountCode(x) {
 }
 
 async function loadInvoiceAccountCodes({ supabase, subscriberId }) {
-  // Default to env fallbacks unless subscriber settings override
   const defaults = {
     skipHireSalesAccountCode: ENV_SKIP_SALES_FALLBACK,
     permitSalesAccountCode: ENV_PERMIT_SALES_FALLBACK,
@@ -76,16 +75,8 @@ async function loadInvoiceAccountCodes({ supabase, subscriberId }) {
     .eq("subscriber_id", subscriberId)
     .maybeSingle();
 
-  // If settings row doesn't exist yet, we keep fallbacks.
-  // (Your Settings UI/GET route will normally create it.)
-  if (error) {
-    // Fail closed? No — keep existing behaviour by using defaults.
-    return { ...defaults, source: "env_fallback_error" };
-  }
-
-  if (!data) {
-    return { ...defaults, source: "env_fallback_missing_row" };
-  }
+  if (error) return { ...defaults, source: "env_fallback_error" };
+  if (!data) return { ...defaults, source: "env_fallback_missing_row" };
 
   const useDefaultsWhenMissing = data.use_defaults_when_missing === false ? false : true;
 
@@ -104,7 +95,6 @@ async function loadInvoiceAccountCodes({ supabase, subscriberId }) {
     source: "invoice_settings",
   };
 
-  // If strict mode and anything missing, throw a clear error (deterministic)
   if (!useDefaultsWhenMissing) {
     if (!looksLikeAccountCode(resolved.skipHireSalesAccountCode)) {
       throw new Error("Missing invoicing setting: skip_hire_sales_account_code");
@@ -187,7 +177,6 @@ async function findOrCreateContact({ accessToken, tenantId, customer }) {
   const name = buildContactName(customer);
   const contactNumber = customer.account_code ? String(customer.account_code) : "";
 
-  // Prefer matching by ContactNumber if present
   if (contactNumber) {
     const where = encodeURIComponent(`ContactNumber=="${escapeForXeroWhere(contactNumber)}"`);
     const found = await xeroRequest({ accessToken, tenantId, path: `/Contacts?where=${where}` });
@@ -195,7 +184,6 @@ async function findOrCreateContact({ accessToken, tenantId, customer }) {
     if (contacts[0]?.ContactID) return String(contacts[0].ContactID);
   }
 
-  // Fallback: match by exact Name
   {
     const where = encodeURIComponent(`Name=="${escapeForXeroWhere(name)}"`);
     const found = await xeroRequest({ accessToken, tenantId, path: `/Contacts?where=${where}` });
@@ -203,7 +191,6 @@ async function findOrCreateContact({ accessToken, tenantId, customer }) {
     if (contacts[0]?.ContactID) return String(contacts[0].ContactID);
   }
 
-  // Create new contact
   const payload = {
     Contacts: [
       {
@@ -298,6 +285,294 @@ function periodYmUTC() {
   return `${y}-${m}`;
 }
 
+// ✅ Shared helper for Step B
+export async function createInvoiceForJob({ subscriberId, jobId }) {
+  const supabase = getSupabaseAdmin();
+
+  const invoiceAccounts = await loadInvoiceAccountCodes({ supabase, subscriberId });
+  const XERO_SKIP_SALES_ACCOUNT_CODE = invoiceAccounts.skipHireSalesAccountCode;
+  const XERO_PERMIT_SALES_ACCOUNT_CODE = invoiceAccounts.permitSalesAccountCode;
+  const XERO_CARD_CLEARING_ACCOUNT_CODE = invoiceAccounts.cardClearingAccountCode;
+
+  const { data: job, error: jobErr } = await supabase
+    .from("jobs")
+    .select(
+      `
+      id,
+      job_number,
+      subscriber_id,
+      customer_id,
+      payment_type,
+      price_inc_vat,
+      notes,
+      scheduled_date,
+      site_postcode,
+
+      placement_type,
+      permit_setting_id,
+      permit_price_no_vat,
+      permit_delay_business_days,
+      permit_validity_days,
+      permit_override,
+      weekend_override,
+
+      xero_invoice_id,
+      xero_invoice_number,
+      xero_invoice_status
+    `
+    )
+    .eq("id", jobId)
+    .eq("subscriber_id", subscriberId)
+    .single();
+
+  if (jobErr || !job) throw new Error("Job not found");
+
+  // Basic Step B guard (full idempotency is Step C)
+  if (job.xero_invoice_id) {
+    return {
+      ok: true,
+      mode: "already",
+      invoiceId: String(job.xero_invoice_id),
+      invoiceNumber: job.xero_invoice_number || null,
+      invoiceStatus: job.xero_invoice_status || null,
+    };
+  }
+
+  const skipAmountIncVat = Number(job.price_inc_vat || 0);
+  if (!Number.isFinite(skipAmountIncVat) || skipAmountIncVat <= 0) {
+    throw new Error("Job has no valid price_inc_vat");
+  }
+
+  const permitApplies = String(job.placement_type || "private") === "permit";
+  const permitAmountNoVat = permitApplies ? Number(job.permit_price_no_vat || 0) : 0;
+
+  const { data: customer, error: custErr } = await supabase
+    .from("customers")
+    .select(
+      `
+      id,
+      first_name,
+      last_name,
+      company_name,
+      email,
+      is_credit_account,
+      account_code
+    `
+    )
+    .eq("id", job.customer_id)
+    .eq("subscriber_id", subscriberId)
+    .single();
+
+  if (custErr || !customer) throw new Error("Customer not found");
+
+  const xc = await getValidXeroClient(subscriberId);
+  if (!xc?.tenantId) throw new Error("Xero connected but no organisation selected");
+
+  const accessToken = xc.accessToken;
+  const tenantId = xc.tenantId;
+
+  const taxTypeVatIncome = await getTaxTypeByRateName({
+    accessToken,
+    tenantId,
+    rateName: TAX_RATE_NAME_VAT_INCOME,
+  });
+
+  const taxTypeNoVat = await getTaxTypeByRateName({
+    accessToken,
+    tenantId,
+    rateName: TAX_RATE_NAME_NO_VAT,
+  });
+
+  const contactId = await findOrCreateContact({ accessToken, tenantId, customer });
+
+  let permitName = "Council";
+  if (permitApplies && job.permit_setting_id) {
+    const { data: permitRow } = await supabase
+      .from("permit_settings")
+      .select("id, name")
+      .eq("id", job.permit_setting_id)
+      .eq("subscriber_id", subscriberId)
+      .maybeSingle();
+    if (permitRow?.name) permitName = permitRow.name;
+  }
+
+  assert(looksLikeAccountCode(XERO_SKIP_SALES_ACCOUNT_CODE), "Skip hire sales account code is missing/invalid");
+  assert(looksLikeAccountCode(XERO_PERMIT_SALES_ACCOUNT_CODE), "Permit sales account code is missing/invalid");
+
+  const skipLine = {
+    Description: buildSkipLineDescription(job, customer),
+    Quantity: 1,
+    UnitAmount: skipAmountIncVat,
+    AccountCode: XERO_SKIP_SALES_ACCOUNT_CODE,
+    TaxType: taxTypeVatIncome,
+  };
+
+  const permitLine =
+    permitApplies && Number.isFinite(permitAmountNoVat) && permitAmountNoVat > 0
+      ? {
+          Description: buildPermitLineDescription(permitName, job),
+          Quantity: 1,
+          UnitAmount: permitAmountNoVat,
+          AccountCode: XERO_PERMIT_SALES_ACCOUNT_CODE,
+          TaxType: taxTypeNoVat,
+        }
+      : null;
+
+  const paymentType = String(job.payment_type || "card");
+
+  async function writeJobXeroFields(inv) {
+    const update = {
+      xero_invoice_id: inv?.InvoiceID ? String(inv.InvoiceID) : null,
+      xero_invoice_number: inv?.InvoiceNumber ? String(inv.InvoiceNumber) : null,
+      xero_invoice_status: inv?.Status ? String(inv.Status) : null,
+    };
+
+    const { error } = await supabase
+      .from("jobs")
+      .update(update)
+      .eq("id", job.id)
+      .eq("subscriber_id", subscriberId);
+
+    if (error) throw new Error("Failed to update job with Xero invoice fields");
+  }
+
+  if (paymentType === "card" || paymentType === "cash") {
+    const lineItems = permitLine ? [skipLine, permitLine] : [skipLine];
+
+    const invoicePayload = {
+      Type: "ACCREC",
+      Status: "AUTHORISED",
+      Contact: { ContactID: contactId },
+      Date: ymdTodayUTC(),
+      DueDate: ymdTodayUTC(),
+      Reference: job.job_number || undefined,
+      LineAmountTypes: "Inclusive",
+      LineItems: lineItems,
+    };
+
+    const inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
+
+    if (paymentType === "card") {
+      const totalToPay = skipAmountIncVat + (permitLine ? Number(permitAmountNoVat) : 0);
+
+      await createPaymentInXero({
+        accessToken,
+        tenantId,
+        invoiceId: String(inv.InvoiceID),
+        amount: totalToPay,
+        cardClearingAccountCode: XERO_CARD_CLEARING_ACCOUNT_CODE,
+      });
+
+      const invAfter = await getInvoiceById({ accessToken, tenantId, invoiceId: String(inv.InvoiceID) });
+      await writeJobXeroFields(invAfter);
+
+      return {
+        mode: "card",
+        invoiceId: String(invAfter.InvoiceID),
+        invoiceNumber: invAfter.InvoiceNumber || null,
+        invoiceStatus: invAfter.Status || null,
+      };
+    }
+
+    await writeJobXeroFields(inv);
+
+    return {
+      mode: "cash",
+      invoiceId: String(inv.InvoiceID),
+      invoiceNumber: inv.InvoiceNumber || null,
+      invoiceStatus: inv.Status || null,
+    };
+  }
+
+  if (paymentType === "account") {
+    const ym = periodYmUTC();
+
+    const { data: miRow, error: miErr } = await supabase
+      .from("xero_monthly_invoices")
+      .select("id, subscriber_id, customer_id, period_ym, xero_invoice_id, status")
+      .eq("subscriber_id", subscriberId)
+      .eq("customer_id", customer.id)
+      .eq("period_ym", ym)
+      .maybeSingle();
+
+    if (miErr) throw new Error("Failed to load xero_monthly_invoices row");
+
+    let invoiceId = miRow?.xero_invoice_id ? String(miRow.xero_invoice_id) : null;
+    let inv = null;
+
+    if (!invoiceId) {
+      const invoicePayload = {
+        Type: "ACCREC",
+        Status: "DRAFT",
+        Contact: { ContactID: contactId },
+        Date: ymdTodayUTC(),
+        DueDate: ymdTodayUTC(),
+        Reference: `ACCOUNT-${ym}`,
+        LineAmountTypes: "Inclusive",
+        LineItems: [],
+      };
+
+      inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
+      invoiceId = String(inv.InvoiceID);
+
+      const { error: upErr } = await supabase
+        .from("xero_monthly_invoices")
+        .upsert(
+          {
+            subscriber_id: subscriberId,
+            customer_id: customer.id,
+            period_ym: ym,
+            xero_invoice_id: invoiceId,
+            status: String(inv.Status || "DRAFT"),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "subscriber_id,customer_id,period_ym" }
+        );
+
+      if (upErr) throw new Error("Failed to upsert xero_monthly_invoices");
+    } else {
+      inv = await getInvoiceById({ accessToken, tenantId, invoiceId });
+    }
+
+    const status = String(inv?.Status || "");
+    if (status !== "DRAFT") {
+      throw new Error(`Monthly account invoice is not DRAFT (it is "${status}").`);
+    }
+
+    const existingLines = Array.isArray(inv.LineItems) ? inv.LineItems : [];
+    const newLines = permitLine ? [skipLine, permitLine] : [skipLine];
+
+    const updated = await updateInvoiceLinesInXero({
+      accessToken,
+      tenantId,
+      invoiceId,
+      lineItems: [...existingLines, ...newLines],
+    });
+
+    await supabase
+      .from("xero_monthly_invoices")
+      .update({
+        status: String(updated.Status || "DRAFT"),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("subscriber_id", subscriberId)
+      .eq("customer_id", customer.id)
+      .eq("period_ym", ym);
+
+    await writeJobXeroFields(updated);
+
+    return {
+      mode: "account",
+      period_ym: ym,
+      invoiceId: String(updated.InvoiceID),
+      invoiceNumber: updated.InvoiceNumber || null,
+      invoiceStatus: updated.Status || null,
+    };
+  }
+
+  throw new Error(`Unsupported payment_type: ${paymentType}`);
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
@@ -311,296 +586,13 @@ export default async function handler(req, res) {
     const jobId = String(body.job_id || "");
     if (!jobId) return res.status(400).json({ ok: false, error: "job_id is required" });
 
-    const supabase = getSupabaseAdmin();
+    const out = await createInvoiceForJob({ subscriberId, jobId });
 
-    // Load per-subscriber invoice account settings (ONLY change to existing logic)
-    const invoiceAccounts = await loadInvoiceAccountCodes({ supabase, subscriberId });
-    const XERO_SKIP_SALES_ACCOUNT_CODE = invoiceAccounts.skipHireSalesAccountCode;
-    const XERO_PERMIT_SALES_ACCOUNT_CODE = invoiceAccounts.permitSalesAccountCode;
-    const XERO_CARD_CLEARING_ACCOUNT_CODE = invoiceAccounts.cardClearingAccountCode;
-
-    const { data: job, error: jobErr } = await supabase
-      .from("jobs")
-      .select(
-        `
-        id,
-        job_number,
-        subscriber_id,
-        customer_id,
-        payment_type,
-        price_inc_vat,
-        notes,
-        scheduled_date,
-        site_postcode,
-
-        placement_type,
-        permit_setting_id,
-        permit_price_no_vat,
-        permit_delay_business_days,
-        permit_validity_days,
-        permit_override,
-        weekend_override,
-
-        xero_invoice_id,
-        xero_invoice_number,
-        xero_invoice_status
-      `
-      )
-      .eq("id", jobId)
-      .eq("subscriber_id", subscriberId)
-      .single();
-
-    if (jobErr || !job) return res.status(404).json({ ok: false, error: "Job not found" });
-
-    const skipAmountIncVat = Number(job.price_inc_vat || 0);
-    if (!Number.isFinite(skipAmountIncVat) || skipAmountIncVat <= 0) {
-      return res.status(400).json({ ok: false, error: "Job has no valid price_inc_vat" });
-    }
-
-    const permitApplies = String(job.placement_type || "private") === "permit";
-    const permitAmountNoVat = permitApplies ? Number(job.permit_price_no_vat || 0) : 0;
-
-    const { data: customer, error: custErr } = await supabase
-      .from("customers")
-      .select(
-        `
-        id,
-        first_name,
-        last_name,
-        company_name,
-        email,
-        is_credit_account,
-        account_code
-      `
-      )
-      .eq("id", job.customer_id)
-      .eq("subscriber_id", subscriberId)
-      .single();
-
-    if (custErr || !customer) return res.status(404).json({ ok: false, error: "Customer not found" });
-
-    const xc = await getValidXeroClient(subscriberId);
-    if (!xc?.tenantId) {
-      return res.status(400).json({ ok: false, error: "Xero connected but no organisation selected" });
-    }
-    const accessToken = xc.accessToken;
-    const tenantId = xc.tenantId;
-
-    const taxTypeVatIncome = await getTaxTypeByRateName({
-      accessToken,
-      tenantId,
-      rateName: TAX_RATE_NAME_VAT_INCOME,
+    // Match your previous API shape exactly
+    return res.status(200).json({
+      ok: true,
+      ...out,
     });
-
-    const taxTypeNoVat = await getTaxTypeByRateName({
-      accessToken,
-      tenantId,
-      rateName: TAX_RATE_NAME_NO_VAT,
-    });
-
-    const contactId = await findOrCreateContact({ accessToken, tenantId, customer });
-
-    let permitName = "Council";
-    if (permitApplies && job.permit_setting_id) {
-      const { data: permitRow } = await supabase
-        .from("permit_settings")
-        .select("id, name")
-        .eq("id", job.permit_setting_id)
-        .eq("subscriber_id", subscriberId)
-        .maybeSingle();
-      if (permitRow?.name) permitName = permitRow.name;
-    }
-
-    assert(looksLikeAccountCode(XERO_SKIP_SALES_ACCOUNT_CODE), "Skip hire sales account code is missing/invalid");
-    assert(looksLikeAccountCode(XERO_PERMIT_SALES_ACCOUNT_CODE), "Permit sales account code is missing/invalid");
-
-    const skipLine = {
-      Description: buildSkipLineDescription(job, customer),
-      Quantity: 1,
-      UnitAmount: skipAmountIncVat,
-      AccountCode: XERO_SKIP_SALES_ACCOUNT_CODE,
-      TaxType: taxTypeVatIncome,
-    };
-
-    const permitLine =
-      permitApplies && Number.isFinite(permitAmountNoVat) && permitAmountNoVat > 0
-        ? {
-            Description: buildPermitLineDescription(permitName, job),
-            Quantity: 1,
-            UnitAmount: permitAmountNoVat,
-            AccountCode: XERO_PERMIT_SALES_ACCOUNT_CODE,
-            TaxType: taxTypeNoVat,
-          }
-        : null;
-
-    const paymentType = String(job.payment_type || "card");
-
-    async function writeJobXeroFields(inv) {
-      const update = {
-        xero_invoice_id: inv?.InvoiceID ? String(inv.InvoiceID) : null,
-        xero_invoice_number: inv?.InvoiceNumber ? String(inv.InvoiceNumber) : null,
-        xero_invoice_status: inv?.Status ? String(inv.Status) : null,
-      };
-
-      const { error } = await supabase
-        .from("jobs")
-        .update(update)
-        .eq("id", job.id)
-        .eq("subscriber_id", subscriberId);
-
-      if (error) throw new Error("Failed to update job with Xero invoice fields");
-    }
-
-    // === CARD / CASH: single invoice per job ===
-    if (paymentType === "card" || paymentType === "cash") {
-      const lineItems = permitLine ? [skipLine, permitLine] : [skipLine];
-
-      const invoicePayload = {
-        Type: "ACCREC",
-        Status: "AUTHORISED",
-        Contact: { ContactID: contactId },
-        Date: ymdTodayUTC(),
-        DueDate: ymdTodayUTC(),
-
-        // OPTION B: let Xero assign InvoiceNumber (INV-####)
-        // InvoiceNumber: undefined,
-
-        // Keep job number for traceability
-        Reference: job.job_number || undefined,
-
-        LineAmountTypes: "Inclusive",
-        LineItems: lineItems,
-      };
-
-      const inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
-
-      if (paymentType === "card") {
-        const totalToPay = skipAmountIncVat + (permitLine ? Number(permitAmountNoVat) : 0);
-
-        await createPaymentInXero({
-          accessToken,
-          tenantId,
-          invoiceId: String(inv.InvoiceID),
-          amount: totalToPay,
-          cardClearingAccountCode: XERO_CARD_CLEARING_ACCOUNT_CODE,
-        });
-
-        const invAfter = await getInvoiceById({ accessToken, tenantId, invoiceId: String(inv.InvoiceID) });
-        await writeJobXeroFields(invAfter);
-
-        return res.status(200).json({
-          ok: true,
-          mode: "card",
-          invoiceId: String(invAfter.InvoiceID),
-          invoiceNumber: invAfter.InvoiceNumber || null,
-          invoiceStatus: invAfter.Status || null,
-        });
-      }
-
-      await writeJobXeroFields(inv);
-
-      return res.status(200).json({
-        ok: true,
-        mode: "cash",
-        invoiceId: String(inv.InvoiceID),
-        invoiceNumber: inv.InvoiceNumber || null,
-        invoiceStatus: inv.Status || null,
-      });
-    }
-
-    // === ACCOUNT: append to monthly draft ===
-    if (paymentType === "account") {
-      const ym = periodYmUTC();
-
-      const { data: miRow, error: miErr } = await supabase
-        .from("xero_monthly_invoices")
-        .select("id, subscriber_id, customer_id, period_ym, xero_invoice_id, status")
-        .eq("subscriber_id", subscriberId)
-        .eq("customer_id", customer.id)
-        .eq("period_ym", ym)
-        .maybeSingle();
-
-      if (miErr) throw new Error("Failed to load xero_monthly_invoices row");
-
-      let invoiceId = miRow?.xero_invoice_id ? String(miRow.xero_invoice_id) : null;
-      let inv = null;
-
-      if (!invoiceId) {
-        const invoicePayload = {
-          Type: "ACCREC",
-          Status: "DRAFT",
-          Contact: { ContactID: contactId },
-          Date: ymdTodayUTC(),
-          DueDate: ymdTodayUTC(),
-          Reference: `ACCOUNT-${ym}`,
-          LineAmountTypes: "Inclusive",
-          LineItems: [],
-        };
-
-        inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
-        invoiceId = String(inv.InvoiceID);
-
-        const { error: upErr } = await supabase
-          .from("xero_monthly_invoices")
-          .upsert(
-            {
-              subscriber_id: subscriberId,
-              customer_id: customer.id,
-              period_ym: ym,
-              xero_invoice_id: invoiceId,
-              status: String(inv.Status || "DRAFT"),
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: "subscriber_id,customer_id,period_ym" }
-          );
-
-        if (upErr) throw new Error("Failed to upsert xero_monthly_invoices");
-      } else {
-        inv = await getInvoiceById({ accessToken, tenantId, invoiceId });
-      }
-
-      const status = String(inv?.Status || "");
-      if (status !== "DRAFT") {
-        return res.status(400).json({
-          ok: false,
-          error: `Monthly account invoice is not DRAFT (it is "${status}").`,
-        });
-      }
-
-      const existingLines = Array.isArray(inv.LineItems) ? inv.LineItems : [];
-      const newLines = permitLine ? [skipLine, permitLine] : [skipLine];
-
-      const updated = await updateInvoiceLinesInXero({
-        accessToken,
-        tenantId,
-        invoiceId,
-        lineItems: [...existingLines, ...newLines],
-      });
-
-      await supabase
-        .from("xero_monthly_invoices")
-        .update({
-          status: String(updated.Status || "DRAFT"),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("subscriber_id", subscriberId)
-        .eq("customer_id", customer.id)
-        .eq("period_ym", ym);
-
-      // Link job to the monthly invoice for traceability
-      await writeJobXeroFields(updated);
-
-      return res.status(200).json({
-        ok: true,
-        mode: "account",
-        period_ym: ym,
-        invoiceId: String(updated.InvoiceID),
-        invoiceNumber: updated.InvoiceNumber || null,
-        invoiceStatus: updated.Status || null,
-      });
-    }
-
-    return res.status(400).json({ ok: false, error: `Unsupported payment_type: ${paymentType}` });
   } catch (err) {
     console.error("xero_create_invoice error:", err);
     return res.status(500).json({
