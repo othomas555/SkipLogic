@@ -1,9 +1,57 @@
 // pages/app/jobs/book.js
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 import { getSkipPricesForPostcode } from "../../../lib/getSkipPricesForPostcode";
+
+function ymdTodayUTC() {
+  const dt = new Date();
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dt.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseYmdAsUTC(ymd) {
+  // ymd: "YYYY-MM-DD"
+  if (!ymd) return null;
+  const [y, m, d] = ymd.split("-").map((x) => Number(x));
+  if (!y || !m || !d) return null;
+  return new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
+}
+
+function formatYmdUTC(dt) {
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dt.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function isWeekendYmd(ymd) {
+  const dt = parseYmdAsUTC(ymd);
+  if (!dt) return false;
+  // JS getUTCDay(): Sun=0 .. Sat=6
+  const dow = dt.getUTCDay();
+  return dow === 0 || dow === 6;
+}
+
+function addBusinessDaysUTC(startYmd, businessDays) {
+  let dt = parseYmdAsUTC(startYmd);
+  if (!dt) return null;
+
+  let remaining = Number(businessDays || 0);
+  if (!Number.isFinite(remaining) || remaining <= 0) return formatYmdUTC(dt);
+
+  while (remaining > 0) {
+    dt = new Date(dt.getTime() + 24 * 60 * 60 * 1000);
+    const dow = dt.getUTCDay(); // 0 Sun .. 6 Sat
+    if (dow === 0 || dow === 6) continue; // skip weekends
+    remaining -= 1;
+  }
+
+  return formatYmdUTC(dt);
+}
 
 export default function BookJobPage() {
   const router = useRouter();
@@ -11,6 +59,7 @@ export default function BookJobPage() {
 
   const [customers, setCustomers] = useState([]);
   const [skipTypes, setSkipTypes] = useState([]);
+  const [permitSettings, setPermitSettings] = useState([]);
 
   const [errorMsg, setErrorMsg] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
@@ -28,6 +77,12 @@ export default function BookJobPage() {
   const [scheduledDate, setScheduledDate] = useState(""); // yyyy-mm-dd
   const [notes, setNotes] = useState("");
   const [paymentType, setPaymentType] = useState("card");
+
+  // Placement / permits
+  const [placementType, setPlacementType] = useState("private"); // 'private' | 'permit'
+  const [selectedPermitId, setSelectedPermitId] = useState("");
+  const [permitOverride, setPermitOverride] = useState(false);
+  const [weekendOverride, setWeekendOverride] = useState(false);
 
   // Postcode → skip + price
   const [postcodeSkips, setPostcodeSkips] = useState([]);
@@ -52,8 +107,7 @@ export default function BookJobPage() {
   const [newCustomerAddress2, setNewCustomerAddress2] = useState("");
   const [newCustomerAddress3, setNewCustomerAddress3] = useState("");
   const [newCustomerPostcode, setNewCustomerPostcode] = useState("");
-  const [newCustomerCreditAccount, setNewCustomerCreditAccount] =
-    useState(false);
+  const [newCustomerCreditAccount, setNewCustomerCreditAccount] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [newCustomerError, setNewCustomerError] = useState("");
 
@@ -108,6 +162,21 @@ export default function BookJobPage() {
       } else {
         setSkipTypes(skipTypesData || []);
       }
+
+      const { data: permitsData, error: permitsError } = await supabase
+        .from("permit_settings")
+        .select("id, name, price_no_vat, delay_business_days, validity_days, is_active")
+        .eq("subscriber_id", subscriberId)
+        .eq("is_active", true)
+        .order("name", { ascending: true });
+
+      if (permitsError) {
+        console.error("Permit settings error:", permitsError);
+        // Don't hard-fail booking if permits fail; just warn.
+        setPermitSettings([]);
+      } else {
+        setPermitSettings(permitsData || []);
+      }
     }
 
     loadData();
@@ -143,6 +212,10 @@ export default function BookJobPage() {
     return s.name;
   }
 
+  function findPermitById(permitId) {
+    return permitSettings.find((p) => p.id === permitId) || null;
+  }
+
   // Copy customer address into site fields
   function applyCustomerAddressToSite(customerId) {
     const c = customers.find((cust) => cust.id === customerId);
@@ -158,6 +231,50 @@ export default function BookJobPage() {
     if (checked && selectedCustomerId) {
       applyCustomerAddressToSite(selectedCustomerId);
     }
+  }
+
+  // Permit date rules
+  const permitInfo = useMemo(() => {
+    if (placementType !== "permit") return null;
+    if (!selectedPermitId) return null;
+    return findPermitById(selectedPermitId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placementType, selectedPermitId, permitSettings]);
+
+  const earliestAllowedDateYmd = useMemo(() => {
+    if (placementType !== "permit") return "";
+    const delay = Number(permitInfo?.delay_business_days || 0);
+    return addBusinessDaysUTC(ymdTodayUTC(), delay);
+  }, [placementType, permitInfo]);
+
+  function enforceDateRules(nextYmd, { showErrors = true } = {}) {
+    if (!nextYmd) return true;
+
+    // Weekend rule (hard rule unless weekend_override)
+    if (!weekendOverride && isWeekendYmd(nextYmd)) {
+      if (showErrors) {
+        setFieldErrors((prev) => ({
+          ...prev,
+          scheduledDate: "Weekends are blocked. Tick “Weekend override” to allow Saturday/Sunday.",
+        }));
+      }
+      return false;
+    }
+
+    // Permit earliest rule (unless permit_override)
+    if (placementType === "permit" && permitInfo && !permitOverride) {
+      if (earliestAllowedDateYmd && nextYmd < earliestAllowedDateYmd) {
+        if (showErrors) {
+          setFieldErrors((prev) => ({
+            ...prev,
+            scheduledDate: `This permit usually takes ${permitInfo.delay_business_days || 0} business day(s). Earliest delivery is ${earliestAllowedDateYmd}. Tick “Permit override” to book earlier.`,
+          }));
+        }
+        return false;
+      }
+    }
+
+    return true;
   }
 
   // Postcode lookup
@@ -241,9 +358,7 @@ export default function BookJobPage() {
         return;
       }
       if (!subscriberId) {
-        setNewCustomerError(
-          "Missing subscriberId – please refresh and try again."
-        );
+        setNewCustomerError("Missing subscriberId – please refresh and try again.");
         return;
       }
 
@@ -333,10 +448,6 @@ export default function BookJobPage() {
       newErrors.customer = "Please select a customer.";
     }
 
-    if (!selectedSkipTypeId && postcodeSkips.length === 0) {
-      // safety but we’ll validate properly below
-    }
-
     if (!paymentType) {
       newErrors.paymentType = "Please select a payment type.";
     }
@@ -348,6 +459,22 @@ export default function BookJobPage() {
     const numericPrice = parseFloat(jobPrice);
     if (Number.isNaN(numericPrice) || numericPrice <= 0) {
       newErrors.jobPrice = "Price must be a positive number.";
+    }
+
+    if (placementType === "permit") {
+      if (!selectedPermitId) {
+        newErrors.placement = "Select a council permit (or choose Private ground).";
+      }
+    }
+
+    // Date rules (only if date chosen)
+    if (scheduledDate) {
+      const ok = enforceDateRules(scheduledDate, { showErrors: false });
+      if (!ok) {
+        // set the detailed message via enforceDateRules
+        enforceDateRules(scheduledDate, { showErrors: true });
+        newErrors.scheduledDate = "Delivery date not allowed with current rules.";
+      }
     }
 
     if (!subscriberId) {
@@ -370,24 +497,38 @@ export default function BookJobPage() {
         return;
       }
 
+      const permit = placementType === "permit" ? findPermitById(selectedPermitId) : null;
+
+      const insertPayload = {
+        subscriber_id: subscriberId,
+        customer_id: selectedCustomerId,
+        skip_type_id: selectedSkipTypeId,
+
+        site_name: siteName || null,
+        site_address_line1: siteAddress1 || null,
+        site_address_line2: siteAddress2 || null,
+        site_town: siteTown || null,
+        site_postcode: sitePostcode || null,
+
+        scheduled_date: scheduledDate || null,
+        notes: notes || `Standard skip: ${selectedSkip.name}`,
+
+        payment_type: paymentType || null,
+        price_inc_vat: numericPrice,
+
+        // Placement / permit snapshot
+        placement_type: placementType,
+        permit_setting_id: permit ? permit.id : null,
+        permit_price_no_vat: permit ? Number(permit.price_no_vat || 0) : null,
+        permit_delay_business_days: permit ? Number(permit.delay_business_days || 0) : null,
+        permit_validity_days: permit ? Number(permit.validity_days || 0) : null,
+        permit_override: !!permitOverride,
+        weekend_override: !!weekendOverride,
+      };
+
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
-        .insert([
-          {
-            subscriber_id: subscriberId,
-            customer_id: selectedCustomerId,
-            skip_type_id: selectedSkipTypeId,
-            site_name: siteName || null,
-            site_address_line1: siteAddress1 || null,
-            site_address_line2: siteAddress2 || null,
-            site_town: siteTown || null,
-            site_postcode: sitePostcode || null,
-            scheduled_date: scheduledDate || null,
-            notes: notes || `Standard skip: ${selectedSkip.name}`,
-            payment_type: paymentType || null,
-            price_inc_vat: numericPrice,
-          },
-        ])
+        .insert([insertPayload])
         .select(
           `
           id,
@@ -402,7 +543,14 @@ export default function BookJobPage() {
           site_town,
           site_postcode,
           payment_type,
-          price_inc_vat
+          price_inc_vat,
+          placement_type,
+          permit_setting_id,
+          permit_price_no_vat,
+          permit_delay_business_days,
+          permit_validity_days,
+          permit_override,
+          weekend_override
         `
         )
         .single();
@@ -414,11 +562,10 @@ export default function BookJobPage() {
         return;
       }
 
-            // Create initial delivery event in the job timeline
+      // Create initial delivery event in the job timeline
       const { error: eventError } = await supabase.rpc("create_job_event", {
         _subscriber_id: subscriberId,
         _job_id: inserted.id,
-        // Use the clean event type; the DB trigger will normalise if needed
         _event_type: "delivery",
         _scheduled_at: null,
         _completed_at: null,
@@ -427,9 +574,7 @@ export default function BookJobPage() {
 
       if (eventError) {
         console.error("Create job event error:", eventError);
-        setErrorMsg(
-          `Job was created but the delivery event failed: ${eventError.message}`
-        );
+        setErrorMsg(`Job was created but the delivery event failed: ${eventError.message}`);
         setSaving(false);
         return;
       }
@@ -458,7 +603,7 @@ export default function BookJobPage() {
       setLastJobCustomerName(findCustomerNameById(inserted.customer_id));
       setLastJobSkipName(findSkipTypeNameById(inserted.skip_type_id));
 
-      // Reset form (but keep postcode message etc. simple)
+      // Reset form
       setSelectedCustomerId("");
       setSelectedSkipTypeId("");
       setSiteName("");
@@ -469,11 +614,18 @@ export default function BookJobPage() {
       setScheduledDate("");
       setNotes("");
       setPaymentType("card");
+
+      setPlacementType("private");
+      setSelectedPermitId("");
+      setPermitOverride(false);
+      setWeekendOverride(false);
+
       setPostcodeSkips([]);
       setPostcodeMsg("");
       setJobPrice("");
       setCreateInvoice(false);
       setSameAsCustomerAddress(false);
+
       setSaving(false);
       setFieldErrors({});
     } catch (err) {
@@ -484,6 +636,23 @@ export default function BookJobPage() {
   }
 
   const [selectedSkipTypeId, setSelectedSkipTypeId] = useState("");
+
+  const permitCostNoVat = useMemo(() => {
+    if (placementType !== "permit") return 0;
+    const p = placementType === "permit" ? findPermitById(selectedPermitId) : null;
+    return p ? Number(p.price_no_vat || 0) : 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placementType, selectedPermitId, permitSettings]);
+
+  const numericSkipPriceIncVat = useMemo(() => {
+    const n = Number(jobPrice);
+    return Number.isFinite(n) ? n : 0;
+  }, [jobPrice]);
+
+  const totalChargeDisplay = useMemo(() => {
+    const total = numericSkipPriceIncVat + permitCostNoVat;
+    return Number.isFinite(total) ? total : 0;
+  }, [numericSkipPriceIncVat, permitCostNoVat]);
 
   if (checking) {
     return (
@@ -542,8 +711,7 @@ export default function BookJobPage() {
         >
           <h2 style={{ margin: 0, fontSize: 16 }}>Job booked</h2>
           <p style={{ margin: "4px 0" }}>
-            Job number:{" "}
-            <strong>{lastJob.job_number || lastJob.id}</strong>
+            Job number: <strong>{lastJob.job_number || lastJob.id}</strong>
           </p>
           <p style={{ margin: "4px 0" }}>
             Customer: {lastJobCustomerName}
@@ -555,10 +723,19 @@ export default function BookJobPage() {
               ? `${lastJob.site_name}, ${lastJob.site_postcode || ""}`
               : lastJob.site_postcode || ""}
             <br />
-            Price: £
+            Skip price (inc VAT): £
             {lastJob.price_inc_vat != null
               ? Number(lastJob.price_inc_vat).toFixed(2)
               : "N/A"}
+            {lastJob.placement_type === "permit" ? (
+              <>
+                <br />
+                Permit (NO VAT): £
+                {lastJob.permit_price_no_vat != null
+                  ? Number(lastJob.permit_price_no_vat).toFixed(2)
+                  : "0.00"}
+              </>
+            ) : null}
           </p>
           <p style={{ margin: "4px 0" }}>
             <a href={`/app/jobs/${lastJob.id}`}>View / edit this job ↗</a>
@@ -630,13 +807,7 @@ export default function BookJobPage() {
                 <div style={{ marginTop: 4, fontSize: 12 }}>{postcodeMsg}</div>
               )}
               {fieldErrors.sitePostcode && (
-                <div
-                  style={{
-                    marginTop: 4,
-                    fontSize: 12,
-                    color: "red",
-                  }}
-                >
+                <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>
                   {fieldErrors.sitePostcode}
                 </div>
               )}
@@ -654,14 +825,10 @@ export default function BookJobPage() {
                   setSelectedSkipTypeId(newId);
                   setFieldErrors((prev) => ({ ...prev, skipType: undefined }));
 
-                  const chosen = postcodeSkips.find(
-                    (s) => s.skip_type_id === newId
-                  );
+                  const chosen = postcodeSkips.find((s) => s.skip_type_id === newId);
                   if (chosen) {
                     setJobPrice(
-                      chosen.price_inc_vat != null
-                        ? chosen.price_inc_vat.toString()
-                        : ""
+                      chosen.price_inc_vat != null ? chosen.price_inc_vat.toString() : ""
                     );
                   } else {
                     setJobPrice("");
@@ -690,13 +857,7 @@ export default function BookJobPage() {
                 ))}
               </select>
               {fieldErrors.skipType && (
-                <div
-                  style={{
-                    marginTop: 4,
-                    fontSize: 12,
-                    color: "red",
-                  }}
-                >
+                <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>
                   {fieldErrors.skipType}
                 </div>
               )}
@@ -705,7 +866,7 @@ export default function BookJobPage() {
             {/* Price */}
             <div>
               <label style={{ display: "block", marginBottom: 4 }}>
-                Price for this job (£)
+                Skip price for this job (inc VAT) (£)
               </label>
               <input
                 type="number"
@@ -713,10 +874,7 @@ export default function BookJobPage() {
                 value={jobPrice}
                 onChange={(e) => {
                   setJobPrice(e.target.value);
-                  setFieldErrors((prev) => ({
-                    ...prev,
-                    jobPrice: undefined,
-                  }));
+                  setFieldErrors((prev) => ({ ...prev, jobPrice: undefined }));
                 }}
                 style={{
                   width: 160,
@@ -730,13 +888,7 @@ export default function BookJobPage() {
                 Auto-filled from postcode table. You can override if needed.
               </div>
               {fieldErrors.jobPrice && (
-                <div
-                  style={{
-                    marginTop: 4,
-                    fontSize: 12,
-                    color: "red",
-                  }}
-                >
+                <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>
                   {fieldErrors.jobPrice}
                 </div>
               )}
@@ -797,13 +949,7 @@ export default function BookJobPage() {
               </button>
             </div>
             {fieldErrors.customer && (
-              <div
-                style={{
-                  marginTop: 4,
-                  fontSize: 12,
-                  color: "red",
-                }}
-              >
+              <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>
                 {fieldErrors.customer}
               </div>
             )}
@@ -811,14 +957,7 @@ export default function BookJobPage() {
 
           {/* Same as customer address */}
           <div style={{ marginBottom: 12 }}>
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 14,
-              }}
-            >
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14 }}>
               <input
                 type="checkbox"
                 checked={sameAsCustomerAddress}
@@ -828,13 +967,7 @@ export default function BookJobPage() {
               Site address same as customer
             </label>
             {!selectedCustomerId && (
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "#666",
-                  marginTop: 4,
-                }}
-              >
+              <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
                 Select a customer first to use this.
               </div>
             )}
@@ -893,13 +1026,7 @@ export default function BookJobPage() {
             />
           </div>
 
-          <div
-            style={{
-              marginBottom: 12,
-              display: "flex",
-              gap: 8,
-            }}
-          >
+          <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
             <div style={{ flex: 1 }}>
               <label style={{ display: "block", marginBottom: 4 }}>Town</label>
               <input
@@ -916,6 +1043,129 @@ export default function BookJobPage() {
             </div>
           </div>
 
+          {/* Placement */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", marginBottom: 4 }}>
+              Placement
+            </label>
+            <select
+              value={placementType === "private" ? "private" : selectedPermitId ? `permit:${selectedPermitId}` : "permit:"}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFieldErrors((prev) => ({ ...prev, placement: undefined, scheduledDate: undefined }));
+
+                if (v === "private") {
+                  setPlacementType("private");
+                  setSelectedPermitId("");
+                  setPermitOverride(false);
+                  // Re-validate chosen date under private rules
+                  if (scheduledDate) {
+                    const ok = enforceDateRules(scheduledDate, { showErrors: true });
+                    if (!ok) setScheduledDate("");
+                  }
+                  return;
+                }
+
+                if (v.startsWith("permit:")) {
+                  const id = v.slice("permit:".length);
+                  setPlacementType("permit");
+                  setSelectedPermitId(id || "");
+                  // Re-validate chosen date under permit rules
+                  if (scheduledDate) {
+                    const ok = enforceDateRules(scheduledDate, { showErrors: true });
+                    if (!ok) setScheduledDate("");
+                  }
+                }
+              }}
+              style={{
+                width: "100%",
+                padding: 8,
+                borderRadius: 4,
+                border: "1px solid #ccc",
+              }}
+            >
+              <option value="private">Private ground (no permit)</option>
+              <optgroup label="Council permit (road)">
+                {permitSettings.length === 0 ? (
+                  <option value="permit:" disabled>
+                    No active permits configured (add them in Settings)
+                  </option>
+                ) : (
+                  permitSettings.map((p) => (
+                    <option key={p.id} value={`permit:${p.id}`}>
+                      {p.name} — £{Number(p.price_no_vat || 0).toFixed(2)} (NO VAT), {Number(p.delay_business_days || 0)} business day(s)
+                    </option>
+                  ))
+                )}
+              </optgroup>
+            </select>
+
+            {placementType === "permit" && permitInfo ? (
+              <div style={{ marginTop: 6, fontSize: 12, color: "#333" }}>
+                Permit: <b>{permitInfo.name}</b> — £{Number(permitInfo.price_no_vat || 0).toFixed(2)} (NO VAT).<br />
+                Typical approval delay: <b>{Number(permitInfo.delay_business_days || 0)}</b> business day(s). Earliest delivery:{" "}
+                <b>{earliestAllowedDateYmd || "—"}</b> (unless overridden).
+              </div>
+            ) : null}
+
+            {fieldErrors.placement && (
+              <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>
+                {fieldErrors.placement}
+              </div>
+            )}
+          </div>
+
+          {/* Overrides */}
+          <div style={{ marginBottom: 12, display: "grid", gap: 8 }}>
+            <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 14 }}>
+              <input
+                type="checkbox"
+                checked={weekendOverride}
+                onChange={(e) => {
+                  setWeekendOverride(e.target.checked);
+                  setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
+                  // If turning OFF and the date is weekend, clear it.
+                  if (!e.target.checked && scheduledDate && isWeekendYmd(scheduledDate)) {
+                    setScheduledDate("");
+                  }
+                }}
+              />
+              Weekend override (allow Saturday/Sunday)
+            </label>
+
+            <label
+              style={{
+                display: "inline-flex",
+                gap: 8,
+                alignItems: "center",
+                fontSize: 14,
+                opacity: placementType === "permit" ? 1 : 0.5,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={permitOverride}
+                disabled={placementType !== "permit"}
+                onChange={(e) => {
+                  setPermitOverride(e.target.checked);
+                  setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
+                  // If turning OFF and date is too early, clear it.
+                  if (
+                    placementType === "permit" &&
+                    permitInfo &&
+                    !e.target.checked &&
+                    scheduledDate &&
+                    earliestAllowedDateYmd &&
+                    scheduledDate < earliestAllowedDateYmd
+                  ) {
+                    setScheduledDate("");
+                  }
+                }}
+              />
+              Permit override (book earlier than approval delay)
+            </label>
+          </div>
+
           {/* Delivery date */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>
@@ -924,13 +1174,37 @@ export default function BookJobPage() {
             <input
               type="date"
               value={scheduledDate}
-              onChange={(e) => setScheduledDate(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value || "";
+                setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
+
+                if (!next) {
+                  setScheduledDate("");
+                  return;
+                }
+
+                const ok = enforceDateRules(next, { showErrors: true });
+                if (!ok) {
+                  setScheduledDate("");
+                  return;
+                }
+
+                setScheduledDate(next);
+              }}
               style={{
                 padding: 8,
                 borderRadius: 4,
                 border: "1px solid #ccc",
               }}
             />
+            <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
+              Weekends are blocked by default. Permit delays count Mon–Fri only.
+            </div>
+            {fieldErrors.scheduledDate && (
+              <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>
+                {fieldErrors.scheduledDate}
+              </div>
+            )}
           </div>
 
           {/* Payment type */}
@@ -942,10 +1216,7 @@ export default function BookJobPage() {
               value={paymentType}
               onChange={(e) => {
                 setPaymentType(e.target.value);
-                setFieldErrors((prev) => ({
-                  ...prev,
-                  paymentType: undefined,
-                }));
+                setFieldErrors((prev) => ({ ...prev, paymentType: undefined }));
               }}
               disabled={!selectedCustomerId}
               style={{
@@ -961,27 +1232,27 @@ export default function BookJobPage() {
               <option value="account">Account</option>
             </select>
             {!selectedCustomerId && (
-              <div
-                style={{
-                  fontSize: 12,
-                  marginTop: 4,
-                  color: "#666",
-                }}
-              >
+              <div style={{ fontSize: 12, marginTop: 4, color: "#666" }}>
                 Select a customer to choose payment type.
               </div>
             )}
             {fieldErrors.paymentType && (
-              <div
-                style={{
-                  marginTop: 4,
-                  fontSize: 12,
-                  color: "red",
-                }}
-              >
+              <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>
                 {fieldErrors.paymentType}
               </div>
             )}
+          </div>
+
+          {/* Totals */}
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Charges</div>
+            <div style={{ fontSize: 13, color: "#333", lineHeight: 1.6 }}>
+              <div>Skip hire (inc VAT): <b>£{numericSkipPriceIncVat.toFixed(2)}</b></div>
+              <div>Permit (NO VAT): <b>£{permitCostNoVat.toFixed(2)}</b></div>
+              <div style={{ marginTop: 6, fontSize: 14 }}>
+                Total to charge: <b>£{totalChargeDisplay.toFixed(2)}</b>
+              </div>
+            </div>
           </div>
 
           {/* Create invoice toggle (future Xero) */}
@@ -1074,9 +1345,7 @@ export default function BookJobPage() {
 
             {/* First Name */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 First Name *
               </label>
               <input
@@ -1094,9 +1363,7 @@ export default function BookJobPage() {
 
             {/* Last Name */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 Last Name *
               </label>
               <input
@@ -1114,9 +1381,7 @@ export default function BookJobPage() {
 
             {/* Company Name */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 Company Name (optional)
               </label>
               <input
@@ -1134,9 +1399,7 @@ export default function BookJobPage() {
 
             {/* Email */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 Customer Email *
               </label>
               <input
@@ -1154,9 +1417,7 @@ export default function BookJobPage() {
 
             {/* Phone */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 Customer Phone *
               </label>
               <input
@@ -1174,9 +1435,7 @@ export default function BookJobPage() {
 
             {/* Address Line 1 */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 Address Line 1 *
               </label>
               <input
@@ -1194,9 +1453,7 @@ export default function BookJobPage() {
 
             {/* Address Line 2 */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 Address Line 2 *
               </label>
               <input
@@ -1214,9 +1471,7 @@ export default function BookJobPage() {
 
             {/* Address Line 3 */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 Address Line 3 (optional)
               </label>
               <input
@@ -1234,9 +1489,7 @@ export default function BookJobPage() {
 
             {/* Postcode */}
             <div style={{ marginBottom: 12 }}>
-              <label
-                style={{ display: "block", marginBottom: 4, fontSize: 14 }}
-              >
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>
                 Postcode *
               </label>
               <input
@@ -1254,33 +1507,17 @@ export default function BookJobPage() {
 
             {/* Credit Account */}
             <div style={{ marginBottom: 16 }}>
-              <label
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  fontSize: 14,
-                }}
-              >
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14 }}>
                 <input
                   type="checkbox"
                   checked={newCustomerCreditAccount}
-                  onChange={(e) =>
-                    setNewCustomerCreditAccount(e.target.checked)
-                  }
+                  onChange={(e) => setNewCustomerCreditAccount(e.target.checked)}
                 />
                 Credit Account Customer *
               </label>
             </div>
 
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 8,
-                marginTop: 8,
-              }}
-            >
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
               <button
                 type="button"
                 onClick={() => {
