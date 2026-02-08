@@ -11,6 +11,12 @@ function clampInt(n, min, max) {
   return Math.max(min, Math.min(max, Math.trunc(x)));
 }
 
+function clampMoney(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.round(x * 100) / 100);
+}
+
 async function getAccessToken() {
   const { data, error } = await supabase.auth.getSession();
   if (error) return null;
@@ -37,6 +43,19 @@ export default function SettingsPage() {
   const [xeroErr, setXeroErr] = useState("");
   const [xeroOk, setXeroOk] = useState("");
   const [selectedTenantId, setSelectedTenantId] = useState("");
+
+  // Permit settings UI state
+  const [permitsLoading, setPermitsLoading] = useState(false);
+  const [permitsErr, setPermitsErr] = useState("");
+  const [permitsOk, setPermitsOk] = useState("");
+  const [permits, setPermits] = useState([]);
+
+  const [newPermitName, setNewPermitName] = useState("");
+  const [newPermitPriceNoVat, setNewPermitPriceNoVat] = useState("0");
+  const [newPermitDelay, setNewPermitDelay] = useState("0");
+  const [newPermitValidity, setNewPermitValidity] = useState("0");
+  const [newPermitActive, setNewPermitActive] = useState(true);
+  const [creatingPermit, setCreatingPermit] = useState(false);
 
   const reminderDayNumber = useMemo(() => {
     const term = clampInt(termHireDays, 1, 365);
@@ -190,7 +209,6 @@ export default function SettingsPage() {
         return;
       }
 
-      // Redirect to Xero OAuth
       window.location.href = json.url;
     } catch (e) {
       setXeroErr("Could not start Xero connection");
@@ -285,6 +303,140 @@ export default function SettingsPage() {
     return xeroStatus?.connected && Array.isArray(tenants) && tenants.length > 1 && !tenantId;
   }, [xeroStatus]);
 
+  // ===== Permit settings =====
+  async function loadPermits({ silent = false } = {}) {
+    if (!subscriberId) return;
+
+    if (!silent) {
+      setPermitsErr("");
+      setPermitsOk("");
+      setPermitsLoading(true);
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("permit_settings")
+        .select("id, subscriber_id, name, price_no_vat, delay_business_days, validity_days, is_active, created_at, updated_at")
+        .eq("subscriber_id", subscriberId)
+        .order("name", { ascending: true });
+
+      if (error) {
+        console.error("loadPermits error:", error);
+        setPermitsErr("Could not load permits.");
+        setPermitsLoading(false);
+        return;
+      }
+
+      setPermits(data || []);
+      setPermitsLoading(false);
+    } catch (e) {
+      console.error("loadPermits unexpected:", e);
+      setPermitsErr("Could not load permits.");
+      setPermitsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!checking && user && subscriberId) {
+      loadPermits({ silent: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking, user, subscriberId]);
+
+  async function createPermit() {
+    if (!subscriberId) return;
+    setPermitsErr("");
+    setPermitsOk("");
+
+    const name = (newPermitName || "").trim();
+    if (!name) {
+      setPermitsErr("Permit name is required (e.g. Bridgend Council).");
+      return;
+    }
+
+    const priceNoVat = clampMoney(newPermitPriceNoVat);
+    const delay = clampInt(newPermitDelay, 0, 365);
+    const validity = clampInt(newPermitValidity, 0, 365);
+
+    setCreatingPermit(true);
+
+    const { error } = await supabase.from("permit_settings").insert([
+      {
+        subscriber_id: subscriberId,
+        name,
+        price_no_vat: priceNoVat,
+        delay_business_days: delay,
+        validity_days: validity,
+        is_active: !!newPermitActive,
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+
+    setCreatingPermit(false);
+
+    if (error) {
+      console.error("createPermit error:", error);
+      setPermitsErr(error.message || "Could not create permit.");
+      return;
+    }
+
+    setPermitsOk("Permit created.");
+    setNewPermitName("");
+    setNewPermitPriceNoVat("0");
+    setNewPermitDelay("0");
+    setNewPermitValidity("0");
+    setNewPermitActive(true);
+
+    await loadPermits({ silent: true });
+  }
+
+  async function updatePermitRow(id, patch) {
+    if (!subscriberId || !id) return;
+
+    setPermitsErr("");
+    setPermitsOk("");
+
+    const { error } = await supabase
+      .from("permit_settings")
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("subscriber_id", subscriberId);
+
+    if (error) {
+      console.error("updatePermitRow error:", error);
+      setPermitsErr(error.message || "Could not update permit.");
+      return;
+    }
+
+    setPermitsOk("Saved.");
+    await loadPermits({ silent: true });
+  }
+
+  async function deletePermitRow(id) {
+    if (!subscriberId || !id) return;
+
+    const ok = confirm("Delete this permit setting? This will not change existing jobs (they store a snapshot).");
+    if (!ok) return;
+
+    setPermitsErr("");
+    setPermitsOk("");
+
+    const { error } = await supabase
+      .from("permit_settings")
+      .delete()
+      .eq("id", id)
+      .eq("subscriber_id", subscriberId);
+
+    if (error) {
+      console.error("deletePermitRow error:", error);
+      setPermitsErr(error.message || "Could not delete permit.");
+      return;
+    }
+
+    setPermitsOk("Deleted.");
+    await loadPermits({ silent: true });
+  }
+
   if (checking || loading) {
     return (
       <main style={centerStyle}>
@@ -314,7 +466,7 @@ export default function SettingsPage() {
           </Link>
           <h1 style={{ margin: "10px 0 0" }}>Settings</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            Skip hire terms + integrations.
+            Skip hire terms + integrations + permits.
           </p>
         </div>
 
@@ -434,6 +586,203 @@ export default function SettingsPage() {
         </div>
       </section>
 
+      {/* Permit settings */}
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <h2 style={h2Style}>Permit settings</h2>
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
+              Define council permits (NO VAT). Booking will apply business-day delays and snapshot the values onto jobs.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button style={btnSecondary} onClick={() => loadPermits()} disabled={permitsLoading}>
+              {permitsLoading ? "Loading…" : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          {permitsErr ? <p style={{ color: "#8a1f1f", margin: "0 0 8px" }}>{permitsErr}</p> : null}
+          {permitsOk ? <p style={{ color: "#1f6b2a", margin: "0 0 8px" }}>{permitsOk}</p> : null}
+
+          {/* Create new permit */}
+          <div style={subCard}>
+            <div style={{ fontWeight: 800, marginBottom: 10 }}>Add a permit</div>
+
+            <div style={gridStyle}>
+              <label style={labelStyle}>
+                Name *
+                <input
+                  type="text"
+                  value={newPermitName}
+                  onChange={(e) => setNewPermitName(e.target.value)}
+                  placeholder="e.g. Bridgend Council"
+                  style={inputStyle}
+                />
+              </label>
+
+              <label style={labelStyle}>
+                Price (NO VAT) £
+                <input
+                  type="number"
+                  step="0.01"
+                  value={newPermitPriceNoVat}
+                  onChange={(e) => setNewPermitPriceNoVat(e.target.value)}
+                  style={inputStyle}
+                />
+              </label>
+
+              <label style={labelStyle}>
+                Delay (business days)
+                <input
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={newPermitDelay}
+                  onChange={(e) => setNewPermitDelay(e.target.value)}
+                  style={inputStyle}
+                />
+              </label>
+
+              <label style={labelStyle}>
+                Validity (days)
+                <input
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={newPermitValidity}
+                  onChange={(e) => setNewPermitValidity(e.target.value)}
+                  style={inputStyle}
+                />
+              </label>
+            </div>
+
+            <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={newPermitActive}
+                  onChange={(e) => setNewPermitActive(e.target.checked)}
+                />
+                Active
+              </label>
+
+              <button style={btnPrimaryDark} onClick={createPermit} disabled={creatingPermit}>
+                {creatingPermit ? "Creating…" : "Create permit"}
+              </button>
+
+              <div style={{ fontSize: 12, color: "#666" }}>
+                Example: Bridgend delay 3 business days; if called Friday → earliest Wednesday.
+              </div>
+            </div>
+          </div>
+
+          {/* Existing permits list */}
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>Existing permits</div>
+
+            {permits.length === 0 ? (
+              <div style={{ fontSize: 13, color: "#666" }}>
+                No permits yet. Add Cardiff / Swansea / Bridgend etc above.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {permits.map((p) => (
+                  <div key={p.id} style={subCard}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 900 }}>{p.name}</div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                          <input
+                            type="checkbox"
+                            checked={!!p.is_active}
+                            onChange={(e) => updatePermitRow(p.id, { is_active: e.target.checked })}
+                          />
+                          Active
+                        </label>
+
+                        <button style={btnDanger} onClick={() => deletePermitRow(p.id)}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                      <label style={labelStyle}>
+                        Name
+                        <input
+                          type="text"
+                          defaultValue={p.name || ""}
+                          onBlur={(e) => {
+                            const v = (e.target.value || "").trim();
+                            if (!v || v === p.name) return;
+                            updatePermitRow(p.id, { name: v });
+                          }}
+                          style={inputStyle}
+                        />
+                        <div style={tinyHint}>Edit then click away to save</div>
+                      </label>
+
+                      <label style={labelStyle}>
+                        Price (NO VAT) £
+                        <input
+                          type="number"
+                          step="0.01"
+                          defaultValue={p.price_no_vat != null ? Number(p.price_no_vat) : 0}
+                          onBlur={(e) => {
+                            const v = clampMoney(e.target.value);
+                            if (Number(v) === Number(p.price_no_vat)) return;
+                            updatePermitRow(p.id, { price_no_vat: v });
+                          }}
+                          style={inputStyle}
+                        />
+                        <div style={tinyHint}>No VAT will be applied</div>
+                      </label>
+
+                      <label style={labelStyle}>
+                        Delay (business days)
+                        <input
+                          type="number"
+                          min={0}
+                          max={365}
+                          defaultValue={p.delay_business_days != null ? Number(p.delay_business_days) : 0}
+                          onBlur={(e) => {
+                            const v = clampInt(e.target.value, 0, 365);
+                            if (Number(v) === Number(p.delay_business_days)) return;
+                            updatePermitRow(p.id, { delay_business_days: v });
+                          }}
+                          style={inputStyle}
+                        />
+                        <div style={tinyHint}>Mon–Fri only</div>
+                      </label>
+
+                      <label style={labelStyle}>
+                        Validity (days)
+                        <input
+                          type="number"
+                          min={0}
+                          max={365}
+                          defaultValue={p.validity_days != null ? Number(p.validity_days) : 0}
+                          onBlur={(e) => {
+                            const v = clampInt(e.target.value, 0, 365);
+                            if (Number(v) === Number(p.validity_days)) return;
+                            updatePermitRow(p.id, { validity_days: v });
+                          }}
+                          style={inputStyle}
+                        />
+                        <div style={tinyHint}>How long the permit lasts</div>
+                      </label>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
       {/* Existing term settings */}
       <section style={cardStyle}>
         <h2 style={h2Style}>Default skip hire term</h2>
@@ -525,6 +874,13 @@ const cardStyle = {
   boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
 };
 
+const subCard = {
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 12,
+  background: "#fafafa",
+};
+
 const h2Style = { fontSize: 16, margin: "0 0 10px" };
 
 const gridStyle = {
@@ -539,6 +895,11 @@ const labelStyle = {
   gap: 6,
   fontSize: 12,
   color: "#333",
+};
+
+const tinyHint = {
+  fontSize: 11,
+  color: "#666",
 };
 
 const inputStyle = {
