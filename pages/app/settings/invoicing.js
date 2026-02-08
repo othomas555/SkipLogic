@@ -51,7 +51,6 @@ function validateAccountCode(code, name) {
 function validateBankAccountKey(value, name) {
   const v = asText(value);
   if (!v) return `${name} is required`;
-  // allow either AccountID (uuid) or Code (legacy)
   if (looksLikeUuid(v)) return null;
   if (!/^[A-Za-z0-9_-]+$/.test(v)) return `${name} must be a Xero AccountID (uuid) or an account Code`;
   if (v.length > 80) return `${name} is too long`;
@@ -74,7 +73,6 @@ function validateCategoryRow(row, idx) {
 function displayBankOptionLabel(a) {
   const name = asText(a?.Name) || "Unnamed";
   const status = asText(a?.Status) || "";
-  // BANK accounts often have Code null; keep it short
   const extra = status && status !== "ACTIVE" ? ` (${status})` : "";
   return `${name}${extra}`;
 }
@@ -118,17 +116,17 @@ export default function InvoicingSettingsPage() {
   const bankAccounts = useMemo(() => {
     const all = safeArray(xeroAccounts);
     const list = all.filter((a) => String(a?.Type || "") === "BANK");
-    // Stable order: Name asc
     list.sort((a, b) => String(a?.Name || "").localeCompare(String(b?.Name || "")));
     return list;
   }, [xeroAccounts]);
 
+  // ✅ FIX: include OTHERINCOME as well as REVENUE (many orgs put permit income here)
   const revenueAccounts = useMemo(() => {
     const all = safeArray(xeroAccounts);
+    const allowed = new Set(["REVENUE", "OTHERINCOME"]);
     const list = all
-      .filter((a) => String(a?.Type || "") === "REVENUE")
-      .filter((a) => !!asText(a?.Code)); // revenue must have Code to be usable
-    // Stable: Code asc
+      .filter((a) => allowed.has(String(a?.Type || "")))
+      .filter((a) => !!asText(a?.Code)); // revenue-ish must have Code to be usable
     list.sort((a, b) => String(a?.Code || "").localeCompare(String(b?.Code || "")));
     return list;
   }, [xeroAccounts]);
@@ -191,7 +189,6 @@ export default function InvoicingSettingsPage() {
         return;
       }
 
-      // Load invoicing settings
       const res = await fetch("/api/settings/invoicing", {
         method: "GET",
         headers: { Authorization: "Bearer " + token },
@@ -208,14 +205,12 @@ export default function InvoicingSettingsPage() {
       setSkipHireCode(asText(s.skip_hire_sales_account_code) || "200");
       setPermitCode(asText(s.permit_sales_account_code) || "215");
 
-      // IMPORTANT: these can be AccountID (uuid) OR Code (legacy)
       setCardClearingAccountKey(asText(s.card_clearing_account_code) || "");
       setCashBankAccountKey(asText(s.cash_bank_account_code) || "");
 
       setUseDefaultsWhenMissing(s.use_defaults_when_missing === false ? false : true);
       setCategories(normalizeCategories(s.sales_categories));
 
-      // Load Xero accounts in parallel for dropdowns
       await loadXeroAccounts();
 
       setLoading(false);
@@ -250,7 +245,6 @@ export default function InvoicingSettingsPage() {
   }
 
   function bankAccountValueForSelect(a) {
-    // We prefer AccountID always (works even when Code is null)
     const id = asText(a?.AccountID);
     if (id) return id;
     const code = asText(a?.Code);
@@ -264,19 +258,16 @@ export default function InvoicingSettingsPage() {
 
     const errors = [];
 
-    // Revenue codes must be Code
     const e1 = validateAccountCode(skipHireCode, "Skip hire sales account code");
     const e2 = validateAccountCode(permitCode, "Permit sales account code");
     if (e1) errors.push(e1);
     if (e2) errors.push(e2);
 
-    // BANK keys can be AccountID or Code
     const e3 = validateBankAccountKey(cardClearingAccountKey, "Card clearing account");
     const e4 = validateBankAccountKey(cashBankAccountKey, "Cash bank account");
     if (e3) errors.push(e3);
     if (e4) errors.push(e4);
 
-    // validate categories
     const seenKeys = new Set();
     for (let i = 0; i < categoriesSorted.length; i++) {
       const row = categoriesSorted[i];
@@ -306,11 +297,8 @@ export default function InvoicingSettingsPage() {
     const payload = {
       skip_hire_sales_account_code: asText(skipHireCode),
       permit_sales_account_code: asText(permitCode),
-
-      // These can be AccountID or Code (we store whatever was selected/typed)
       card_clearing_account_code: asText(cardClearingAccountKey),
       cash_bank_account_code: asText(cashBankAccountKey),
-
       use_defaults_when_missing: !!useDefaultsWhenMissing,
       sales_categories: categoriesSorted.map((c) => ({
         key: asText(c.key),
@@ -484,7 +472,7 @@ export default function InvoicingSettingsPage() {
         </div>
 
         <div style={{ marginTop: 12, ...hintBox }}>
-          <div style={{ fontWeight: 800, marginBottom: 6 }}>REVENUE accounts (sales posting)</div>
+          <div style={{ fontWeight: 800, marginBottom: 6 }}>REVENUE / OTHERINCOME accounts (sales posting)</div>
           <div style={{ fontSize: 13, color: "#333", lineHeight: 1.5 }}>
             These are saved as Xero <b>Code</b> (not AccountID).
           </div>
@@ -502,7 +490,7 @@ export default function InvoicingSettingsPage() {
               }}
               style={inputStyle}
             >
-              <option value="">Select REVENUE account…</option>
+              <option value="">Select REVENUE/OTHERINCOME account…</option>
               {revenueAccounts.map((a) => (
                 <option key={a.AccountID || a.Code || a.Name} value={asText(a.Code)}>
                   {displayRevenueOptionLabel(a)}
@@ -523,7 +511,7 @@ export default function InvoicingSettingsPage() {
               }}
               style={inputStyle}
             >
-              <option value="">Select REVENUE account…</option>
+              <option value="">Select REVENUE/OTHERINCOME account…</option>
               {revenueAccounts.map((a) => (
                 <option key={a.AccountID || a.Code || a.Name} value={asText(a.Code)}>
                   {displayRevenueOptionLabel(a)}
