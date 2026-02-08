@@ -8,10 +8,20 @@ import { useAuthProfile } from "../../../lib/useAuthProfile";
 function fmtDate(d) {
   return d ? String(d) : "—";
 }
+
+function fmtDateTime(x) {
+  if (!x) return "—";
+  const dt = new Date(x);
+  if (!Number.isFinite(dt.getTime())) return String(x);
+  // Stable, timezone-agnostic representation
+  return dt.toISOString().replace("T", " ").replace("Z", " UTC");
+}
+
 function toInt(x, fallback = 0) {
   const n = Number(x);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
+
 function addDays(ymd, days) {
   if (!ymd) return null;
   const dt = new Date(ymd + "T00:00:00Z");
@@ -22,6 +32,7 @@ function addDays(ymd, days) {
   const d = String(dt.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
+
 function daysBetween(aYmd, bYmd) {
   if (!aYmd || !bYmd) return null;
   const a = new Date(aYmd + "T00:00:00Z").getTime();
@@ -29,6 +40,7 @@ function daysBetween(aYmd, bYmd) {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   return Math.round((b - a) / (1000 * 60 * 60 * 24));
 }
+
 function todayYMDUTC() {
   const dt = new Date();
   const y = dt.getUTCFullYear();
@@ -90,7 +102,17 @@ export default function JobDetailPage() {
         delivery_photo_url,
         collection_photo_url,
         swap_full_photo_url,
-        swap_empty_photo_url
+        swap_empty_photo_url,
+
+        xero_invoice_id,
+        xero_invoice_number,
+        xero_invoice_status,
+
+        paid_at,
+        paid_by_user_id,
+        paid_method,
+        paid_reference,
+        xero_payment_id
       `
       )
       .eq("id", id)
@@ -236,6 +258,18 @@ export default function JobDetailPage() {
     if (diff === 0) return { label: "Due today", tone: "warn" };
     return { label: `Overdue by ${Math.abs(diff)} day(s)`, tone: "bad" };
   }, [termHireDays, deliveryAnchor, scheduledReminderDate, reminderLogMatch]);
+
+  // Billing helpers (NEW)
+  const isPaid = useMemo(() => {
+    return !!job?.paid_at;
+  }, [job]);
+
+  const billingTone = useMemo(() => {
+    if (isPaid) return "paid";
+    // If Xero says PAID but our paid_at is missing, still treat as "attention"
+    if (String(job?.xero_invoice_status || "").toUpperCase() === "PAID") return "attention";
+    return "unpaid";
+  }, [isPaid, job]);
 
   // Status helpers (YOUR statuses)
   const status = job?.job_status || "";
@@ -436,6 +470,13 @@ export default function JobDetailPage() {
       ? { color: "#8a1f1f" }
       : { color: "#555" };
 
+  const billingCardStyle =
+    billingTone === "paid"
+      ? { ...cardStyle, border: "1px solid #bfe7c0", background: "#f2fff2" }
+      : billingTone === "attention"
+      ? { ...cardStyle, border: "1px solid #ffe58f", background: "#fffbe6" }
+      : { ...cardStyle, border: "1px solid #f0b4b4", background: "#fff5f5" };
+
   return (
     <main style={pageStyle}>
       <header style={headerStyle}>
@@ -473,6 +514,73 @@ export default function JobDetailPage() {
           {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
         </div>
       )}
+
+      {/* Billing / Payments (NEW) */}
+      <section style={billingCardStyle}>
+        <h2 style={h2Style}>Billing</h2>
+
+        <div style={kvGrid}>
+          <div style={kv}>
+            <span style={k}>Payment type</span>
+            <span style={v}>{job.payment_type || "—"}</span>
+          </div>
+
+          <div style={kv}>
+            <span style={k}>Paid status (SkipLogic)</span>
+            <span style={{ ...v, color: isPaid ? "#1f6b2a" : "#8a1f1f" }}>{isPaid ? "PAID" : "UNPAID"}</span>
+          </div>
+
+          <div style={kv}>
+            <span style={k}>Paid at</span>
+            <span style={v}>{fmtDateTime(job.paid_at)}</span>
+          </div>
+
+          <div style={kv}>
+            <span style={k}>Paid method</span>
+            <span style={v}>{job.paid_method || "—"}</span>
+          </div>
+
+          <div style={kv}>
+            <span style={k}>Paid reference</span>
+            <span style={v}>{job.paid_reference || "—"}</span>
+          </div>
+
+          <div style={kv}>
+            <span style={k}>Paid by (user id)</span>
+            <span style={v} title={job.paid_by_user_id || ""} style={{ ...v, wordBreak: "break-all" }}>
+              {job.paid_by_user_id || "—"}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <h3 style={h3Style}>Xero invoice / payment</h3>
+          <div style={kvGrid}>
+            <div style={kv}>
+              <span style={k}>Xero invoice status</span>
+              <span style={v}>{job.xero_invoice_status || "—"}</span>
+            </div>
+            <div style={kv}>
+              <span style={k}>Xero invoice number</span>
+              <span style={v}>{job.xero_invoice_number || "—"}</span>
+            </div>
+            <div style={kv}>
+              <span style={k}>Xero invoice id</span>
+              <span style={{ ...v, wordBreak: "break-all" }}>{job.xero_invoice_id || "—"}</span>
+            </div>
+            <div style={kv}>
+              <span style={k}>Xero payment id</span>
+              <span style={{ ...v, wordBreak: "break-all" }}>{job.xero_payment_id || "—"}</span>
+            </div>
+          </div>
+
+          {billingTone === "attention" ? (
+            <p style={{ margin: "10px 0 0", color: "#8a6d00", fontSize: 13 }}>
+              Note: Xero shows PAID but SkipLogic has no paid_at. (This can happen if the invoice was paid directly in Xero.)
+            </p>
+          ) : null}
+        </div>
+      </section>
 
       <div style={grid2}>
         <section style={cardStyle}>
@@ -690,7 +798,16 @@ export default function JobDetailPage() {
 
 function PhotoRow({ label, url, onClear, clearing }) {
   return (
-    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 0", borderTop: "1px solid #f0f0f0" }}>
+    <div
+      style={{
+        display: "flex",
+        gap: 10,
+        alignItems: "center",
+        flexWrap: "wrap",
+        padding: "8px 0",
+        borderTop: "1px solid #f0f0f0",
+      }}
+    >
       <div style={{ minWidth: 180, fontWeight: 800 }}>{label}</div>
 
       {url ? (
