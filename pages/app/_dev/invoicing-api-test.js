@@ -9,51 +9,96 @@ export default function InvoicingApiTestPage() {
   const [sessionInfo, setSessionInfo] = useState(null);
   const [apiResult, setApiResult] = useState(null);
   const [apiError, setApiError] = useState(null);
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  async function getToken() {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw new Error(error.message);
+    const token = data?.session?.access_token || null;
+    if (!token) throw new Error("No access token found in supabase.auth.getSession()");
+    return { token, session: data.session };
+  }
 
-    async function run() {
-      setApiError(null);
-      setApiResult(null);
+  async function doGet() {
+    setBusy(true);
+    setApiError(null);
+    setApiResult(null);
 
-      const { data, error } = await supabase.auth.getSession();
-      if (cancelled) return;
-
-      if (error) {
-        setSessionInfo({ ok: false, error: error.message });
-        return;
-      }
-
-      const token = data?.session?.access_token || null;
+    try {
+      const { token, session } = await getToken();
 
       setSessionInfo({
         ok: true,
-        hasToken: !!token,
-        userId: data?.session?.user?.id || null,
-        expiresAt: data?.session?.expires_at || null,
+        hasToken: true,
+        userId: session?.user?.id || null,
+        expiresAt: session?.expires_at || null,
       });
-
-      if (!token) {
-        setApiError("No access token found in supabase.auth.getSession()");
-        return;
-      }
 
       const res = await fetch("/api/settings/invoicing", {
         headers: { Authorization: "Bearer " + token },
       });
 
       const json = await res.json();
-      if (cancelled) return;
-
       setApiResult({ status: res.status, json });
+    } catch (e) {
+      setApiError(String(e.message || e));
+      setSessionInfo({ ok: false, error: String(e.message || e) });
+    } finally {
+      setBusy(false);
     }
+  }
 
-    run();
+  async function doPostUpdate() {
+    setBusy(true);
+    setApiError(null);
+    setApiResult(null);
 
-    return () => {
-      cancelled = true;
-    };
+    try {
+      const { token, session } = await getToken();
+
+      setSessionInfo({
+        ok: true,
+        hasToken: true,
+        userId: session?.user?.id || null,
+        expiresAt: session?.expires_at || null,
+      });
+
+      // Change these values just for test.
+      // We keep them valid and deterministic.
+      const payload = {
+        skip_hire_sales_account_code: "200",
+        permit_sales_account_code: "215",
+        card_clearing_account_code: "800",
+        use_defaults_when_missing: true,
+        sales_categories: [
+          { key: "haulage", label: "Haulage", account_code: "201", enabled: true, sort: 10 },
+          { key: "grab", label: "Grab", account_code: "202", enabled: true, sort: 20 },
+          { key: "extras", label: "Extras", account_code: "203", enabled: true, sort: 30 },
+        ],
+      };
+
+      const res = await fetch("/api/settings/invoicing", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await res.json();
+      setApiResult({ status: res.status, json });
+    } catch (e) {
+      setApiError(String(e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    // auto-run GET once on load
+    doGet();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -65,6 +110,38 @@ export default function InvoicingApiTestPage() {
         <div><strong>Auth error:</strong> {errorMsg || "none"}</div>
         <div><strong>User:</strong> {user?.email || user?.id || "none"}</div>
         <div><strong>subscriberId:</strong> {subscriberId || "none"}</div>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+        <button
+          onClick={doGet}
+          disabled={busy}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid #ccc",
+            background: "#fff",
+            cursor: busy ? "not-allowed" : "pointer",
+          }}
+        >
+          Refresh GET
+        </button>
+
+        <button
+          onClick={doPostUpdate}
+          disabled={busy}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid #ccc",
+            background: "#fff",
+            cursor: busy ? "not-allowed" : "pointer",
+          }}
+        >
+          POST Update (test payload)
+        </button>
+
+        {busy ? <div style={{ alignSelf: "center" }}>Working…</div> : null}
       </div>
 
       <h3 style={{ marginTop: 0 }}>Session</h3>
