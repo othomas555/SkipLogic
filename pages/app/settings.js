@@ -486,6 +486,28 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* Invoicing section (link only) */}
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <h2 style={h2Style}>Invoicing</h2>
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
+              Configure Xero account codes per subscriber (skip hire, permits, card clearing) and future sales categories.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Link href="/app/settings/invoicing" style={{ ...btnPrimaryDark, textDecoration: "none", display: "inline-block" }}>
+              Open invoicing settings
+            </Link>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+          These settings will be used by invoice creation. No hard-coded account codes.
+        </div>
+      </section>
+
       {/* Xero section */}
       <section style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
