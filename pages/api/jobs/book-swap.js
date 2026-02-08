@@ -6,6 +6,15 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 
+function isWeekendDate(ymd) {
+  // ymd: "YYYY-MM-DD"
+  // Use UTC midnight to avoid local timezone shifting day-of-week.
+  const dt = new Date(`${ymd}T00:00:00Z`);
+  if (!Number.isFinite(dt.getTime())) return false;
+  const day = dt.getUTCDay(); // 0=Sun, 6=Sat
+  return day === 0 || day === 6;
+}
+
 async function getNextDriverRunGroup(supabase, subscriberId, swapDate) {
   // We treat "what's happening on swapDate" as:
   // - deliveries: scheduled_date = swapDate
@@ -52,14 +61,26 @@ export default async function handler(req, res) {
     const swapDate = String(body.swap_date || "");
     const priceIncVat = Number(body.price_inc_vat);
 
-    // OPTION 2: caller controls invoicing (default true)
+    // Existing pattern: caller controls invoicing (default true)
     const createInvoice = body.create_invoice === false ? false : true;
+
+    // NEW: weekend override (default false) to satisfy jobs_scheduled_date_weekday_or_override
+    const weekendOverride = !!body.weekend_override;
 
     assert(subscriberId, "Missing subscriber_id");
     assert(oldJobId, "Missing old_job_id");
     assert(newSkipTypeId, "Missing new_skip_type_id");
     assert(swapDate, "Missing swap_date");
     assert(Number.isFinite(priceIncVat) && priceIncVat > 0, "Invalid price_inc_vat");
+
+    // Enforce same rule as booking: weekends are blocked unless override is true.
+    if (isWeekendDate(swapDate) && !weekendOverride) {
+      return res.status(400).json({
+        ok: false,
+        error: "Weekend booking is blocked unless weekend_override is true",
+        details: { swap_date: swapDate, weekend_override: weekendOverride },
+      });
+    }
 
     // Load old job (we copy site + customer + payment type, and also assigned driver if present)
     const { data: oldJob, error: oldErr } = await supabase
@@ -100,6 +121,7 @@ export default async function handler(req, res) {
         swap_group_id: swapGroupId,
         swap_role: "collect",
         driver_run_group: driverRunGroup,
+        weekend_override: weekendOverride,
       })
       .eq("id", oldJob.id)
       .eq("subscriber_id", subscriberId);
@@ -137,10 +159,13 @@ export default async function handler(req, res) {
 
           // Same group number for both legs
           driver_run_group: driverRunGroup,
+
+          // IMPORTANT: satisfies jobs_scheduled_date_weekday_or_override
+          weekend_override: weekendOverride,
         },
       ])
       .select(
-        "id, job_number, customer_id, skip_type_id, scheduled_date, price_inc_vat, swap_group_id, swap_role, driver_run_group, assigned_driver_id"
+        "id, job_number, customer_id, skip_type_id, scheduled_date, price_inc_vat, swap_group_id, swap_role, driver_run_group, assigned_driver_id, weekend_override"
       )
       .single();
 
@@ -165,7 +190,6 @@ export default async function handler(req, res) {
     }
 
     // 3) OPTIONAL: Create Xero invoice for NEW delivery job only
-    // (collection leg is the original job and is assumed already invoiced / not invoiced here)
     let invoice = null;
     let invoice_warning = null;
 
@@ -212,6 +236,7 @@ export default async function handler(req, res) {
       driver_run_group: driverRunGroup,
       new_job: newJob,
       create_invoice: createInvoice,
+      weekend_override: weekendOverride,
       invoice,
       invoice_warning,
     });
