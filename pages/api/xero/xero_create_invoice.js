@@ -4,7 +4,8 @@
 // Auth: Office user via Authorization: Bearer <supabase access token>
 //
 // Behaviour:
-// - card   → create AUTHORISED invoice, then create Payment to card clearing account
+// - card   → create AUTHORISED invoice. If job is already marked paid in SkipLogic (paid_at set),
+//            then create Payment to card clearing account. Otherwise leave unpaid.
 // - cash   → create AUTHORISED invoice, unpaid
 // - account→ append to ONE DRAFT monthly invoice per customer per month (xero_monthly_invoices table)
 //
@@ -318,7 +319,9 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
 
       xero_invoice_id,
       xero_invoice_number,
-      xero_invoice_status
+      xero_invoice_status,
+
+      paid_at
     `
     )
     .eq("id", jobId)
@@ -450,9 +453,15 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       LineItems: lineItems,
     };
 
+    // 1) Create invoice
     const inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
 
-    if (paymentType === "card") {
+    // ✅ CRITICAL: always persist the invoice link immediately
+    await writeJobXeroFields(inv);
+
+    // 2) Card: only apply payment if the job is already marked paid in SkipLogic
+    // (office flow: you book → later click Mark as paid; public flow can pre-mark paid before calling invoice)
+    if (paymentType === "card" && job.paid_at) {
       const totalToPay = skipAmountIncVat + (permitLine ? Number(permitAmountNoVat) : 0);
 
       await createPaymentInXero({
@@ -474,10 +483,9 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       };
     }
 
-    await writeJobXeroFields(inv);
-
+    // cash: unpaid, card-unpaid: invoice exists, unpaid
     return {
-      mode: "cash",
+      mode: paymentType === "card" ? "card" : "cash",
       invoiceId: String(inv.InvoiceID),
       invoiceNumber: inv.InvoiceNumber || null,
       invoiceStatus: inv.Status || null,
@@ -559,6 +567,7 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       .eq("customer_id", customer.id)
       .eq("period_ym", ym);
 
+    // ✅ Persist invoice link back onto the job
     await writeJobXeroFields(updated);
 
     return {
@@ -588,7 +597,6 @@ export default async function handler(req, res) {
 
     const out = await createInvoiceForJob({ subscriberId, jobId });
 
-    // Match your previous API shape exactly
     return res.status(200).json({
       ok: true,
       ...out,
