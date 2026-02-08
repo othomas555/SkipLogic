@@ -6,16 +6,17 @@
 // Applies a Payment in Xero against the job's Xero invoice.
 //
 // IMPORTANT:
-// - Xero Payments must post to an account.
 // - In some orgs, BANK accounts do not have a "Code" via /Accounts (Code may be null).
-// - Therefore we support invoice_settings.cash_bank_account_code storing either:
-//   - a chart account Code (legacy), OR
-//   - a Xero AccountID (UUID) for a BANK account.
-// - Card payments should post to the card clearing account (by Code).
+// - Therefore we support storing BANK account selection as AccountID (UUID) in invoice_settings.
+// - For backwards compatibility we still allow Code.
+//
+// invoice_settings fields used here:
+// - cash_bank_account_code: BANK AccountID (preferred) OR Code (legacy)
+// - card_clearing_account_code: BANK AccountID (preferred) OR Code (legacy)
 //
 // paid_method:
-// - "cash" → uses invoice_settings.cash_bank_account_code (AccountID preferred, or Code legacy)
-// - "card" → uses invoice_settings.card_clearing_account_code (Code)
+// - "cash" → uses invoice_settings.cash_bank_account_code
+// - "card" → uses invoice_settings.card_clearing_account_code
 //
 // Response:
 // { ok:true, job, xero: { invoice_id, payment_id, amount_paid, amount_due_after, invoice_status }, account_used }
@@ -97,17 +98,35 @@ async function loadPaymentSettings({ supabase, subscriberId }) {
 
   if (error) throw new Error("Failed to load invoice_settings");
 
-  const cashBankAccountKey = asText(data?.cash_bank_account_code);
-  const cardClearingAccountCode = asText(data?.card_clearing_account_code);
-
   return {
-    cashBankAccountKey,
-    cardClearingAccountCode,
+    cashBankKey: asText(data?.cash_bank_account_code),
+    cardClearingKey: asText(data?.card_clearing_account_code),
   };
 }
 
+function resolveXeroPaymentAccount(keyRaw, fieldName) {
+  const key = asText(keyRaw);
+
+  if (!key) {
+    throw new Error(
+      `Missing invoice_settings.${fieldName}. Set it to a Xero BANK AccountID (preferred) or an account Code.`
+    );
+  }
+
+  if (looksLikeUuid(key)) {
+    return { account: { AccountID: String(key) }, accountUsed: { type: "AccountID", value: key } };
+  }
+
+  if (looksLikeAccountCode(key)) {
+    return { account: { Code: String(key) }, accountUsed: { type: "Code", value: key } };
+  }
+
+  throw new Error(
+    `Invalid invoice_settings.${fieldName}. Must be an AccountID (UUID) or a Code. Got: "${key}".`
+  );
+}
+
 async function createPaymentInXero({ accessToken, tenantId, invoiceId, amount, account }) {
-  // account: { AccountID } or { Code }
   const payment = {
     Invoice: { InvoiceID: String(invoiceId) },
     Date: ymdTodayUTC(),
@@ -121,7 +140,6 @@ async function createPaymentInXero({ accessToken, tenantId, invoiceId, amount, a
   const res = await xeroRequest({ accessToken, tenantId, path: "/Payments", method: "PUT", body: payload });
   const pay = Array.isArray(res?.Payments) ? res.Payments[0] : null;
 
-  // PaymentID can be missing in some responses; still treat as ok if request succeeded
   return {
     paymentId: pay?.PaymentID ? String(pay.PaymentID) : null,
   };
@@ -212,44 +230,11 @@ export default async function handler(req, res) {
 
     const settings = await loadPaymentSettings({ supabase, subscriberId });
 
-    // Choose the account to use
-    let accountUsed = null;
-    let account = null;
-
+    let resolved;
     if (paidMethod === "cash") {
-      const key = asText(settings.cashBankAccountKey);
-
-      if (!key) {
-        return res.status(400).json({
-          ok: false,
-          error:
-            'Missing invoice_settings.cash_bank_account_code. Set it to a Xero BANK AccountID (preferred) or an account Code.',
-        });
-      }
-
-      if (looksLikeUuid(key)) {
-        account = { AccountID: String(key) };
-        accountUsed = { type: "AccountID", value: key };
-      } else {
-        account = { Code: String(key) };
-        accountUsed = { type: "Code", value: key };
-      }
-    }
-
-    if (paidMethod === "card") {
-      const code = asText(settings.cardClearingAccountCode);
-
-      if (!looksLikeAccountCode(code)) {
-        return res.status(400).json({
-          ok: false,
-          error:
-            'Missing or invalid invoice_settings.card_clearing_account_code. Set it to the card clearing account *Code* (e.g. "800").',
-          details: { card_clearing_account_code: settings.cardClearingAccountCode || null },
-        });
-      }
-
-      account = { Code: String(code) };
-      accountUsed = { type: "Code", value: code };
+      resolved = resolveXeroPaymentAccount(settings.cashBankKey, "cash_bank_account_code");
+    } else {
+      resolved = resolveXeroPaymentAccount(settings.cardClearingKey, "card_clearing_account_code");
     }
 
     const payOut = await createPaymentInXero({
@@ -257,7 +242,7 @@ export default async function handler(req, res) {
       tenantId,
       invoiceId: String(job.xero_invoice_id),
       amount: amountToPay,
-      account,
+      account: resolved.account,
     });
 
     const invAfter = await getInvoiceById({ accessToken, tenantId, invoiceId: String(job.xero_invoice_id) });
@@ -313,7 +298,7 @@ export default async function handler(req, res) {
         amount_due_after: amountDueAfter,
         invoice_status: invAfter?.Status ? String(invAfter.Status) : null,
       },
-      account_used: accountUsed,
+      account_used: resolved.accountUsed,
     });
   } catch (err) {
     console.error("xero_apply_payment error:", err);
