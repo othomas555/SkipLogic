@@ -46,6 +46,12 @@ function getBaseUrlFromReq(req) {
   return `${proto}://${host}`;
 }
 
+function getBearerToken(req) {
+  const authHeader = String(req.headers.authorization || "");
+  if (!authHeader.startsWith("Bearer ")) return null;
+  return authHeader.slice("Bearer ".length).trim() || null;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
@@ -64,14 +70,28 @@ export default async function handler(req, res) {
     // Existing pattern: caller controls invoicing (default true)
     const createInvoice = body.create_invoice === false ? false : true;
 
-    // NEW: weekend override (default false) to satisfy jobs_scheduled_date_weekday_or_override
+    // weekend override (default false) to satisfy jobs_scheduled_date_weekday_or_override
     const weekendOverride = !!body.weekend_override;
+
+    // NEW: credit override fields (client sets these when user explicitly overrides)
+    const creditOverrideToken = body.credit_override_token ? String(body.credit_override_token) : "";
+    const creditOverrideReason = body.credit_override_reason ? String(body.credit_override_reason) : "";
+    const creditOverride = !!creditOverrideToken;
 
     assert(subscriberId, "Missing subscriber_id");
     assert(oldJobId, "Missing old_job_id");
     assert(newSkipTypeId, "Missing new_skip_type_id");
     assert(swapDate, "Missing swap_date");
     assert(Number.isFinite(priceIncVat) && priceIncVat > 0, "Invalid price_inc_vat");
+
+    // Basic sanity (avoid junk)
+    if (creditOverride) {
+      assert(creditOverrideToken.length >= 8, "Invalid credit_override_token");
+      // reason can be empty, but if present keep it reasonable
+      if (creditOverrideReason && creditOverrideReason.length > 800) {
+        throw new Error("credit_override_reason too long");
+      }
+    }
 
     // Enforce same rule as booking: weekends are blocked unless override is true.
     if (isWeekendDate(swapDate) && !weekendOverride) {
@@ -132,46 +152,72 @@ export default async function handler(req, res) {
     }
 
     // 2) Insert new delivery job -> link (and match driver_run_group)
-    const { data: newJob, error: insErr } = await supabase
-      .from("jobs")
-      .insert([
-        {
-          subscriber_id: subscriberId,
-          customer_id: oldJob.customer_id,
-          skip_type_id: newSkipTypeId,
+    // IMPORTANT: if creditOverride is set, insert must bypass credit limit trigger safely.
+    const newJobInsertPayload = {
+      subscriber_id: subscriberId,
+      customer_id: oldJob.customer_id,
+      skip_type_id: newSkipTypeId,
 
-          site_name: oldJob.site_name || null,
-          site_address_line1: oldJob.site_address_line1 || null,
-          site_address_line2: oldJob.site_address_line2 || null,
-          site_town: oldJob.site_town || null,
-          site_postcode: oldJob.site_postcode || null,
+      site_name: oldJob.site_name || null,
+      site_address_line1: oldJob.site_address_line1 || null,
+      site_address_line2: oldJob.site_address_line2 || null,
+      site_town: oldJob.site_town || null,
+      site_postcode: oldJob.site_postcode || null,
 
-          scheduled_date: swapDate,
-          notes: body.notes ? String(body.notes) : "Swap delivery booked",
-          payment_type: body.payment_type ? String(body.payment_type) : oldJob.payment_type || "card",
-          price_inc_vat: priceIncVat,
+      scheduled_date: swapDate,
+      notes: body.notes ? String(body.notes) : "Swap delivery booked",
+      payment_type: body.payment_type ? String(body.payment_type) : oldJob.payment_type || "card",
+      price_inc_vat: priceIncVat,
 
-          // If old job is already assigned, keep the same driver for the new leg
-          assigned_driver_id: oldJob.assigned_driver_id || null,
+      // If old job is already assigned, keep the same driver for the new leg
+      assigned_driver_id: oldJob.assigned_driver_id || null,
 
-          swap_group_id: swapGroupId,
-          swap_role: "deliver",
+      swap_group_id: swapGroupId,
+      swap_role: "deliver",
 
-          // Same group number for both legs
-          driver_run_group: driverRunGroup,
+      // Same group number for both legs
+      driver_run_group: driverRunGroup,
 
-          // IMPORTANT: satisfies jobs_scheduled_date_weekday_or_override
-          weekend_override: weekendOverride,
-        },
-      ])
-      .select(
-        "id, job_number, customer_id, skip_type_id, scheduled_date, price_inc_vat, swap_group_id, swap_role, driver_run_group, assigned_driver_id, weekend_override"
-      )
-      .single();
+      // IMPORTANT: satisfies jobs_scheduled_date_weekday_or_override
+      weekend_override: weekendOverride,
+    };
 
-    if (insErr) {
-      console.error("Failed to create new delivery job:", insErr);
-      throw new Error("Failed to create new delivery job");
+    let newJob = null;
+
+    if (!creditOverride) {
+      // Normal path: direct insert
+      const { data, error: insErr } = await supabase
+        .from("jobs")
+        .insert([newJobInsertPayload])
+        .select(
+          "id, job_number, customer_id, skip_type_id, scheduled_date, price_inc_vat, swap_group_id, swap_role, driver_run_group, assigned_driver_id, weekend_override"
+        )
+        .single();
+
+      if (insErr) {
+        console.error("Failed to create new delivery job:", insErr);
+        throw new Error(insErr?.message || "Failed to create new delivery job");
+      }
+
+      newJob = data;
+    } else {
+      // Override path: controlled DB function must do the insert and bypass trigger for this insert only.
+      // NOTE: This requires the SQL in step (2) below to exist.
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("insert_job_bypass_credit_limit", {
+        _payload: newJobInsertPayload,
+      });
+
+      if (rpcErr) {
+        console.error("insert_job_bypass_credit_limit error:", rpcErr);
+        throw new Error(rpcErr?.message || "Failed to create new delivery job (override)");
+      }
+
+      // RPC returns a row. Depending on how you return it, it might be an object or an array.
+      newJob = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+
+      if (!newJob?.id) {
+        throw new Error("Failed to create new delivery job (override) — no job returned");
+      }
     }
 
     // Create initial delivery event on NEW job
@@ -189,7 +235,7 @@ export default async function handler(req, res) {
       throw new Error("Swap created but delivery event failed");
     }
 
-    // 3) OPTIONAL: Create Xero invoice for NEW delivery job only
+    // OPTIONAL: Create Xero invoice for NEW delivery job only
     let invoice = null;
     let invoice_warning = null;
 
@@ -230,6 +276,10 @@ export default async function handler(req, res) {
       }
     }
 
+    // We DO NOT log overrides here (no guessing table/columns).
+    // The UI is already logging via your chosen mechanism (job_overrides / RPC),
+    // and this endpoint’s job is to guarantee the insert can bypass the trigger safely.
+
     return res.json({
       ok: true,
       swap_group_id: swapGroupId,
@@ -237,6 +287,8 @@ export default async function handler(req, res) {
       new_job: newJob,
       create_invoice: createInvoice,
       weekend_override: weekendOverride,
+      credit_override: creditOverride,
+      credit_override_token: creditOverride ? creditOverrideToken : null,
       invoice,
       invoice_warning,
     });
