@@ -1,4 +1,5 @@
 // pages/api/jobs/create.js
+import { randomUUID } from "crypto";
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { createInvoiceForJob } from "../xero/xero_create_invoice";
@@ -13,13 +14,13 @@ function asText(x) {
   return typeof x === "string" ? x.trim() : "";
 }
 
-function isUuidString(s) {
-  const t = String(s || "").trim();
+function isUuidString(x) {
+  const t = String(x || "").trim();
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(t);
 }
 
-function makeUuidOrNull(s) {
-  const t = asText(s);
+function uuidOrNull(x) {
+  const t = asText(x);
   if (!t) return null;
   return isUuidString(t) ? t : null;
 }
@@ -44,19 +45,19 @@ export default async function handler(req, res) {
     const payment_type = asText(body.payment_type);
     const price_inc_vat = clampMoney(body.price_inc_vat);
 
+    const create_invoice = body.create_invoice === false ? false : true; // default true
+
     if (!customer_id) return res.status(400).json({ ok: false, error: "customer_id is required" });
     if (!skip_type_id) return res.status(400).json({ ok: false, error: "skip_type_id is required" });
     if (!payment_type) return res.status(400).json({ ok: false, error: "payment_type is required" });
     if (!(price_inc_vat > 0)) return res.status(400).json({ ok: false, error: "price_inc_vat must be > 0" });
 
-    // CREDIT OVERRIDE: accept uuid only; if missing/invalid and reason exists, server generates a valid uuid
-    const incomingOverrideReason = asText(body.credit_override_reason) || null;
-    let overrideToken = makeUuidOrNull(body.credit_override_token);
+    // CREDIT OVERRIDE: only allow uuid or null; if reason exists but token missing, server generates uuid
+    const credit_override_reason = asText(body.credit_override_reason) || null;
+    let credit_override_token = uuidOrNull(body.credit_override_token);
 
-    if (!overrideToken && incomingOverrideReason) {
-      // Node crypto.randomUUID should exist in modern runtimes; if not, fall back to gen_random_uuid via SQL is more complex.
-      // In practice this will exist on Vercel Node runtimes.
-      overrideToken = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : null;
+    if (!credit_override_token && credit_override_reason) {
+      credit_override_token = randomUUID();
     }
 
     const insertPayload = {
@@ -77,27 +78,21 @@ export default async function handler(req, res) {
       price_inc_vat,
 
       placement_type: asText(body.placement_type) || "private",
-      permit_setting_id: makeUuidOrNull(body.permit_setting_id),
+      permit_setting_id: uuidOrNull(body.permit_setting_id),
       permit_price_no_vat: body.permit_price_no_vat == null ? null : clampMoney(body.permit_price_no_vat),
       permit_delay_business_days: body.permit_delay_business_days == null ? null : Number(body.permit_delay_business_days || 0),
       permit_validity_days: body.permit_validity_days == null ? null : Number(body.permit_validity_days || 0),
       permit_override: !!body.permit_override,
       weekend_override: !!body.weekend_override,
 
-      // CREDIT OVERRIDE marker
-      credit_override_token: overrideToken,
-      credit_override_reason: incomingOverrideReason,
+      credit_override_token,
+      credit_override_reason,
     };
 
-    const { data: job, error: insertError } = await supabase
-      .from("jobs")
-      .insert([insertPayload])
-      .select("*")
-      .single();
+    const { data: job, error: insertError } = await supabase.from("jobs").insert([insertPayload]).select("*").single();
 
     if (insertError || !job) {
       console.error("jobs/create insert error:", insertError);
-
       return res.status(400).json({
         ok: false,
         error: insertError?.message || "Could not create job",
@@ -126,12 +121,12 @@ export default async function handler(req, res) {
       });
     }
 
-    // Auto-invoice for cash/card
+    // Auto-invoice for cash/card ONLY if create_invoice true
     let invoice = null;
-    if (payment_type === "card" || payment_type === "cash") {
+    if (create_invoice && (payment_type === "card" || payment_type === "cash")) {
       try {
         const inv = await createInvoiceForJob({ subscriberId, jobId: job.id });
-        invoice = { ok: true, ...inv };
+        invoice = { ok: true, ...inv, mode: inv?.mode || "auto" };
       } catch (e) {
         invoice = { ok: false, error: "Invoice failed", details: String(e?.message || e) };
       }
