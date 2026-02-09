@@ -61,23 +61,16 @@ async function getAccessToken() {
 
 function safeRandomUUID() {
   try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return crypto.randomUUID();
-    }
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   } catch (e) {
     // ignore
   }
-  // Fallback: not cryptographically strong, but only used as a token marker.
-  // Prefer native crypto.randomUUID when available.
   return `override-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function isCreditLimitError(err) {
-  const code = err?.code || "";
-  const msg = String(err?.message || "");
-  if (code !== "P0001") return false;
-  // Your trigger raises "Credit limit exceeded..."
-  return msg.toLowerCase().includes("credit limit exceeded");
+function isCreditLimitText(msg) {
+  const t = String(msg || "").toLowerCase();
+  return t.includes("credit limit exceeded");
 }
 
 function extractCreditDetailsFromMessage(msg) {
@@ -90,7 +83,6 @@ function extractCreditDetailsFromMessage(msg) {
     return { kind: "no_limit", unpaid: null, thisJob: null, limit: null };
   }
 
-  // Try to parse numbers if present
   const unpaidMatch = text.match(/Unpaid:\s*([0-9]+(\.[0-9]+)?)/i);
   const thisJobMatch = text.match(/This job:\s*([0-9]+(\.[0-9]+)?)/i);
   const limitMatch = text.match(/Limit:\s*([0-9]+(\.[0-9]+)?)/i);
@@ -140,17 +132,17 @@ export default function BookJobPage() {
   const [jobPrice, setJobPrice] = useState("");
   const [lookingUpPostcode, setLookingUpPostcode] = useState(false);
 
-  // Create invoice toggle (NOW WIRED) — DEFAULT ON
+  // Create invoice toggle — DEFAULT ON
   const [createInvoice, setCreateInvoice] = useState(true);
 
-  // Mark paid toggle (NEW) — DEFAULT OFF
+  // Mark paid toggle — DEFAULT OFF
   const [markPaidNow, setMarkPaidNow] = useState(false);
 
   // Invoice result messaging
   const [invoiceMsg, setInvoiceMsg] = useState("");
   const [invoiceErr, setInvoiceErr] = useState("");
 
-  // Payment result messaging (NEW)
+  // Payment result messaging
   const [paymentMsg, setPaymentMsg] = useState("");
   const [paymentErr, setPaymentErr] = useState("");
 
@@ -179,13 +171,12 @@ export default function BookJobPage() {
 
   const [selectedSkipTypeId, setSelectedSkipTypeId] = useState("");
 
-  // Credit-limit modal (NEW)
+  // CREDIT LIMIT MODAL (NEW)
   const [showCreditLimitModal, setShowCreditLimitModal] = useState(false);
   const [creditLimitModalMsg, setCreditLimitModalMsg] = useState("");
   const [creditLimitDetails, setCreditLimitDetails] = useState(null);
-  const [pendingInsertPayload, setPendingInsertPayload] = useState(null);
-  const [pendingNumericPrice, setPendingNumericPrice] = useState(null);
-  const [creditOverrideWorking, setCreditOverrideWorking] = useState(false);
+  const [pendingOverridePayload, setPendingOverridePayload] = useState(null);
+  const [overrideWorking, setOverrideWorking] = useState(false);
 
   useEffect(() => {
     if (checking) return;
@@ -487,167 +478,223 @@ export default function BookJobPage() {
   }, [numericSkipPriceIncVat, permitCostNoVat]);
 
   const canShowMarkPaid = useMemo(() => {
-    // Keep deterministic and simple:
     // Only allow "mark paid now" for cash/card bookings (not account).
-    // This page does not have "cash on delivery" in paymentType options.
     return paymentType === "cash" || paymentType === "card";
   }, [paymentType]);
 
   useEffect(() => {
-    // If payment type changes to something we don't support for marking paid, force it off.
     if (!canShowMarkPaid && markPaidNow) setMarkPaidNow(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canShowMarkPaid]);
 
-  function openCreditLimitModal({ message, payload, numericPrice }) {
-    setCreditLimitModalMsg(message || "This booking will exceed the customer’s credit limit.");
-    setCreditLimitDetails(extractCreditDetailsFromMessage(message || ""));
-    setPendingInsertPayload(payload || null);
-    setPendingNumericPrice(Number.isFinite(numericPrice) ? numericPrice : null);
+  function openCreditLimitModal(message, pending) {
+    const msg = message || "This booking will exceed the customer’s credit limit.";
+    setCreditLimitModalMsg(msg);
+    setCreditLimitDetails(extractCreditDetailsFromMessage(msg));
+    setPendingOverridePayload(pending || null);
     setShowCreditLimitModal(true);
   }
 
   function closeCreditLimitModal() {
-    if (creditOverrideWorking) return;
+    if (overrideWorking) return;
     setShowCreditLimitModal(false);
     setCreditLimitModalMsg("");
     setCreditLimitDetails(null);
-    setPendingInsertPayload(null);
-    setPendingNumericPrice(null);
+    setPendingOverridePayload(null);
   }
 
-  async function runPostInsertWork(inserted, { jobPriceValue }) {
-    // Create initial delivery event in the job timeline
-    const { error: eventError } = await supabase.rpc("create_job_event", {
-      _subscriber_id: subscriberId,
-      _job_id: inserted.id,
-      _event_type: "delivery",
-      _scheduled_at: null,
-      _completed_at: null,
-      _notes: "Initial delivery booked",
-    });
+  async function handleOverrideAndBook() {
+    if (!subscriberId) return;
+    if (!pendingOverridePayload) return;
 
-    if (eventError) {
-      console.error("Create job event error:", eventError);
-      throw new Error(`Job was created but the delivery event failed: ${eventError.message}`);
-    }
+    setOverrideWorking(true);
+    setErrorMsg("");
+    setInvoiceMsg("");
+    setInvoiceErr("");
+    setPaymentMsg("");
+    setPaymentErr("");
+    setLastJob(null);
 
-    // If requested, create invoice immediately (cash/card/account handled in the API)
-    let invoiceCreatedOk = false;
-    if (createInvoice) {
-      try {
-        const token = await getAccessToken();
-        if (!token) {
-          setInvoiceErr("Job booked but could not create invoice: not signed in.");
-        } else {
-          const res = await fetch("/api/xero/xero_create_invoice", {
-            method: "POST",
-            headers: {
-              Authorization: "Bearer " + token,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ job_id: inserted.id }),
-          });
-
-          const json = await res.json().catch(() => ({}));
-          if (!res.ok || !json.ok) {
-            const detail = json?.details || json?.error || "Invoice creation failed";
-            setInvoiceErr(String(detail));
-          } else {
-            invoiceCreatedOk = true;
-            setInvoiceMsg(`Invoice created in Xero (${json.mode}): ${json.invoiceNumber || json.invoiceId || "OK"}`);
-          }
-        }
-      } catch (e) {
-        setInvoiceErr("Job booked but invoice creation failed unexpectedly.");
-      }
-    }
-
-    // If requested, apply payment in Xero (only after invoice creation succeeded in this flow)
-    if (markPaidNow) {
-      if (!createInvoice) {
-        setPaymentErr("Payment not applied: you must tick “Create invoice in Xero” to mark paid now.");
-      } else if (!invoiceCreatedOk) {
-        setPaymentErr("Payment not applied: invoice was not created successfully.");
-      } else {
-        try {
-          const token = await getAccessToken();
-          if (!token) {
-            setPaymentErr("Payment not applied: not signed in.");
-          } else {
-            const res = await fetch("/api/xero/xero_apply_payment", {
-              method: "POST",
-              headers: {
-                Authorization: "Bearer " + token,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                job_id: inserted.id,
-                paid_method: paymentType,
-              }),
-            });
-
-            const json = await res.json().catch(() => ({}));
-            if (!res.ok || !json.ok) {
-              const detail = json?.error || json?.details || "Payment application failed";
-              setPaymentErr(String(detail));
-            } else {
-              setPaymentMsg(`Marked as paid in Xero (${paymentType}).`);
-            }
-          }
-        } catch (e) {
-          setPaymentErr("Payment application failed unexpectedly.");
-        }
-      }
-    }
-
-    // Email (fire and forget)
     try {
-      const customerLabel = findCustomerNameById(inserted.customer_id);
-      const customerEmail = findCustomerEmailById(inserted.customer_id);
+      const token = await getAccessToken();
+      if (!token) {
+        setErrorMsg("Not signed in.");
+        setOverrideWorking(false);
+        closeCreditLimitModal();
+        return;
+      }
 
-      await fetch("/api/send_booking_email", {
+      const overrideToken = safeRandomUUID();
+      const customerName = findCustomerNameById(pendingOverridePayload.customer_id);
+      const customerEmail = findCustomerEmailById(pendingOverridePayload.customer_id);
+
+      const overrideReason = [
+        "Credit limit override from /app/jobs/book",
+        customerName ? `Customer: ${customerName}` : null,
+        `Price inc VAT: £${Number(pendingOverridePayload.price_inc_vat || 0).toFixed(2)}`,
+        creditLimitModalMsg ? `Trigger: ${creditLimitModalMsg}` : null,
+      ]
+        .filter(Boolean)
+        .join(" | ");
+
+      // Create job server-side (bypass trigger safely)
+      const resp = await fetch("/api/jobs/create", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
-          job: inserted,
-          customerName: customerLabel,
-          customerEmail,
-          jobPrice: jobPriceValue,
+          ...pendingOverridePayload,
+
+          // helpful email context for server-side email
+          customer_name: customerName,
+          customer_email: customerEmail,
+
+          // credit override marker
+          credit_override_token: overrideToken,
+          credit_override_reason: overrideReason,
         }),
       });
+
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok || !json.ok) {
+        const detail = json?.details || json?.error || "Could not create job (override)";
+        setErrorMsg(String(detail));
+        setOverrideWorking(false);
+        closeCreditLimitModal();
+        return;
+      }
+
+      const inserted = json.job;
+      if (!inserted?.id) {
+        setErrorMsg("Override booking succeeded but no job returned.");
+        setOverrideWorking(false);
+        closeCreditLimitModal();
+        return;
+      }
+
+      // INVOICING/PAYMENT:
+      // We keep the same UI behaviour:
+      // - If createInvoice is OFF → we do not attempt client-side invoice creation.
+      // - If createInvoice is ON:
+      //    - For cash/card: API may have auto-invoiced; if it didn't, we try the normal client call.
+      //    - For account: API does not auto-invoice; we do the normal client call.
+      let invoiceCreatedOk = false;
+
+      if (createInvoice) {
+        // If API returned invoice ok (cash/card auto invoice in API)
+        if (json?.invoice?.ok) {
+          invoiceCreatedOk = true;
+          const inv = json.invoice || {};
+          const invNo = inv.invoiceNumber || inv.invoice_number || inv.invoiceId || null;
+          const mode = inv.mode || "";
+          setInvoiceMsg(`Invoice created in Xero${invNo ? ` (${invNo})` : ""}${mode ? `: ${mode}` : ""}.`);
+        } else {
+          // Fall back to the same client-side invoice creation used by the normal path
+          try {
+            const t = await getAccessToken();
+            if (!t) {
+              setInvoiceErr("Job booked but could not create invoice: not signed in.");
+            } else {
+              const r = await fetch("/api/xero/xero_create_invoice", {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + t,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ job_id: inserted.id }),
+              });
+
+              const j = await r.json().catch(() => ({}));
+              if (!r.ok || !j.ok) {
+                const detail = j?.details || j?.error || "Invoice creation failed";
+                setInvoiceErr(String(detail));
+              } else {
+                invoiceCreatedOk = true;
+                setInvoiceMsg(`Invoice created in Xero (${j.mode}): ${j.invoiceNumber || j.invoiceId || "OK"}`);
+              }
+            }
+          } catch (e) {
+            setInvoiceErr("Job booked but invoice creation failed unexpectedly.");
+          }
+        }
+      }
+
+      // Mark paid (same behaviour as before)
+      if (markPaidNow) {
+        if (!createInvoice) {
+          setPaymentErr("Payment not applied: you must tick “Create invoice in Xero” to mark paid now.");
+        } else if (!invoiceCreatedOk) {
+          setPaymentErr("Payment not applied: invoice was not created successfully.");
+        } else {
+          try {
+            const t = await getAccessToken();
+            if (!t) {
+              setPaymentErr("Payment not applied: not signed in.");
+            } else {
+              const r = await fetch("/api/xero/xero_apply_payment", {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + t,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  job_id: inserted.id,
+                  paid_method: inserted.payment_type || pendingOverridePayload.payment_type || paymentType,
+                }),
+              });
+
+              const j = await r.json().catch(() => ({}));
+              if (!r.ok || !j.ok) {
+                const detail = j?.error || j?.details || "Payment application failed";
+                setPaymentErr(String(detail));
+              } else {
+                setPaymentMsg(`Marked as paid in Xero (${inserted.payment_type || paymentType}).`);
+              }
+            }
+          } catch (e) {
+            setPaymentErr("Payment application failed unexpectedly.");
+          }
+        }
+      }
+
+      // Visual confirmation
+      setLastJob(inserted);
+      setLastJobCustomerName(findCustomerNameById(inserted.customer_id));
+      setLastJobSkipName(findSkipTypeNameById(inserted.skip_type_id));
+
+      // Reset form (same as normal path)
+      setSelectedCustomerId("");
+      setSelectedSkipTypeId("");
+      setSiteName("");
+      setSiteAddress1("");
+      setSiteAddress2("");
+      setSiteTown("");
+      setSitePostcode("");
+      setScheduledDate("");
+      setNotes("");
+      setPaymentType("card");
+
+      setPlacementType("private");
+      setSelectedPermitId("");
+      setPermitOverride(false);
+      setWeekendOverride(false);
+
+      setPostcodeSkips([]);
+      setPostcodeMsg("");
+      setJobPrice("");
+      setSameAsCustomerAddress(false);
+
+      setFieldErrors({});
+      setOverrideWorking(false);
+      closeCreditLimitModal();
     } catch (err) {
-      console.error("Email send failed:", err);
+      console.error("Override booking failed:", err);
+      setErrorMsg("Something went wrong while overriding the credit limit.");
+      setOverrideWorking(false);
+      closeCreditLimitModal();
     }
-
-    // Visual confirmation
-    setLastJob(inserted);
-    setLastJobCustomerName(findCustomerNameById(inserted.customer_id));
-    setLastJobSkipName(findSkipTypeNameById(inserted.skip_type_id));
-
-    // Reset form (IMPORTANT: keep createInvoice as-is, do NOT force it off)
-    setSelectedCustomerId("");
-    setSelectedSkipTypeId("");
-    setSiteName("");
-    setSiteAddress1("");
-    setSiteAddress2("");
-    setSiteTown("");
-    setSitePostcode("");
-    setScheduledDate("");
-    setNotes("");
-    setPaymentType("card");
-
-    setPlacementType("private");
-    setSelectedPermitId("");
-    setPermitOverride(false);
-    setWeekendOverride(false);
-
-    setPostcodeSkips([]);
-    setPostcodeMsg("");
-    setJobPrice("");
-    setSameAsCustomerAddress(false);
-
-    setFieldErrors({});
   }
 
   async function handleAddJob(e) {
@@ -659,9 +706,7 @@ export default function BookJobPage() {
     setInvoiceErr("");
     setPaymentMsg("");
     setPaymentErr("");
-
-    // If modal is open, we should not submit again
-    if (showCreditLimitModal) return;
+    closeCreditLimitModal();
 
     const newErrors = {};
 
@@ -769,14 +814,35 @@ export default function BookJobPage() {
       if (insertError) {
         console.error("Insert job error:", insertError);
 
-        // CREDIT LIMIT → show modal (no inline error)
-        if (isCreditLimitError(insertError)) {
+        // CREDIT LIMIT → modal instead of generic error banner
+        if (isCreditLimitText(insertError.message || "")) {
           setSaving(false);
-          openCreditLimitModal({
-            message: insertError.message,
-            payload: insertPayload,
-            numericPrice,
-          });
+          // store payload used by override path
+          const pending = {
+            customer_id: selectedCustomerId,
+            skip_type_id: selectedSkipTypeId,
+            payment_type: paymentType || null,
+            price_inc_vat: numericPrice,
+
+            site_name: siteName || null,
+            site_address_line1: siteAddress1 || null,
+            site_address_line2: siteAddress2 || null,
+            site_town: siteTown || null,
+            site_postcode: sitePostcode || null,
+
+            scheduled_date: scheduledDate || null,
+            notes: notes || `Standard skip: ${selectedSkip.name}`,
+
+            placement_type: placementType,
+            permit_setting_id: permit ? permit.id : null,
+            permit_price_no_vat: permit ? Number(permit.price_no_vat || 0) : null,
+            permit_delay_business_days: permit ? Number(permit.delay_business_days || 0) : null,
+            permit_validity_days: permit ? Number(permit.validity_days || 0) : null,
+            permit_override: !!permitOverride,
+            weekend_override: !!weekendOverride,
+          };
+
+          openCreditLimitModal(insertError.message, pending);
           return;
         }
 
@@ -785,112 +851,144 @@ export default function BookJobPage() {
         return;
       }
 
-      await runPostInsertWork(inserted, { jobPriceValue: jobPrice });
+      // Create initial delivery event in the job timeline
+      const { error: eventError } = await supabase.rpc("create_job_event", {
+        _subscriber_id: subscriberId,
+        _job_id: inserted.id,
+        _event_type: "delivery",
+        _scheduled_at: null,
+        _completed_at: null,
+        _notes: "Initial delivery booked",
+      });
+
+      if (eventError) {
+        console.error("Create job event error:", eventError);
+        setErrorMsg(`Job was created but the delivery event failed: ${eventError.message}`);
+        setSaving(false);
+        return;
+      }
+
+      // If requested, create invoice immediately (cash/card/account handled in the API)
+      let invoiceCreatedOk = false;
+      if (createInvoice) {
+        try {
+          const token = await getAccessToken();
+          if (!token) {
+            setInvoiceErr("Job booked but could not create invoice: not signed in.");
+          } else {
+            const res = await fetch("/api/xero/xero_create_invoice", {
+              method: "POST",
+              headers: {
+                Authorization: "Bearer " + token,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ job_id: inserted.id }),
+            });
+
+            const json = await res.json().catch(() => ({}));
+            if (!res.ok || !json.ok) {
+              const detail = json?.details || json?.error || "Invoice creation failed";
+              setInvoiceErr(String(detail));
+            } else {
+              invoiceCreatedOk = true;
+              setInvoiceMsg(`Invoice created in Xero (${json.mode}): ${json.invoiceNumber || json.invoiceId || "OK"}`);
+            }
+          }
+        } catch (e) {
+          setInvoiceErr("Job booked but invoice creation failed unexpectedly.");
+        }
+      }
+
+      // If requested, apply payment in Xero (only after invoice creation succeeded in this flow)
+      if (markPaidNow) {
+        if (!createInvoice) {
+          setPaymentErr("Payment not applied: you must tick “Create invoice in Xero” to mark paid now.");
+        } else if (!invoiceCreatedOk) {
+          setPaymentErr("Payment not applied: invoice was not created successfully.");
+        } else {
+          try {
+            const token = await getAccessToken();
+            if (!token) {
+              setPaymentErr("Payment not applied: not signed in.");
+            } else {
+              const res = await fetch("/api/xero/xero_apply_payment", {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + token,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  job_id: inserted.id,
+                  paid_method: paymentType,
+                }),
+              });
+
+              const json = await res.json().catch(() => ({}));
+              if (!res.ok || !json.ok) {
+                const detail = json?.error || json?.details || "Payment application failed";
+                setPaymentErr(String(detail));
+              } else {
+                setPaymentMsg(`Marked as paid in Xero (${paymentType}).`);
+              }
+            }
+          } catch (e) {
+            setPaymentErr("Payment application failed unexpectedly.");
+          }
+        }
+      }
+
+      // Email (fire and forget)
+      try {
+        const customerLabel = findCustomerNameById(inserted.customer_id);
+        const customerEmail = findCustomerEmailById(inserted.customer_id);
+
+        await fetch("/api/send_booking_email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            job: inserted,
+            customerName: customerLabel,
+            customerEmail,
+            jobPrice,
+          }),
+        });
+      } catch (err) {
+        console.error("Email send failed:", err);
+      }
+
+      // Visual confirmation
+      setLastJob(inserted);
+      setLastJobCustomerName(findCustomerNameById(inserted.customer_id));
+      setLastJobSkipName(findSkipTypeNameById(inserted.skip_type_id));
+
+      // Reset form (IMPORTANT: keep createInvoice as-is, do NOT force it off)
+      setSelectedCustomerId("");
+      setSelectedSkipTypeId("");
+      setSiteName("");
+      setSiteAddress1("");
+      setSiteAddress2("");
+      setSiteTown("");
+      setSitePostcode("");
+      setScheduledDate("");
+      setNotes("");
+      setPaymentType("card");
+
+      setPlacementType("private");
+      setSelectedPermitId("");
+      setPermitOverride(false);
+      setWeekendOverride(false);
+
+      setPostcodeSkips([]);
+      setPostcodeMsg("");
+      setJobPrice("");
+      setSameAsCustomerAddress(false);
+
       setSaving(false);
+      setFieldErrors({});
     } catch (err) {
       console.error("Unexpected error adding job:", err);
       setErrorMsg("Something went wrong while adding the job.");
       setSaving(false);
-    }
-  }
-
-  async function handleOverrideAndBook() {
-    if (!pendingInsertPayload) return;
-    if (!subscriberId) return;
-
-    setCreditOverrideWorking(true);
-    setErrorMsg("");
-    setInvoiceMsg("");
-    setInvoiceErr("");
-    setPaymentMsg("");
-    setPaymentErr("");
-
-    try {
-      const overrideToken = safeRandomUUID();
-      const nowIso = new Date().toISOString();
-
-      const overridePayload = {
-        ...pendingInsertPayload,
-        credit_override_token: overrideToken,
-        credit_override_by_user_id: user?.id || null,
-        credit_override_at: nowIso,
-      };
-
-      const { data: inserted, error: insertError } = await supabase
-        .from("jobs")
-        .insert([overridePayload])
-        .select(
-          `
-          id,
-          job_number,
-          customer_id,
-          skip_type_id,
-          job_status,
-          scheduled_date,
-          notes,
-          site_name,
-          site_address_line1,
-          site_town,
-          site_postcode,
-          payment_type,
-          price_inc_vat,
-          placement_type,
-          permit_setting_id,
-          permit_price_no_vat,
-          permit_delay_business_days,
-          permit_validity_days,
-          permit_override,
-          weekend_override,
-          xero_invoice_id,
-          xero_invoice_number,
-          xero_invoice_status
-        `
-        )
-        .single();
-
-      if (insertError) {
-        console.error("Override insert job error:", insertError);
-        // If it still fails, show a real error message and close modal
-        setErrorMsg(insertError.message || "Override booking failed.");
-        setCreditOverrideWorking(false);
-        closeCreditLimitModal();
-        return;
-      }
-
-      // Log override (Option B) via RPC (does not rely on RLS policies)
-      try {
-        const custName = findCustomerNameById(overridePayload.customer_id);
-        const reasonParts = [
-          "Credit limit override from /app/jobs/book",
-          `Customer: ${custName}`,
-        ];
-        if (creditLimitModalMsg) reasonParts.push(`Trigger: ${creditLimitModalMsg}`);
-        if (pendingNumericPrice != null) reasonParts.push(`This job: ${Number(pendingNumericPrice).toFixed(2)}`);
-
-        await supabase.rpc("log_job_override", {
-          _subscriber_id: subscriberId,
-          _job_id: inserted.id,
-          _override_type: "credit_limit",
-          _reason: reasonParts.join(" | "),
-        });
-      } catch (logErr) {
-        // We do NOT block the booking if logging fails, but we do surface it.
-        console.error("log_job_override failed:", logErr);
-        setPaymentErr(
-          "Booking succeeded, but override logging failed. Please tell Owain to check job_overrides / RPC permissions."
-        );
-      }
-
-      // Continue normal post-insert flow
-      await runPostInsertWork(inserted, { jobPriceValue: String(pendingInsertPayload.price_inc_vat ?? "") });
-
-      setCreditOverrideWorking(false);
-      closeCreditLimitModal();
-    } catch (err) {
-      console.error("Unexpected error in override booking:", err);
-      setErrorMsg("Override booking failed unexpectedly.");
-      setCreditOverrideWorking(false);
-      closeCreditLimitModal();
     }
   }
 
@@ -996,8 +1094,7 @@ export default function BookJobPage() {
             {lastJob.placement_type === "permit" ? (
               <>
                 <br />
-                Permit (NO VAT): £
-                {lastJob.permit_price_no_vat != null ? Number(lastJob.permit_price_no_vat).toFixed(2) : "0.00"}
+                Permit (NO VAT): £{lastJob.permit_price_no_vat != null ? Number(lastJob.permit_price_no_vat).toFixed(2) : "0.00"}
               </>
             ) : null}
           </p>
@@ -1178,12 +1275,7 @@ export default function BookJobPage() {
           {/* Same as customer address */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-              <input
-                type="checkbox"
-                checked={sameAsCustomerAddress}
-                disabled={!selectedCustomerId}
-                onChange={(e) => handleSameAsCustomerToggle(e.target.checked)}
-              />
+              <input type="checkbox" checked={sameAsCustomerAddress} disabled={!selectedCustomerId} onChange={(e) => handleSameAsCustomerToggle(e.target.checked)} />
               Site address same as customer
             </label>
             {!selectedCustomerId && <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>Select a customer first to use this.</div>}
@@ -1197,59 +1289,24 @@ export default function BookJobPage() {
               value={siteName}
               onChange={(e) => setSiteName(e.target.value)}
               placeholder="e.g. Front drive, Unit 3, Rear yard"
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
             />
           </div>
 
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>Site address line 1</label>
-            <input
-              type="text"
-              value={siteAddress1}
-              onChange={(e) => setSiteAddress1(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
+            <input type="text" value={siteAddress1} onChange={(e) => setSiteAddress1(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
           </div>
 
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", marginBottom: 4 }}>Site address line 2 (optional)</label>
-            <input
-              type="text"
-              value={siteAddress2}
-              onChange={(e) => setSiteAddress2(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
+            <input type="text" value={siteAddress2} onChange={(e) => setSiteAddress2(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
           </div>
 
           <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
             <div style={{ flex: 1 }}>
               <label style={{ display: "block", marginBottom: 4 }}>Town</label>
-              <input
-                type="text"
-                value={siteTown}
-                onChange={(e) => setSiteTown(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: 8,
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                }}
-              />
+              <input type="text" value={siteTown} onChange={(e) => setSiteTown(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
           </div>
 
@@ -1283,12 +1340,7 @@ export default function BookJobPage() {
                   }
                 }
               }}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
             >
               <option value="private">Private ground (no permit)</option>
               <optgroup label="Council permit (road)">
@@ -1310,8 +1362,7 @@ export default function BookJobPage() {
               <div style={{ marginTop: 6, fontSize: 12, color: "#333" }}>
                 Permit: <b>{permitInfo.name}</b> — £{Number(permitInfo.price_no_vat || 0).toFixed(2)} (NO VAT).
                 <br />
-                Typical approval delay: <b>{Number(permitInfo.delay_business_days || 0)}</b> business day(s). Earliest delivery: <b>{earliestAllowedDateYmd || "—"}</b>{" "}
-                (unless overridden).
+                Typical approval delay: <b>{Number(permitInfo.delay_business_days || 0)}</b> business day(s). Earliest delivery: <b>{earliestAllowedDateYmd || "—"}</b> (unless overridden).
               </div>
             ) : null}
 
@@ -1335,15 +1386,7 @@ export default function BookJobPage() {
               Weekend override (allow Saturday/Sunday)
             </label>
 
-            <label
-              style={{
-                display: "inline-flex",
-                gap: 8,
-                alignItems: "center",
-                fontSize: 14,
-                opacity: placementType === "permit" ? 1 : 0.5,
-              }}
-            >
+            <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 14, opacity: placementType === "permit" ? 1 : 0.5 }}>
               <input
                 type="checkbox"
                 checked={permitOverride}
@@ -1390,11 +1433,7 @@ export default function BookJobPage() {
 
                 setScheduledDate(next);
               }}
-              style={{
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
             />
             <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>Weekends are blocked by default. Permit delays count Mon–Fri only.</div>
             {fieldErrors.scheduledDate && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.scheduledDate}</div>}
@@ -1410,12 +1449,7 @@ export default function BookJobPage() {
                 setFieldErrors((prev) => ({ ...prev, paymentType: undefined }));
               }}
               disabled={!selectedCustomerId}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
+              style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
             >
               <option value="">Select payment type</option>
               <option value="card">Card</option>
@@ -1454,38 +1488,19 @@ export default function BookJobPage() {
           {/* Mark paid now */}
           <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
             <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                fontWeight: 800,
-                opacity: canShowMarkPaid ? 1 : 0.5,
-              }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 800, opacity: canShowMarkPaid ? 1 : 0.5 }}
               title={canShowMarkPaid ? "" : "Mark paid is only available for cash/card bookings"}
             >
               <input type="checkbox" checked={markPaidNow} disabled={!canShowMarkPaid} onChange={(e) => setMarkPaidNow(e.target.checked)} />
               Mark invoice as paid now (applies payment in Xero)
             </label>
-            <div style={{ fontSize: 12, marginTop: 6, color: "#666", lineHeight: 1.4 }}>
-              Only use this if you have taken the payment now (cash/card). Requires “Create invoice in Xero”.
-            </div>
+            <div style={{ fontSize: 12, marginTop: 6, color: "#666", lineHeight: 1.4 }}>Only use this if you have taken the payment now (cash/card). Requires “Create invoice in Xero”.</div>
           </div>
 
           {/* Notes */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: "block", marginBottom: 4 }}>Notes (optional)</label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={3}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-                resize: "vertical",
-              }}
-            />
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc", resize: "vertical" }} />
           </div>
 
           <button
@@ -1506,7 +1521,7 @@ export default function BookJobPage() {
         </form>
       </section>
 
-      {/* Credit Limit Modal (NEW) */}
+      {/* Credit Limit Modal */}
       {showCreditLimitModal && (
         <div
           style={{
@@ -1516,41 +1531,47 @@ export default function BookJobPage() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            zIndex: 1200,
+            zIndex: 1400,
           }}
         >
           <div
             style={{
               background: "#fff",
               padding: 24,
-              borderRadius: 10,
+              borderRadius: 12,
               width: "100%",
-              maxWidth: 520,
+              maxWidth: 540,
               boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
             }}
           >
             <h2 style={{ marginTop: 0, marginBottom: 10 }}>Credit limit exceeded</h2>
 
             <div style={{ marginBottom: 12, color: "#333", lineHeight: 1.5 }}>
-              <div style={{ fontWeight: 700 }}>This booking will exceed the customer’s credit limit.</div>
-              <div style={{ fontSize: 13, marginTop: 6, color: "#555" }}>{creditLimitModalMsg}</div>
+              <div style={{ fontWeight: 900 }}>This booking will exceed the customer’s credit limit.</div>
+              <div style={{ fontSize: 13, marginTop: 6, color: "#555", whiteSpace: "pre-wrap" }}>{creditLimitModalMsg}</div>
 
               {creditLimitDetails?.kind === "values" && (
-                <div style={{ marginTop: 12, fontSize: 13, border: "1px solid #eee", borderRadius: 8, padding: 12, background: "#fafafa" }}>
-                  <div>Unpaid balance: <b>£{creditLimitDetails.unpaid != null ? Number(creditLimitDetails.unpaid).toFixed(2) : "—"}</b></div>
-                  <div>This booking: <b>£{creditLimitDetails.thisJob != null ? Number(creditLimitDetails.thisJob).toFixed(2) : "—"}</b></div>
-                  <div>Credit limit: <b>£{creditLimitDetails.limit != null ? Number(creditLimitDetails.limit).toFixed(2) : "—"}</b></div>
+                <div style={{ marginTop: 12, fontSize: 13, border: "1px solid #eee", borderRadius: 10, padding: 12, background: "#fafafa" }}>
+                  <div>
+                    Unpaid balance: <b>£{creditLimitDetails.unpaid != null ? Number(creditLimitDetails.unpaid).toFixed(2) : "—"}</b>
+                  </div>
+                  <div>
+                    This booking: <b>£{creditLimitDetails.thisJob != null ? Number(creditLimitDetails.thisJob).toFixed(2) : "—"}</b>
+                  </div>
+                  <div>
+                    Credit limit: <b>£{creditLimitDetails.limit != null ? Number(creditLimitDetails.limit).toFixed(2) : "—"}</b>
+                  </div>
                 </div>
               )}
 
               {creditLimitDetails?.kind === "no_limit" && (
-                <div style={{ marginTop: 12, fontSize: 13, border: "1px solid #eee", borderRadius: 8, padding: 12, background: "#fafafa" }}>
+                <div style={{ marginTop: 12, fontSize: 13, border: "1px solid #eee", borderRadius: 10, padding: 12, background: "#fafafa" }}>
                   This customer is marked as a credit account, but <b>no credit limit is set</b>. Account bookings are blocked unless you override.
                 </div>
               )}
 
               <div style={{ marginTop: 12, fontSize: 13, color: "#444" }}>
-                If you override, the booking will proceed and an override audit record will be logged.
+                Cancel will abort. Override will proceed and log an override audit record.
               </div>
             </div>
 
@@ -1558,13 +1579,13 @@ export default function BookJobPage() {
               <button
                 type="button"
                 onClick={closeCreditLimitModal}
-                disabled={creditOverrideWorking}
+                disabled={overrideWorking}
                 style={{
                   padding: "10px 12px",
-                  borderRadius: 6,
+                  borderRadius: 8,
                   border: "1px solid #ccc",
                   background: "#f5f5f5",
-                  cursor: creditOverrideWorking ? "default" : "pointer",
+                  cursor: overrideWorking ? "default" : "pointer",
                 }}
               >
                 Cancel
@@ -1572,19 +1593,19 @@ export default function BookJobPage() {
               <button
                 type="button"
                 onClick={handleOverrideAndBook}
-                disabled={creditOverrideWorking}
+                disabled={overrideWorking}
                 style={{
                   padding: "10px 12px",
-                  borderRadius: 6,
+                  borderRadius: 8,
                   border: "none",
                   background: "#d83a3a",
                   color: "#fff",
-                  fontWeight: 800,
-                  cursor: creditOverrideWorking ? "default" : "pointer",
-                  opacity: creditOverrideWorking ? 0.8 : 1,
+                  fontWeight: 900,
+                  cursor: overrideWorking ? "default" : "pointer",
+                  opacity: overrideWorking ? 0.85 : 1,
                 }}
               >
-                {creditOverrideWorking ? "Overriding…" : "Override & Book Anyway"}
+                {overrideWorking ? "Overriding…" : "Override & Book Anyway"}
               </button>
             </div>
           </div>
@@ -1622,92 +1643,47 @@ export default function BookJobPage() {
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>First Name *</label>
-              <input
-                type="text"
-                value={newCustomerFirstName}
-                onChange={(e) => setNewCustomerFirstName(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="text" value={newCustomerFirstName} onChange={(e) => setNewCustomerFirstName(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Last Name *</label>
-              <input
-                type="text"
-                value={newCustomerLastName}
-                onChange={(e) => setNewCustomerLastName(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="text" value={newCustomerLastName} onChange={(e) => setNewCustomerLastName(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Company Name (optional)</label>
-              <input
-                type="text"
-                value={newCustomerCompanyName}
-                onChange={(e) => setNewCustomerCompanyName(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="text" value={newCustomerCompanyName} onChange={(e) => setNewCustomerCompanyName(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Customer Email *</label>
-              <input
-                type="email"
-                value={newCustomerEmail}
-                onChange={(e) => setNewCustomerEmail(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="email" value={newCustomerEmail} onChange={(e) => setNewCustomerEmail(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Customer Phone *</label>
-              <input
-                type="tel"
-                value={newCustomerPhone}
-                onChange={(e) => setNewCustomerPhone(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="tel" value={newCustomerPhone} onChange={(e) => setNewCustomerPhone(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Address Line 1 *</label>
-              <input
-                type="text"
-                value={newCustomerAddress1}
-                onChange={(e) => setNewCustomerAddress1(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="text" value={newCustomerAddress1} onChange={(e) => setNewCustomerAddress1(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Address Line 2 *</label>
-              <input
-                type="text"
-                value={newCustomerAddress2}
-                onChange={(e) => setNewCustomerAddress2(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="text" value={newCustomerAddress2} onChange={(e) => setNewCustomerAddress2(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Address Line 3 (optional)</label>
-              <input
-                type="text"
-                value={newCustomerAddress3}
-                onChange={(e) => setNewCustomerAddress3(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="text" value={newCustomerAddress3} onChange={(e) => setNewCustomerAddress3(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Postcode *</label>
-              <input
-                type="text"
-                value={newCustomerPostcode}
-                onChange={(e) => setNewCustomerPostcode(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+              <input type="text" value={newCustomerPostcode} onChange={(e) => setNewCustomerPostcode(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }} />
             </div>
 
             <div style={{ marginBottom: 16 }}>
