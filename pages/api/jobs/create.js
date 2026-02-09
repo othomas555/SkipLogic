@@ -1,3 +1,4 @@
+// pages/api/jobs/create.js
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { createInvoiceForJob } from "../xero/xero_create_invoice";
@@ -12,10 +13,15 @@ function asText(x) {
   return typeof x === "string" ? x.trim() : "";
 }
 
-function buildBaseUrl(req) {
-  const proto = (req.headers["x-forwarded-proto"] || "http").toString();
-  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
-  return `${proto}://${host}`;
+function isUuidString(s) {
+  const t = String(s || "").trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(t);
+}
+
+function makeUuidOrNull(s) {
+  const t = asText(s);
+  if (!t) return null;
+  return isUuidString(t) ? t : null;
 }
 
 export default async function handler(req, res) {
@@ -43,6 +49,16 @@ export default async function handler(req, res) {
     if (!payment_type) return res.status(400).json({ ok: false, error: "payment_type is required" });
     if (!(price_inc_vat > 0)) return res.status(400).json({ ok: false, error: "price_inc_vat must be > 0" });
 
+    // CREDIT OVERRIDE: accept uuid only; if missing/invalid and reason exists, server generates a valid uuid
+    const incomingOverrideReason = asText(body.credit_override_reason) || null;
+    let overrideToken = makeUuidOrNull(body.credit_override_token);
+
+    if (!overrideToken && incomingOverrideReason) {
+      // Node crypto.randomUUID should exist in modern runtimes; if not, fall back to gen_random_uuid via SQL is more complex.
+      // In practice this will exist on Vercel Node runtimes.
+      overrideToken = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : null;
+    }
+
     const insertPayload = {
       subscriber_id: subscriberId,
       customer_id,
@@ -61,16 +77,16 @@ export default async function handler(req, res) {
       price_inc_vat,
 
       placement_type: asText(body.placement_type) || "private",
-      permit_setting_id: asText(body.permit_setting_id) || null,
+      permit_setting_id: makeUuidOrNull(body.permit_setting_id),
       permit_price_no_vat: body.permit_price_no_vat == null ? null : clampMoney(body.permit_price_no_vat),
       permit_delay_business_days: body.permit_delay_business_days == null ? null : Number(body.permit_delay_business_days || 0),
       permit_validity_days: body.permit_validity_days == null ? null : Number(body.permit_validity_days || 0),
       permit_override: !!body.permit_override,
       weekend_override: !!body.weekend_override,
 
-      // 🔑 CREDIT OVERRIDE (THIS IS THE IMPORTANT BIT)
-      credit_override_token: asText(body.credit_override_token) || null,
-      credit_override_reason: asText(body.credit_override_reason) || null,
+      // CREDIT OVERRIDE marker
+      credit_override_token: overrideToken,
+      credit_override_reason: incomingOverrideReason,
     };
 
     const { data: job, error: insertError } = await supabase
@@ -86,6 +102,8 @@ export default async function handler(req, res) {
         ok: false,
         error: insertError?.message || "Could not create job",
         code: insertError?.code || null,
+        details: insertError?.details || null,
+        hint: insertError?.hint || null,
       });
     }
 
