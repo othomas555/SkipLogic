@@ -1,15 +1,3 @@
-// pages/api/jobs/create.js
-//
-// POST
-// Auth: Office user via Authorization: Bearer <supabase access token>
-//
-// Creates a job + creates initial delivery event + sends booking email
-// Then triggers Xero invoice automatically for cash/card.
-// For account payment_type: no immediate invoice (monthly DRAFT is handled later).
-//
-// Returns:
-// { ok: true, job, invoice: { ok: true, ... } | { ok:false, ... } | null }
-
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { createInvoiceForJob } from "../xero/xero_create_invoice";
@@ -32,17 +20,19 @@ function buildBaseUrl(req) {
 
 export default async function handler(req, res) {
   try {
-    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
+    if (req.method !== "POST") {
+      return res.status(405).json({ ok: false, error: "Method not allowed" });
+    }
 
     const auth = await requireOfficeUser(req);
-    if (!auth.ok) return res.status(401).json({ ok: false, error: auth.error });
+    if (!auth.ok) {
+      return res.status(401).json({ ok: false, error: auth.error });
+    }
 
     const subscriberId = auth.subscriber_id;
     const supabase = getSupabaseAdmin();
-
     const body = req.body && typeof req.body === "object" ? req.body : {};
 
-    // Required fields (server-side)
     const customer_id = asText(body.customer_id);
     const skip_type_id = asText(body.skip_type_id);
     const payment_type = asText(body.payment_type);
@@ -53,11 +43,6 @@ export default async function handler(req, res) {
     if (!payment_type) return res.status(400).json({ ok: false, error: "payment_type is required" });
     if (!(price_inc_vat > 0)) return res.status(400).json({ ok: false, error: "price_inc_vat must be > 0" });
 
-    // NEW: credit override fields (optional)
-    const credit_override_token = asText(body.credit_override_token) || null;
-    const credit_override_reason = asText(body.credit_override_reason) || null;
-
-    // Optional fields / snapshot fields
     const insertPayload = {
       subscriber_id: subscriberId,
       customer_id,
@@ -78,64 +63,33 @@ export default async function handler(req, res) {
       placement_type: asText(body.placement_type) || "private",
       permit_setting_id: asText(body.permit_setting_id) || null,
       permit_price_no_vat: body.permit_price_no_vat == null ? null : clampMoney(body.permit_price_no_vat),
-      permit_delay_business_days:
-        body.permit_delay_business_days == null ? null : Number(body.permit_delay_business_days || 0),
+      permit_delay_business_days: body.permit_delay_business_days == null ? null : Number(body.permit_delay_business_days || 0),
       permit_validity_days: body.permit_validity_days == null ? null : Number(body.permit_validity_days || 0),
       permit_override: !!body.permit_override,
       weekend_override: !!body.weekend_override,
 
-      // NEW: stored for audit / reporting; trigger will set credit_overridden_at automatically
-      credit_override_token,
-      credit_override_reason,
+      // 🔑 CREDIT OVERRIDE (THIS IS THE IMPORTANT BIT)
+      credit_override_token: asText(body.credit_override_token) || null,
+      credit_override_reason: asText(body.credit_override_reason) || null,
     };
 
     const { data: job, error: insertError } = await supabase
       .from("jobs")
       .insert([insertPayload])
-      .select(
-        `
-        id,
-        job_number,
-        subscriber_id,
-        customer_id,
-        skip_type_id,
-        job_status,
-        scheduled_date,
-        notes,
-        site_name,
-        site_address_line1,
-        site_address_line2,
-        site_town,
-        site_postcode,
-        payment_type,
-        price_inc_vat,
-        placement_type,
-        permit_setting_id,
-        permit_price_no_vat,
-        permit_delay_business_days,
-        permit_validity_days,
-        permit_override,
-        weekend_override,
-        xero_invoice_id,
-        xero_invoice_number,
-        xero_invoice_status,
-        credit_override_token,
-        credit_override_reason,
-        credit_overridden_at
-      `
-      )
+      .select("*")
       .single();
 
     if (insertError || !job) {
       console.error("jobs/create insert error:", insertError);
+
       return res.status(400).json({
         ok: false,
-        error: "Could not create job",
-        details: insertError?.message || String(insertError || ""),
+        error: insertError?.message || "Could not create job",
+        code: insertError?.code || null,
       });
     }
 
-    // Create initial delivery event
+    // Initial delivery event
     const { error: eventError } = await supabase.rpc("create_job_event", {
       _subscriber_id: subscriberId,
       _job_id: job.id,
@@ -146,36 +100,16 @@ export default async function handler(req, res) {
     });
 
     if (eventError) {
-      console.error("jobs/create create_job_event error:", eventError);
       return res.status(500).json({
         ok: false,
         error: "Job created but delivery event failed",
-        details: eventError.message || String(eventError),
+        details: eventError.message,
         job,
       });
     }
 
-    // Fire-and-forget email (server-side)
-    try {
-      const baseUrl = buildBaseUrl(req);
-      await fetch(`${baseUrl}/api/send_booking_email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          job,
-          customerName: asText(body.customer_name) || null,
-          customerEmail: asText(body.customer_email) || null,
-          jobPrice: String(price_inc_vat),
-        }),
-      });
-    } catch (e) {
-      console.error("jobs/create send_booking_email failed:", e);
-      // Do not fail booking
-    }
-
-    // STEP B: auto-invoice for cash/card only
+    // Auto-invoice for cash/card
     let invoice = null;
-
     if (payment_type === "card" || payment_type === "cash") {
       try {
         const inv = await createInvoiceForJob({ subscriberId, jobId: job.id });
@@ -188,6 +122,10 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, job, invoice });
   } catch (err) {
     console.error("jobs/create unexpected error:", err);
-    return res.status(500).json({ ok: false, error: "Unexpected error", details: String(err?.message || err) });
+    return res.status(500).json({
+      ok: false,
+      error: "Unexpected error",
+      details: String(err?.message || err),
+    });
   }
 }
