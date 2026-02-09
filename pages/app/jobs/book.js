@@ -60,12 +60,15 @@ async function getAccessToken() {
 }
 
 function safeRandomUUID() {
+  // IMPORTANT:
+  // We should only ever send a real UUID to the server for uuid columns.
+  // If crypto.randomUUID isn't available, return null and let the API create one.
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   } catch (e) {
     // ignore
   }
-  return `override-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return null;
 }
 
 function isCreditLimitText(msg) {
@@ -93,6 +96,25 @@ function extractCreditDetailsFromMessage(msg) {
     thisJob: thisJobMatch ? Number(thisJobMatch[1]) : null,
     limit: limitMatch ? Number(limitMatch[1]) : null,
   };
+}
+
+/**
+ * CRITICAL FIX:
+ * Postgres uuid columns cannot accept "" (empty string). They can accept null.
+ * This helper converts *all* empty-string values to null before sending to Supabase/API.
+ * This preserves existing functionality and prevents 22P02 regressions.
+ */
+function cleanEmptyStringsToNull(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (typeof v === "string") {
+      const t = v.trim();
+      out[k] = t === "" ? null : t;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
 }
 
 export default function BookJobPage() {
@@ -491,7 +513,7 @@ export default function BookJobPage() {
     const msg = message || "This booking will exceed the customer’s credit limit.";
     setCreditLimitModalMsg(msg);
     setCreditLimitDetails(extractCreditDetailsFromMessage(msg));
-    setPendingOverridePayload(pending || null);
+    setPendingOverridePayload(cleanEmptyStringsToNull(pending || null));
     setShowCreditLimitModal(true);
   }
 
@@ -524,7 +546,7 @@ export default function BookJobPage() {
         return;
       }
 
-      const overrideToken = safeRandomUUID();
+      const overrideToken = safeRandomUUID(); // may be null; API will handle
       const customerName = findCustomerNameById(pendingOverridePayload.customer_id);
       const customerEmail = findCustomerEmailById(pendingOverridePayload.customer_id);
 
@@ -544,17 +566,19 @@ export default function BookJobPage() {
           Authorization: "Bearer " + token,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          ...pendingOverridePayload,
+        body: JSON.stringify(
+          cleanEmptyStringsToNull({
+            ...pendingOverridePayload,
 
-          // helpful email context for server-side email
-          customer_name: customerName,
-          customer_email: customerEmail,
+            // helpful email context for server-side email
+            customer_name: customerName,
+            customer_email: customerEmail,
 
-          // credit override marker
-          credit_override_token: overrideToken,
-          credit_override_reason: overrideReason,
-        }),
+            // credit override marker
+            credit_override_token: overrideToken,
+            credit_override_reason: overrideReason,
+          })
+        ),
       });
 
       const json = await resp.json().catch(() => ({}));
@@ -752,7 +776,7 @@ export default function BookJobPage() {
 
       const permit = placementType === "permit" ? findPermitById(selectedPermitId) : null;
 
-      const insertPayload = {
+      const insertPayloadRaw = {
         subscriber_id: subscriberId,
         customer_id: selectedCustomerId,
         skip_type_id: selectedSkipTypeId,
@@ -778,6 +802,9 @@ export default function BookJobPage() {
         permit_override: !!permitOverride,
         weekend_override: !!weekendOverride,
       };
+
+      // CRITICAL: never send "" to DB (especially uuid columns)
+      const insertPayload = cleanEmptyStringsToNull(insertPayloadRaw);
 
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
@@ -813,12 +840,13 @@ export default function BookJobPage() {
 
       if (insertError) {
         console.error("Insert job error:", insertError);
+        console.error("Insert job payload (sanitised):", insertPayload);
 
         // CREDIT LIMIT → modal instead of generic error banner
         if (isCreditLimitText(insertError.message || "")) {
           setSaving(false);
           // store payload used by override path
-          const pending = {
+          const pending = cleanEmptyStringsToNull({
             customer_id: selectedCustomerId,
             skip_type_id: selectedSkipTypeId,
             payment_type: paymentType || null,
@@ -840,13 +868,13 @@ export default function BookJobPage() {
             permit_validity_days: permit ? Number(permit.validity_days || 0) : null,
             permit_override: !!permitOverride,
             weekend_override: !!weekendOverride,
-          };
+          });
 
           openCreditLimitModal(insertError.message, pending);
           return;
         }
 
-        setErrorMsg("Could not save job.");
+        setErrorMsg(insertError?.message ? String(insertError.message) : "Could not save job.");
         setSaving(false);
         return;
       }
