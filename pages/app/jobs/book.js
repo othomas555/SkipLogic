@@ -59,16 +59,57 @@ async function getAccessToken() {
   return data?.session?.access_token || null;
 }
 
-function safeRandomUUID() {
-  // IMPORTANT:
-  // We should only ever send a real UUID to the server for uuid columns.
-  // If crypto.randomUUID isn't available, return null and let the API create one.
+/**
+ * UUID helpers
+ * Postgres uuid cannot accept "" or "override-123". It must be a real UUID or null.
+ */
+function isUuidString(x) {
+  const t = String(x || "").trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(t);
+}
+
+function safeRandomUUIDOrNull() {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   } catch (e) {
     // ignore
   }
   return null;
+}
+
+/**
+ * Convert empty strings to null, trim strings, and hard-normalise uuid fields.
+ * IMPORTANT: this is the fix for 22P02 invalid uuid: "".
+ */
+function sanitizePayload(obj, { uuidKeys = [] } = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (typeof v === "string") {
+      const t = v.trim();
+      out[k] = t === "" ? null : t;
+    } else {
+      out[k] = v;
+    }
+  }
+
+  // Hard-normalise UUID keys: null unless a valid uuid string
+  for (const k of uuidKeys) {
+    if (!(k in out)) continue;
+    const v = out[k];
+    if (v == null) {
+      out[k] = null;
+      continue;
+    }
+    if (typeof v !== "string") {
+      // if some code passed a non-string, null it (uuid must be string)
+      out[k] = null;
+      continue;
+    }
+    const t = v.trim();
+    out[k] = t === "" ? null : isUuidString(t) ? t : null;
+  }
+
+  return out;
 }
 
 function isCreditLimitText(msg) {
@@ -96,25 +137,6 @@ function extractCreditDetailsFromMessage(msg) {
     thisJob: thisJobMatch ? Number(thisJobMatch[1]) : null,
     limit: limitMatch ? Number(limitMatch[1]) : null,
   };
-}
-
-/**
- * CRITICAL FIX:
- * Postgres uuid columns cannot accept "" (empty string). They can accept null.
- * This helper converts *all* empty-string values to null before sending to Supabase/API.
- * This preserves existing functionality and prevents 22P02 regressions.
- */
-function cleanEmptyStringsToNull(obj) {
-  const out = {};
-  for (const [k, v] of Object.entries(obj || {})) {
-    if (typeof v === "string") {
-      const t = v.trim();
-      out[k] = t === "" ? null : t;
-    } else {
-      out[k] = v;
-    }
-  }
-  return out;
 }
 
 export default function BookJobPage() {
@@ -513,7 +535,13 @@ export default function BookJobPage() {
     const msg = message || "This booking will exceed the customer’s credit limit.";
     setCreditLimitModalMsg(msg);
     setCreditLimitDetails(extractCreditDetailsFromMessage(msg));
-    setPendingOverridePayload(cleanEmptyStringsToNull(pending || null));
+
+    // Hard-sanitise pending payload (including UUID keys)
+    const pendingSan = sanitizePayload(pending || {}, {
+      uuidKeys: ["customer_id", "skip_type_id", "permit_setting_id"],
+    });
+
+    setPendingOverridePayload(pendingSan);
     setShowCreditLimitModal(true);
   }
 
@@ -546,7 +574,7 @@ export default function BookJobPage() {
         return;
       }
 
-      const overrideToken = safeRandomUUID(); // may be null; API will handle
+      const overrideToken = safeRandomUUIDOrNull(); // server will validate/generate if needed
       const customerName = findCustomerNameById(pendingOverridePayload.customer_id);
       const customerEmail = findCustomerEmailById(pendingOverridePayload.customer_id);
 
@@ -559,7 +587,7 @@ export default function BookJobPage() {
         .filter(Boolean)
         .join(" | ");
 
-      // Create job server-side (bypass trigger safely)
+      // Create job server-side
       const resp = await fetch("/api/jobs/create", {
         method: "POST",
         headers: {
@@ -567,17 +595,20 @@ export default function BookJobPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(
-          cleanEmptyStringsToNull({
-            ...pendingOverridePayload,
+          sanitizePayload(
+            {
+              ...pendingOverridePayload,
 
-            // helpful email context for server-side email
-            customer_name: customerName,
-            customer_email: customerEmail,
+              // helpful email context for server-side email (if you ever use it)
+              customer_name: customerName,
+              customer_email: customerEmail,
 
-            // credit override marker
-            credit_override_token: overrideToken,
-            credit_override_reason: overrideReason,
-          })
+              // credit override marker
+              credit_override_token: overrideToken,
+              credit_override_reason: overrideReason,
+            },
+            { uuidKeys: ["customer_id", "skip_type_id", "permit_setting_id", "credit_override_token"] }
+          )
         ),
       });
 
@@ -598,12 +629,7 @@ export default function BookJobPage() {
         return;
       }
 
-      // INVOICING/PAYMENT:
-      // We keep the same UI behaviour:
-      // - If createInvoice is OFF → we do not attempt client-side invoice creation.
-      // - If createInvoice is ON:
-      //    - For cash/card: API may have auto-invoiced; if it didn't, we try the normal client call.
-      //    - For account: API does not auto-invoice; we do the normal client call.
+      // INVOICING/PAYMENT: keep same UI behaviour as your existing code
       let invoiceCreatedOk = false;
 
       if (createInvoice) {
@@ -615,7 +641,6 @@ export default function BookJobPage() {
           const mode = inv.mode || "";
           setInvoiceMsg(`Invoice created in Xero${invNo ? ` (${invNo})` : ""}${mode ? `: ${mode}` : ""}.`);
         } else {
-          // Fall back to the same client-side invoice creation used by the normal path
           try {
             const t = await getAccessToken();
             if (!t) {
@@ -645,7 +670,6 @@ export default function BookJobPage() {
         }
       }
 
-      // Mark paid (same behaviour as before)
       if (markPaidNow) {
         if (!createInvoice) {
           setPaymentErr("Payment not applied: you must tick “Create invoice in Xero” to mark paid now.");
@@ -803,8 +827,10 @@ export default function BookJobPage() {
         weekend_override: !!weekendOverride,
       };
 
-      // CRITICAL: never send "" to DB (especially uuid columns)
-      const insertPayload = cleanEmptyStringsToNull(insertPayloadRaw);
+      // HARD FIX: normalise empty strings and UUID keys BEFORE hitting Postgres
+      const insertPayload = sanitizePayload(insertPayloadRaw, {
+        uuidKeys: ["subscriber_id", "customer_id", "skip_type_id", "permit_setting_id"],
+      });
 
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
@@ -840,13 +866,13 @@ export default function BookJobPage() {
 
       if (insertError) {
         console.error("Insert job error:", insertError);
-        console.error("Insert job payload (sanitised):", insertPayload);
+        console.error("Insert job payload used:", insertPayload);
 
         // CREDIT LIMIT → modal instead of generic error banner
         if (isCreditLimitText(insertError.message || "")) {
           setSaving(false);
-          // store payload used by override path
-          const pending = cleanEmptyStringsToNull({
+
+          const pendingRaw = {
             customer_id: selectedCustomerId,
             skip_type_id: selectedSkipTypeId,
             payment_type: paymentType || null,
@@ -868,26 +894,36 @@ export default function BookJobPage() {
             permit_validity_days: permit ? Number(permit.validity_days || 0) : null,
             permit_override: !!permitOverride,
             weekend_override: !!weekendOverride,
+          };
+
+          const pending = sanitizePayload(pendingRaw, {
+            uuidKeys: ["customer_id", "skip_type_id", "permit_setting_id"],
           });
 
           openCreditLimitModal(insertError.message, pending);
           return;
         }
 
+        // Stop masking — show the real error message now
         setErrorMsg(insertError?.message ? String(insertError.message) : "Could not save job.");
         setSaving(false);
         return;
       }
 
       // Create initial delivery event in the job timeline
-      const { error: eventError } = await supabase.rpc("create_job_event", {
-        _subscriber_id: subscriberId,
-        _job_id: inserted.id,
-        _event_type: "delivery",
-        _scheduled_at: null,
-        _completed_at: null,
-        _notes: "Initial delivery booked",
-      });
+      const rpcPayload = sanitizePayload(
+        {
+          _subscriber_id: subscriberId,
+          _job_id: inserted.id,
+          _event_type: "delivery",
+          _scheduled_at: null,
+          _completed_at: null,
+          _notes: "Initial delivery booked",
+        },
+        { uuidKeys: ["_subscriber_id", "_job_id"] }
+      );
+
+      const { error: eventError } = await supabase.rpc("create_job_event", rpcPayload);
 
       if (eventError) {
         console.error("Create job event error:", eventError);
@@ -896,7 +932,7 @@ export default function BookJobPage() {
         return;
       }
 
-      // If requested, create invoice immediately (cash/card/account handled in the API)
+      // If requested, create invoice immediately
       let invoiceCreatedOk = false;
       if (createInvoice) {
         try {
