@@ -7,12 +7,6 @@
 // Then triggers Xero invoice automatically for cash/card.
 // For account payment_type: no immediate invoice (monthly DRAFT is handled later).
 //
-// CREDIT LIMIT OVERRIDE (Option B):
-// - If credit_override_token is provided, job insert is performed via:
-//     public.insert_job_bypass_credit_limit(_payload jsonb)
-// - And an override audit row is logged via:
-//     public.log_job_override(_subscriber_id, _job_id, _override_type, _reason)
-//
 // Returns:
 // { ok: true, job, invoice: { ok: true, ... } | { ok:false, ... } | null }
 
@@ -34,12 +28,6 @@ function buildBaseUrl(req) {
   const proto = (req.headers["x-forwarded-proto"] || "http").toString();
   const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
   return `${proto}://${host}`;
-}
-
-function isCreditLimitError(err) {
-  const msg = String(err?.message || "").toLowerCase();
-  const code = String(err?.code || "");
-  return code === "P0001" || msg.includes("credit limit exceeded");
 }
 
 export default async function handler(req, res) {
@@ -65,17 +53,9 @@ export default async function handler(req, res) {
     if (!payment_type) return res.status(400).json({ ok: false, error: "payment_type is required" });
     if (!(price_inc_vat > 0)) return res.status(400).json({ ok: false, error: "price_inc_vat must be > 0" });
 
-    // Credit override fields (optional)
-    const credit_override_token = asText(body.credit_override_token);
-    const credit_override_reason = asText(body.credit_override_reason);
-    const isCreditOverride = !!credit_override_token;
-
-    if (isCreditOverride && credit_override_token.length < 8) {
-      return res.status(400).json({ ok: false, error: "credit_override_token is invalid" });
-    }
-    if (credit_override_reason && credit_override_reason.length > 800) {
-      return res.status(400).json({ ok: false, error: "credit_override_reason too long" });
-    }
+    // NEW: credit override fields (optional)
+    const credit_override_token = asText(body.credit_override_token) || null;
+    const credit_override_reason = asText(body.credit_override_reason) || null;
 
     // Optional fields / snapshot fields
     const insertPayload = {
@@ -103,129 +83,56 @@ export default async function handler(req, res) {
       permit_validity_days: body.permit_validity_days == null ? null : Number(body.permit_validity_days || 0),
       permit_override: !!body.permit_override,
       weekend_override: !!body.weekend_override,
+
+      // NEW: stored for audit / reporting; trigger will set credit_overridden_at automatically
+      credit_override_token,
+      credit_override_reason,
     };
 
-    let job = null;
-
-    // INSERT (normal vs override)
-    if (!isCreditOverride) {
-      const { data, error: insertError } = await supabase
-        .from("jobs")
-        .insert([insertPayload])
-        .select(
-          `
-          id,
-          job_number,
-          subscriber_id,
-          customer_id,
-          skip_type_id,
-          job_status,
-          scheduled_date,
-          notes,
-          site_name,
-          site_address_line1,
-          site_address_line2,
-          site_town,
-          site_postcode,
-          payment_type,
-          price_inc_vat,
-          placement_type,
-          permit_setting_id,
-          permit_price_no_vat,
-          permit_delay_business_days,
-          permit_validity_days,
-          permit_override,
-          weekend_override,
-          xero_invoice_id,
-          xero_invoice_number,
-          xero_invoice_status
+    const { data: job, error: insertError } = await supabase
+      .from("jobs")
+      .insert([insertPayload])
+      .select(
         `
-        )
-        .single();
+        id,
+        job_number,
+        subscriber_id,
+        customer_id,
+        skip_type_id,
+        job_status,
+        scheduled_date,
+        notes,
+        site_name,
+        site_address_line1,
+        site_address_line2,
+        site_town,
+        site_postcode,
+        payment_type,
+        price_inc_vat,
+        placement_type,
+        permit_setting_id,
+        permit_price_no_vat,
+        permit_delay_business_days,
+        permit_validity_days,
+        permit_override,
+        weekend_override,
+        xero_invoice_id,
+        xero_invoice_number,
+        xero_invoice_status,
+        credit_override_token,
+        credit_override_reason,
+        credit_overridden_at
+      `
+      )
+      .single();
 
-      if (insertError || !data) {
-        console.error("jobs/create insert error:", insertError);
-
-        // IMPORTANT: return the real credit-limit message so the UI can show it in a modal
-        if (isCreditLimitError(insertError)) {
-          return res.status(400).json({ ok: false, error: insertError.message || "Credit limit exceeded" });
-        }
-
-        return res.status(400).json({ ok: false, error: "Could not create job" });
-      }
-
-      job = data;
-    } else {
-      // Controlled bypass insert via SECURITY DEFINER DB function
-      const { data: rpcData, error: rpcErr } = await supabase.rpc("insert_job_bypass_credit_limit", {
-        _payload: insertPayload,
+    if (insertError || !job) {
+      console.error("jobs/create insert error:", insertError);
+      return res.status(400).json({
+        ok: false,
+        error: "Could not create job",
+        details: insertError?.message || String(insertError || ""),
       });
-
-      if (rpcErr) {
-        console.error("jobs/create insert_job_bypass_credit_limit error:", rpcErr);
-        return res.status(400).json({ ok: false, error: rpcErr.message || "Could not create job (override)" });
-      }
-
-      const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-      if (!row?.id) {
-        return res.status(400).json({ ok: false, error: "Could not create job (override) — no job returned" });
-      }
-
-      // Re-select the same shape as normal path so response stays consistent
-      const { data: reselect, error: reselectErr } = await supabase
-        .from("jobs")
-        .select(
-          `
-          id,
-          job_number,
-          subscriber_id,
-          customer_id,
-          skip_type_id,
-          job_status,
-          scheduled_date,
-          notes,
-          site_name,
-          site_address_line1,
-          site_address_line2,
-          site_town,
-          site_postcode,
-          payment_type,
-          price_inc_vat,
-          placement_type,
-          permit_setting_id,
-          permit_price_no_vat,
-          permit_delay_business_days,
-          permit_validity_days,
-          permit_override,
-          weekend_override,
-          xero_invoice_id,
-          xero_invoice_number,
-          xero_invoice_status
-        `
-        )
-        .eq("id", row.id)
-        .eq("subscriber_id", subscriberId)
-        .single();
-
-      if (reselectErr || !reselect) {
-        console.error("jobs/create override reselect error:", reselectErr);
-        return res.status(500).json({ ok: false, error: "Job created but could not reload job record", details: reselectErr?.message || String(reselectErr) });
-      }
-
-      job = reselect;
-
-      // Log override (best-effort)
-      try {
-        await supabase.rpc("log_job_override", {
-          _subscriber_id: subscriberId,
-          _job_id: job.id,
-          _override_type: "credit_limit",
-          _reason: credit_override_reason || `Credit limit override (token: ${credit_override_token})`,
-        });
-      } catch (logErr) {
-        console.error("jobs/create log_job_override failed:", logErr);
-        // Do not fail booking
-      }
     }
 
     // Create initial delivery event
@@ -278,13 +185,7 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(200).json({
-      ok: true,
-      job,
-      invoice,
-      credit_override: isCreditOverride,
-      credit_override_token: isCreditOverride ? credit_override_token : null,
-    });
+    return res.status(200).json({ ok: true, job, invoice });
   } catch (err) {
     console.error("jobs/create unexpected error:", err);
     return res.status(500).json({ ok: false, error: "Unexpected error", details: String(err?.message || err) });
