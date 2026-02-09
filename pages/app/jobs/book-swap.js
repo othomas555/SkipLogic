@@ -47,6 +47,44 @@ async function getSkipPricesForPostcode(subscriberId, rawPostcode) {
   return data || [];
 }
 
+function safeRandomUUID() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch (e) {
+    // ignore
+  }
+  return `override-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function isCreditLimitText(msg) {
+  const t = String(msg || "").toLowerCase();
+  return t.includes("credit limit exceeded");
+}
+
+function extractCreditDetailsFromMessage(msg) {
+  // Expected: "Credit limit exceeded. Unpaid: X, This job: Y, Limit: Z"
+  // Or: "Credit limit exceeded (no credit_limit set...)"
+  const text = String(msg || "");
+  const lower = text.toLowerCase();
+
+  if (lower.includes("no credit_limit set")) {
+    return { kind: "no_limit", unpaid: null, thisJob: null, limit: null };
+  }
+
+  const unpaidMatch = text.match(/Unpaid:\s*([0-9]+(\.[0-9]+)?)/i);
+  const thisJobMatch = text.match(/This job:\s*([0-9]+(\.[0-9]+)?)/i);
+  const limitMatch = text.match(/Limit:\s*([0-9]+(\.[0-9]+)?)/i);
+
+  return {
+    kind: "values",
+    unpaid: unpaidMatch ? Number(unpaidMatch[1]) : null,
+    thisJob: thisJobMatch ? Number(thisJobMatch[1]) : null,
+    limit: limitMatch ? Number(limitMatch[1]) : null,
+  };
+}
+
 export default function BookSwapPage() {
   const router = useRouter();
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
@@ -75,7 +113,7 @@ export default function BookSwapPage() {
   const [createInvoice, setCreateInvoice] = useState(true);
   const [weekendOverride, setWeekendOverride] = useState(false);
 
-  // Mark paid (NEW) — default OFF
+  // Mark paid — default OFF
   const [markPaidNow, setMarkPaidNow] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
@@ -83,9 +121,16 @@ export default function BookSwapPage() {
   const [newJobId, setNewJobId] = useState("");
   const [invoiceMsg, setInvoiceMsg] = useState("");
 
-  // Payment result messaging (NEW)
+  // Payment result messaging
   const [paymentMsg, setPaymentMsg] = useState("");
   const [paymentErr, setPaymentErr] = useState("");
+
+  // Credit-limit modal (NEW)
+  const [showCreditLimitModal, setShowCreditLimitModal] = useState(false);
+  const [creditLimitModalMsg, setCreditLimitModalMsg] = useState("");
+  const [creditLimitDetails, setCreditLimitDetails] = useState(null);
+  const [pendingSwapBody, setPendingSwapBody] = useState(null);
+  const [overrideWorking, setOverrideWorking] = useState(false);
 
   const selectedOldJob = useMemo(
     () => eligibleJobs.find((j) => String(j.id) === String(selectedOldJobId)) || null,
@@ -111,6 +156,21 @@ export default function BookSwapPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canShowMarkPaid]);
 
+  function openCreditLimitModal(message, pendingBody) {
+    setCreditLimitModalMsg(message || "This booking will exceed the customer’s credit limit.");
+    setCreditLimitDetails(extractCreditDetailsFromMessage(message || ""));
+    setPendingSwapBody(pendingBody || null);
+    setShowCreditLimitModal(true);
+  }
+
+  function closeCreditLimitModal() {
+    if (overrideWorking) return;
+    setShowCreditLimitModal(false);
+    setCreditLimitModalMsg("");
+    setCreditLimitDetails(null);
+    setPendingSwapBody(null);
+  }
+
   async function loadPageData() {
     if (checking || !subscriberId) return;
 
@@ -121,6 +181,7 @@ export default function BookSwapPage() {
     setInvoiceMsg("");
     setPaymentMsg("");
     setPaymentErr("");
+    closeCreditLimitModal();
 
     // Customers
     const { data: cust, error: custErr } = await supabase
@@ -183,6 +244,7 @@ export default function BookSwapPage() {
       setInvoiceMsg("");
       setPaymentMsg("");
       setPaymentErr("");
+      closeCreditLimitModal();
 
       if (!pc) {
         setPostcodeMsg("Selected job has no postcode. Edit the job and add one first.");
@@ -201,6 +263,7 @@ export default function BookSwapPage() {
     setInvoiceMsg("");
     setPaymentMsg("");
     setPaymentErr("");
+    closeCreditLimitModal();
 
     const raw = String(forcedPostcode != null ? forcedPostcode : postcode).trim();
     if (!raw) {
@@ -234,6 +297,161 @@ export default function BookSwapPage() {
     }
   }
 
+  async function callBookSwapApi({ token, body }) {
+    const resp = await fetch("/api/jobs/book-swap", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + token,
+      },
+      body: JSON.stringify(body),
+    });
+
+    const json = await resp.json().catch(() => ({}));
+    return { resp, json };
+  }
+
+  async function handleOverrideAndBook() {
+    if (!subscriberId) return;
+    if (!pendingSwapBody) return;
+
+    setOverrideWorking(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+    setNewJobId("");
+    setInvoiceMsg("");
+    setPaymentMsg("");
+    setPaymentErr("");
+
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setErrorMsg("You must be signed in via /login to book a swap.");
+        setOverrideWorking(false);
+        closeCreditLimitModal();
+        return;
+      }
+
+      const overrideToken = safeRandomUUID();
+      const custLabel = fmtCustomer(selectedCustomer);
+      const overrideReason = [
+        "Credit limit override from /app/jobs/book-swap",
+        selectedOldJob?.job_number ? `Old job: ${selectedOldJob.job_number}` : `Old job id: ${selectedOldJobId}`,
+        custLabel ? `Customer: ${custLabel}` : null,
+        creditLimitModalMsg ? `Trigger: ${creditLimitModalMsg}` : null,
+      ]
+        .filter(Boolean)
+        .join(" | ");
+
+      const body = {
+        ...pendingSwapBody,
+        credit_override_token: overrideToken,
+        credit_override_reason: overrideReason,
+      };
+
+      const { resp, json } = await callBookSwapApi({ token, body });
+
+      if (!resp.ok || !json.ok) {
+        const msg = String(json?.error || json?.details || `Swap booking failed (HTTP ${resp.status})`);
+        setErrorMsg(msg);
+        setOverrideWorking(false);
+        closeCreditLimitModal();
+        return;
+      }
+
+      const jid = json?.new_job?.id ? String(json.new_job.id) : "";
+      if (jid) setNewJobId(jid);
+
+      // Log override (Option B) in our audit table (independent of the API)
+      if (jid) {
+        try {
+          await supabase.rpc("log_job_override", {
+            _subscriber_id: subscriberId,
+            _job_id: jid,
+            _override_type: "credit_limit",
+            _reason: overrideReason,
+          });
+        } catch (logErr) {
+          console.error("log_job_override failed:", logErr);
+          setPaymentErr(
+            "Swap booked, but override logging failed. Please check job_overrides / RPC permissions."
+          );
+        }
+      }
+
+      // Same invoice message logic as the normal path
+      let invoiceCreatedOk = false;
+
+      if (createInvoice) {
+        const invOk = json?.invoice?.json?.ok;
+        if (invOk) {
+          invoiceCreatedOk = true;
+          const inv = json.invoice.json || {};
+          const invNo = inv.invoiceNumber || inv.invoice_number || null;
+          const mode = inv.mode || "";
+          setInvoiceMsg(`Invoice: created${invNo ? ` (${invNo})` : ""}${mode ? ` — ${mode}` : ""}.`);
+        } else if (json?.invoice_warning) {
+          setInvoiceMsg(`Invoice: not created — ${String(json.invoice_warning)}`);
+        } else if (json?.invoice?.status) {
+          setInvoiceMsg(`Invoice: failed (HTTP ${json.invoice.status}).`);
+        } else {
+          setInvoiceMsg("Invoice: not created (unknown reason).");
+        }
+      } else {
+        setInvoiceMsg("Invoice: not created (toggle off).");
+      }
+
+      // Apply payment if requested
+      if (markPaidNow) {
+        if (!createInvoice) {
+          setPaymentErr("Payment not applied: you must leave “Create invoice in Xero” ON to mark paid now.");
+        } else if (!invoiceCreatedOk) {
+          setPaymentErr("Payment not applied: invoice was not created successfully.");
+        } else if (!jid) {
+          setPaymentErr("Payment not applied: new job id not returned.");
+        } else {
+          const paidMethod = String(selectedOldJob?.payment_type || "").trim();
+          if (paidMethod !== "cash" && paidMethod !== "card") {
+            setPaymentErr("Payment not applied: job payment type is not cash/card.");
+          } else {
+            try {
+              const payRes = await fetch("/api/xero/xero_apply_payment", {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + token,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  job_id: jid,
+                  paid_method: paidMethod,
+                }),
+              });
+
+              const payJson = await payRes.json().catch(() => ({}));
+              if (!payRes.ok || !payJson.ok) {
+                const detail = payJson?.error || payJson?.details || `Payment failed (HTTP ${payRes.status})`;
+                setPaymentErr(String(detail));
+              } else {
+                setPaymentMsg(`Marked as paid in Xero (${paidMethod}).`);
+              }
+            } catch (e) {
+              setPaymentErr("Payment application failed unexpectedly.");
+            }
+          }
+        }
+      }
+
+      setSuccessMsg("Swap booked (override). Collection + new delivery created.");
+      setOverrideWorking(false);
+      closeCreditLimitModal();
+    } catch (err) {
+      console.error(err);
+      setErrorMsg(err?.message || "Override swap booking failed");
+      setOverrideWorking(false);
+      closeCreditLimitModal();
+    }
+  }
+
   async function onSubmit(e) {
     e.preventDefault();
     setErrorMsg("");
@@ -242,6 +460,7 @@ export default function BookSwapPage() {
     setInvoiceMsg("");
     setPaymentMsg("");
     setPaymentErr("");
+    closeCreditLimitModal();
 
     if (!subscriberId) {
       setErrorMsg("No subscriber found.");
@@ -286,26 +505,32 @@ export default function BookSwapPage() {
         return;
       }
 
-      const resp = await fetch("/api/jobs/book-swap", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + token,
-        },
-        body: JSON.stringify({
-          subscriber_id: subscriberId,
-          old_job_id: selectedOldJobId,
-          new_skip_type_id: newSkipTypeId,
-          swap_date: swapDate,
-          price_inc_vat: price,
-          notes: notes || null,
-          create_invoice: !!createInvoice,
-          weekend_override: !!weekendOverride,
-        }),
-      });
+      const body = {
+        subscriber_id: subscriberId,
+        old_job_id: selectedOldJobId,
+        new_skip_type_id: newSkipTypeId,
+        swap_date: swapDate,
+        price_inc_vat: price,
+        notes: notes || null,
+        create_invoice: !!createInvoice,
+        weekend_override: !!weekendOverride,
+      };
 
-      const json = await resp.json().catch(() => ({}));
-      if (!resp.ok || !json.ok) throw new Error(json?.error || "Swap booking failed");
+      const { resp, json } = await callBookSwapApi({ token, body });
+
+      if (!resp.ok || !json.ok) {
+        const msg = String(json?.error || json?.details || "Swap booking failed");
+
+        // CREDIT LIMIT → modal, not inline error
+        if (isCreditLimitText(msg)) {
+          setSubmitting(false);
+          setPendingSwapBody(body);
+          openCreditLimitModal(msg, body);
+          return;
+        }
+
+        throw new Error(msg);
+      }
 
       const jid = json?.new_job?.id ? String(json.new_job.id) : "";
       if (jid) setNewJobId(jid);
@@ -413,9 +638,7 @@ export default function BookSwapPage() {
               ← Back to jobs
             </a>
           </p>
-          {authError ? (
-            <p style={{ marginTop: 8, color: "#8a1f1f", fontWeight: 700 }}>{String(authError)}</p>
-          ) : null}
+          {authError ? <p style={{ marginTop: 8, color: "#8a1f1f", fontWeight: 700 }}>{String(authError)}</p> : null}
         </div>
         <div style={{ fontSize: 13, color: "#555" }}>{user.email}</div>
       </header>
@@ -430,7 +653,7 @@ export default function BookSwapPage() {
 
               {invoiceMsg ? <div style={{ marginTop: 6 }}>{invoiceMsg}</div> : null}
 
-              {(paymentMsg || paymentErr) ? (
+              {paymentMsg || paymentErr ? (
                 <div
                   style={{
                     marginTop: 10,
@@ -612,11 +835,7 @@ export default function BookSwapPage() {
 
             <div style={{ marginTop: 12 }}>
               <label style={{ display: "inline-flex", gap: 10, alignItems: "center", fontSize: 14 }}>
-                <input
-                  type="checkbox"
-                  checked={!!weekendOverride}
-                  onChange={(e) => setWeekendOverride(e.target.checked)}
-                />
+                <input type="checkbox" checked={!!weekendOverride} onChange={(e) => setWeekendOverride(e.target.checked)} />
                 Weekend override (default OFF)
               </label>
               <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
@@ -646,6 +865,115 @@ export default function BookSwapPage() {
           </div>
         </form>
       </section>
+
+      {/* Credit Limit Modal (NEW) */}
+      {showCreditLimitModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1400,
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              padding: 24,
+              borderRadius: 12,
+              width: "100%",
+              maxWidth: 520,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+            }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 10 }}>Credit limit exceeded</h2>
+
+            <div style={{ marginBottom: 12, color: "#333", lineHeight: 1.5 }}>
+              <div style={{ fontWeight: 900 }}>This swap booking will exceed the customer’s credit limit.</div>
+              <div style={{ fontSize: 13, marginTop: 6, color: "#555" }}>{creditLimitModalMsg}</div>
+
+              {creditLimitDetails?.kind === "values" && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    fontSize: 13,
+                    border: "1px solid #eee",
+                    borderRadius: 10,
+                    padding: 12,
+                    background: "#fafafa",
+                  }}
+                >
+                  <div>
+                    Unpaid balance: <b>£{creditLimitDetails.unpaid != null ? Number(creditLimitDetails.unpaid).toFixed(2) : "—"}</b>
+                  </div>
+                  <div>
+                    This booking: <b>£{creditLimitDetails.thisJob != null ? Number(creditLimitDetails.thisJob).toFixed(2) : "—"}</b>
+                  </div>
+                  <div>
+                    Credit limit: <b>£{creditLimitDetails.limit != null ? Number(creditLimitDetails.limit).toFixed(2) : "—"}</b>
+                  </div>
+                </div>
+              )}
+
+              {creditLimitDetails?.kind === "no_limit" && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    fontSize: 13,
+                    border: "1px solid #eee",
+                    borderRadius: 10,
+                    padding: 12,
+                    background: "#fafafa",
+                  }}
+                >
+                  This customer is marked as a credit account, but <b>no credit limit is set</b>. Account bookings are blocked unless you override.
+                </div>
+              )}
+
+              <div style={{ marginTop: 12, fontSize: 13, color: "#444" }}>
+                If you override, the swap will proceed and an override audit record will be logged.
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                type="button"
+                onClick={closeCreditLimitModal}
+                disabled={overrideWorking}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #ccc",
+                  background: "#f5f5f5",
+                  cursor: overrideWorking ? "default" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleOverrideAndBook}
+                disabled={overrideWorking}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#d83a3a",
+                  color: "#fff",
+                  fontWeight: 900,
+                  cursor: overrideWorking ? "default" : "pointer",
+                  opacity: overrideWorking ? 0.85 : 1,
+                }}
+              >
+                {overrideWorking ? "Overriding…" : "Override & Book Anyway"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
