@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
+
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
@@ -18,6 +19,13 @@ import { useAuthProfile } from "../../../lib/useAuthProfile";
  *   - unknown skip sizes
  *   - invalid rows
  */
+
+function moneyGBP(n) {
+  if (n == null || n === "") return "—";
+  const x = Number(n);
+  if (!Number.isFinite(x)) return String(n);
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(x);
+}
 
 function clean(s) {
   return String(s || "")
@@ -67,14 +75,6 @@ function parseDateToISODate(value) {
   return "";
 }
 
-function parseYesNo(value) {
-  const s = clean(value);
-  if (!s) return null;
-  if (s === "y" || s === "yes" || s === "true") return true;
-  if (s === "n" || s === "no" || s === "false") return false;
-  return null;
-}
-
 function parseMoney(value) {
   const s = String(value || "").trim();
   if (!s) return null;
@@ -120,7 +120,6 @@ function parseCSV(text) {
     }
 
     if (ch === "\r") {
-      // ignore
       continue;
     }
 
@@ -135,18 +134,14 @@ function parseCSV(text) {
     cur += ch;
   }
 
-  // final
   row.push(cur);
   rows.push(row);
 
-  // trim trailing blank rows
   while (rows.length && rows[rows.length - 1].every((c) => String(c || "").trim() === "")) rows.pop();
-
   return rows;
 }
 
 function normalizeHeaders(headers) {
-  // Keep original header names but also build a normalized lookup.
   const list = headers.map((h) => String(h || "").trim());
   const normMap = {};
   for (const h of list) normMap[clean(h)] = h;
@@ -154,7 +149,6 @@ function normalizeHeaders(headers) {
 }
 
 function getCell(obj, headerNormMap, desiredHeaderNames) {
-  // desiredHeaderNames are normalized target names (we’ll clean() them)
   for (const name of desiredHeaderNames) {
     const key = headerNormMap[clean(name)];
     if (key && Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
@@ -173,30 +167,16 @@ function makeUniqueCustomerKey(row) {
   if (phone && company) return `phone_company:${phone}|${company}`;
   if (phone) return `phone:${phone}`;
   if (company) return `company:${company}`;
-  // last resort — avoid collapsing all unknowns into one
   return `name:${first}|${last}|${company}|${phone}|${email}`;
 }
 
 function deriveJobStatus(row) {
-  // Deterministic rule agreed:
-  // if Collection Status == Collected -> collected
-  // else if Delivery Status == Delivered -> delivered
-  // else -> booked
   const collectionStatus = clean(row.collection_status);
   const deliveryStatus = clean(row.delivery_status);
 
   if (collectionStatus === "collected") return "collected";
   if (deliveryStatus === "delivered") return "delivered";
   return "booked";
-}
-
-function derivePlacementType(value) {
-  const s = clean(value);
-  if (!s) return "";
-  if (s.includes("road") || s.includes("public")) return "road";
-  if (s.includes("private")) return "private";
-  // fall back to keep raw-ish but safe
-  return s.replace(/[^a-z0-9_ ]/g, "").slice(0, 40) || "";
 }
 
 function isLikelyUrl(s) {
@@ -217,10 +197,9 @@ export default function ImportBookingsPage() {
   const [parseErr, setParseErr] = useState("");
 
   const [headers, setHeaders] = useState([]);
-  const [rows, setRows] = useState([]); // raw objects per row
+  const [rows, setRows] = useState([]);
   const [previewCount, setPreviewCount] = useState(20);
 
-  // Fetch skip types for mapping
   async function loadSkipTypes() {
     if (checking) return;
     if (!user || !subscriberId) return;
@@ -228,8 +207,6 @@ export default function ImportBookingsPage() {
     setSkipTypesLoading(true);
     setSkipTypesErr("");
 
-    // Assumption: skip_types table exists and is subscriber-scoped (or global).
-    // We’ll try subscriber-scoped first; if that errors due to missing col, user will paste error and we adjust.
     const { data, error } = await supabase
       .from("skip_types")
       .select("id, name")
@@ -254,29 +231,19 @@ export default function ImportBookingsPage() {
   }, [checking, user, subscriberId]);
 
   const skipTypeIndex = useMemo(() => {
-    // Build searchable index from skip_types
-    // Each skip type gets a "cleaned" name key.
-    const list = (skipTypes || []).map((st) => {
+    return (skipTypes || []).map((st) => {
       const nm = String(st.name || "").trim();
-      return {
-        id: st.id,
-        name: nm,
-        key: clean(nm),
-      };
+      return { id: st.id, name: nm, key: clean(nm) };
     });
-
-    return list;
   }, [skipTypes]);
 
   function matchSkipTypeIdFromSize(skipSizeRaw) {
     const ss = clean(skipSizeRaw);
     if (!ss) return { id: "", match: "", method: "" };
 
-    // 1) exact match on cleaned key
     const exact = skipTypeIndex.find((x) => x.key === ss);
     if (exact) return { id: exact.id, match: exact.name, method: "exact" };
 
-    // 2) contains match either direction
     const contains = skipTypeIndex.find((x) => x.key.includes(ss) || ss.includes(x.key));
     if (contains) return { id: contains.id, match: contains.name, method: "contains" };
 
@@ -306,11 +273,9 @@ export default function ImportBookingsPage() {
       const headerRow = grid[0].map((x) => String(x || "").trim());
       const { list: headerList, normMap } = normalizeHeaders(headerRow);
 
-      // Convert grid rows to objects with header keys
       const out = [];
       for (let i = 1; i < grid.length; i++) {
         const arr = grid[i];
-        // skip fully blank lines
         if (!arr || arr.every((c) => String(c || "").trim() === "")) continue;
 
         const obj = {};
@@ -318,7 +283,6 @@ export default function ImportBookingsPage() {
           obj[headerList[c]] = arr[c] != null ? String(arr[c]) : "";
         }
 
-        // Build a normalized row used by our mapper
         const mapped = {
           job_no: getCell(obj, normMap, ["Job No", "Job Number", "job_number"]),
           booking_date: getCell(obj, normMap, ["Booking Date", "Created At", "created_at"]),
@@ -371,14 +335,12 @@ export default function ImportBookingsPage() {
         invalidRows: [],
         unknownSkipSizes: [],
         previewRows: [],
-        customerKeys: [],
       };
     }
 
     const invalid = [];
-    const unknownSkips = new Map(); // key -> count
-    const custKeys = new Map(); // key -> example
-
+    const unknownSkips = new Map();
+    const custKeys = new Map();
     const preview = [];
 
     for (let i = 0; i < rows.length; i++) {
@@ -394,34 +356,20 @@ export default function ImportBookingsPage() {
       const basePrice = parseMoney(r.base_skip_price_inc_vat);
 
       const customerKey = makeUniqueCustomerKey(r);
-      if (!custKeys.has(customerKey)) {
-        custKeys.set(customerKey, {
-          key: customerKey,
-          name: `${r.company_name || ""} ${r.customer_first_name || ""} ${r.customer_last_name || ""}`.trim(),
-          email: r.customer_email || "",
-          phone: r.customer_phone || "",
-        });
-      }
+      if (!custKeys.has(customerKey)) custKeys.set(customerKey, true);
 
       const errs = [];
       if (!jobNo) errs.push("Missing Job No");
       if (!skipSize) errs.push("Missing Skip Size");
-      if (skipSize && !skipMatch.id) {
-        unknownSkips.set(clean(skipSize) || skipSize, (unknownSkips.get(clean(skipSize) || skipSize) || 0) + 1);
-      }
+      if (skipSize && !skipMatch.id) unknownSkips.set(clean(skipSize) || skipSize, (unknownSkips.get(clean(skipSize) || skipSize) || 0) + 1);
       if (!deliveryDate) errs.push("Missing/invalid Delivery Date");
       if (!postcode) errs.push("Missing Postcode");
       if (!address) errs.push("Missing Address");
 
-      // price is optional per your decision, but we show if missing
       if (r.base_skip_price_inc_vat && basePrice == null) errs.push("Price present but not parseable");
 
       if (errs.length) {
-        invalid.push({
-          rowIndex: i + 2, // CSV row number (including header)
-          jobNo: jobNo || "—",
-          errors: errs,
-        });
+        invalid.push({ rowIndex: i + 2, jobNo: jobNo || "—", errors: errs });
       }
 
       if (preview.length < previewCount) {
@@ -435,7 +383,11 @@ export default function ImportBookingsPage() {
           postcode,
           address,
           price: basePrice,
-          customer: `${(r.company_name || "").trim()}${r.customer_first_name || r.customer_last_name ? ` – ${(r.customer_first_name || "").trim()} ${(r.customer_last_name || "").trim()}` : ""}`,
+          customer: `${(r.company_name || "").trim()}${
+            r.customer_first_name || r.customer_last_name
+              ? ` – ${(r.customer_first_name || "").trim()} ${(r.customer_last_name || "").trim()}`
+              : ""
+          }`,
           wtn: isLikelyUrl(r.wtn_pdf_link) ? "Yes" : "",
         });
       }
@@ -450,7 +402,6 @@ export default function ImportBookingsPage() {
         .map(([k, count]) => ({ skipSize: k, count }))
         .sort((a, b) => b.count - a.count),
       previewRows: preview,
-      customerKeys: Array.from(custKeys.values()),
     };
   }, [rows, previewCount, skipTypeIndex]);
 
@@ -458,7 +409,6 @@ export default function ImportBookingsPage() {
     if (!rows.length) return false;
     if (skipTypesLoading) return false;
     if (skipTypesErr) return false;
-    // Block if unknown skip sizes exist or invalid rows exist
     if (analysis.unknownSkipSizes.length) return false;
     if (analysis.invalidRows.length) return false;
     return true;
@@ -528,14 +478,7 @@ export default function ImportBookingsPage() {
           </div>
 
           <div style={{ fontSize: 12, color: "#666" }}>
-            Skip types:{" "}
-            {skipTypesLoading ? (
-              <b>Loading…</b>
-            ) : (
-              <>
-                <b>{skipTypes.length}</b> found
-              </>
-            )}
+            Skip types: {skipTypesLoading ? <b>Loading…</b> : <b>{skipTypes.length}</b>} found
           </div>
 
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -614,10 +557,6 @@ export default function ImportBookingsPage() {
           {analysis.unknownSkipSizes.length > 0 && (
             <section style={{ ...cardStyle, borderColor: "#ffe7b5", background: "#fffaf0" }}>
               <h2 style={h2Style}>Unknown skip sizes (blocked)</h2>
-              <p style={{ margin: "0 0 10px", fontSize: 12, color: "#7a5a00" }}>
-                These skip sizes did not match any record in <code>skip_types</code>. Fix either the CSV values or your skip
-                types.
-              </p>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
                   <thead>
@@ -642,9 +581,6 @@ export default function ImportBookingsPage() {
           {analysis.invalidRows.length > 0 && (
             <section style={{ ...cardStyle, borderColor: "#ffd1d1", background: "#fff5f5" }}>
               <h2 style={h2Style}>Invalid rows (blocked)</h2>
-              <p style={{ margin: "0 0 10px", fontSize: 12, color: "#8a1f1f" }}>
-                These rows are missing required fields (Job No, Delivery Date, Address, Postcode, Skip Size).
-              </p>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
                   <thead>
@@ -672,9 +608,7 @@ export default function ImportBookingsPage() {
                 </table>
               </div>
               {analysis.invalidRows.length > 50 && (
-                <p style={{ margin: "10px 0 0", fontSize: 12, color: "#8a1f1f" }}>
-                  Showing first 50 invalid rows only.
-                </p>
+                <p style={{ margin: "10px 0 0", fontSize: 12, color: "#8a1f1f" }}>Showing first 50 invalid rows only.</p>
               )}
             </section>
           )}
@@ -706,9 +640,7 @@ export default function ImportBookingsPage() {
                       <td style={tdStyle}>{r.deliveryDate || "—"}</td>
                       <td style={tdStyle}>{r.status || "—"}</td>
                       <td style={tdStyle}>{r.skipSize || "—"}</td>
-                      <td style={tdStyle}>
-                        {r.skipTypeMatch === "—" ? <span style={{ color: "#8a1f1f", fontWeight: 800 }}>—</span> : r.skipTypeMatch}
-                      </td>
+                      <td style={tdStyle}>{r.skipTypeMatch}</td>
                       <td style={tdStyle}>{r.postcode || "—"}</td>
                       <td style={tdStyle}>{r.address || "—"}</td>
                       <td style={tdStyle}>{r.price == null ? "—" : moneyGBP(r.price)}</td>
@@ -718,11 +650,6 @@ export default function ImportBookingsPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
-
-            <div style={{ marginTop: 12, fontSize: 12, color: "#666" }}>
-              Next step (after you confirm this looks correct): we add the import API + optional “wipe test data” SQL, then run it
-              in batches.
             </div>
           </section>
 
@@ -809,16 +736,6 @@ const inputStyle = {
   border: "1px solid #ccc",
   fontSize: 13,
   background: "#fff",
-};
-
-const btnPrimary = {
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: "1px solid #0070f3",
-  background: "#0070f3",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
 };
 
 const btnSecondary = {
