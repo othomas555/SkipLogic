@@ -23,15 +23,40 @@ function moneyGBP(n) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(x);
 }
 
+function displayCustomerTitle(c) {
+  if (!c) return "Customer";
+  const base = `${c.first_name || ""} ${c.last_name || ""}`.trim();
+  if (c.company_name) return `${c.company_name}${base ? ` – ${base}` : ""}`;
+  return base || "Customer";
+}
+
 export default function CustomerHistoryPage() {
   const router = useRouter();
   const customerId = router.query?.id ? String(router.query.id) : "";
-  const { checking, user } = useAuthProfile();
+
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
-  const [debugMsg, setDebugMsg] = useState("");
-  const [payload, setPayload] = useState(null);
+  const [warnings, setWarnings] = useState([]);
+
+  const [customer, setCustomer] = useState(null);
+  const [jobs, setJobs] = useState([]);
+  const [invoices, setInvoices] = useState([]);
+  const [wtns, setWtns] = useState([]);
+
+  async function tryTable(tableName, buildQuery) {
+    try {
+      const q = buildQuery(supabase.from(tableName));
+      const { data, error } = await q;
+      if (error) {
+        return { ok: false, data: [], warning: `${tableName}: ${error.message}` };
+      }
+      return { ok: true, data: data || [], warning: null };
+    } catch (e) {
+      return { ok: false, data: [], warning: `${tableName}: ${e?.message || String(e)}` };
+    }
+  }
 
   async function load() {
     if (!customerId) return;
@@ -43,92 +68,143 @@ export default function CustomerHistoryPage() {
       return;
     }
 
+    if (!subscriberId) {
+      setLoading(false);
+      setErrorMsg("No subscriber found for this user.");
+      return;
+    }
+
     setLoading(true);
     setErrorMsg("");
-    setDebugMsg("");
+    setWarnings([]);
 
-    try {
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-      if (sessionErr) {
-        console.error("getSession error:", sessionErr);
-        setErrorMsg("Could not read session.");
-        setDebugMsg(sessionErr.message || String(sessionErr));
-        setPayload(null);
-        setLoading(false);
-        return;
-      }
+    // 1) Load customer (tenant scoped)
+    const { data: cust, error: custErr } = await supabase
+      .from("customers")
+      .select("id, first_name, last_name, company_name, email, phone")
+      .eq("subscriber_id", subscriberId)
+      .eq("id", customerId)
+      .single();
 
-      const token = sessionData?.session?.access_token;
-      if (!token) {
-        setErrorMsg("No auth session token found. Try signing out and back in.");
-        setPayload(null);
-        setLoading(false);
-        return;
-      }
-
-      const res = await fetch(`/api/customers/history?customer_id=${encodeURIComponent(customerId)}`, {
-        method: "GET",
-        headers: { Authorization: "Bearer " + token },
-      });
-
-      const text = await res.text();
-      let json = null;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        json = null;
-      }
-
-      if (!res.ok || !json?.ok) {
-        console.error("History API error:", res.status, json || text);
-        setErrorMsg(json?.error || `Could not load history (HTTP ${res.status}).`);
-        setDebugMsg(json ? JSON.stringify(json) : text);
-        setPayload(null);
-        setLoading(false);
-        return;
-      }
-
-      setPayload(json);
+    if (custErr) {
+      console.error(custErr);
+      setErrorMsg("Could not load customer.");
+      setCustomer(null);
+      setJobs([]);
+      setInvoices([]);
+      setWtns([]);
       setLoading(false);
-    } catch (e) {
-      console.error(e);
-      setErrorMsg("Could not load history.");
-      setDebugMsg(e?.message || String(e));
-      setPayload(null);
-      setLoading(false);
+      return;
     }
+
+    setCustomer(cust);
+
+    const warns = [];
+
+    // 2) Jobs (try common tables)
+    let jobsData = [];
+    {
+      const attempts = [
+        ["jobs", (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500)],
+        [
+          "delivery_jobs",
+          (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500),
+        ],
+        ["skip_jobs", (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500)],
+      ];
+
+      for (const [name, fn] of attempts) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await tryTable(name, fn);
+        if (r.warning) warns.push(r.warning);
+        if (r.ok && r.data.length) {
+          jobsData = r.data;
+          break;
+        }
+      }
+
+      if (!jobsData.length) warns.push("Jobs: no rows returned from jobs/delivery_jobs/skip_jobs (may be a different table/column).");
+    }
+
+    // 3) Invoices (try common tables)
+    let invoicesData = [];
+    {
+      const attempts = [
+        ["invoices", (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500)],
+        [
+          "xero_invoices",
+          (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500),
+        ],
+      ];
+
+      for (const [name, fn] of attempts) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await tryTable(name, fn);
+        if (r.warning) warns.push(r.warning);
+        if (r.ok && r.data.length) {
+          invoicesData = r.data;
+          break;
+        }
+      }
+    }
+
+    // 4) WTNs (try common tables)
+    let wtnsData = [];
+    {
+      const attempts = [
+        [
+          "waste_out",
+          (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500),
+        ],
+        [
+          "waste_transfer_notes",
+          (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500),
+        ],
+      ];
+
+      for (const [name, fn] of attempts) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await tryTable(name, fn);
+        if (r.warning) warns.push(r.warning);
+        if (r.ok && r.data.length) {
+          wtnsData = r.data;
+          break;
+        }
+      }
+    }
+
+    setWarnings(warns);
+    setJobs(jobsData);
+    setInvoices(invoicesData);
+    setWtns(wtnsData);
+    setLoading(false);
   }
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [customerId, checking, user]);
-
-  const jobs = payload?.jobs || [];
-  const invoices = payload?.invoices || [];
-  const wtns = payload?.wtns || [];
-  const warnings = payload?.warnings || [];
-
-  const title = payload?.customer
-    ? payload.customer.company_name
-      ? `${payload.customer.company_name}${
-          payload.customer.first_name || payload.customer.last_name
-            ? ` – ${((payload.customer.first_name || "") + " " + (payload.customer.last_name || "")).trim()}`
-            : ""
-        }`
-      : `${((payload.customer.first_name || "") + " " + (payload.customer.last_name || "")).trim()}`.trim() || "Customer"
-    : "Customer";
+  }, [customerId, checking, user, subscriberId]);
 
   const jobsSorted = useMemo(() => {
-    return [...jobs].sort((a, b) => String(b.date || b.created_at || "").localeCompare(String(a.date || a.created_at || "")));
+    const arr = [...jobs];
+    arr.sort((a, b) =>
+      String(b.job_date || b.date || b.created_at || "").localeCompare(String(a.job_date || a.date || a.created_at || ""))
+    );
+    return arr;
   }, [jobs]);
 
   const invoicesSorted = useMemo(() => {
-    return [...invoices].sort((a, b) => String(b.date || b.created_at || "").localeCompare(String(a.date || a.created_at || "")));
+    const arr = [...invoices];
+    arr.sort((a, b) =>
+      String(b.issued_at || b.date || b.created_at || "").localeCompare(String(a.issued_at || a.date || a.created_at || ""))
+    );
+    return arr;
   }, [invoices]);
 
   const wtnsSorted = useMemo(() => {
-    return [...wtns].sort((a, b) => String(b.date || b.created_at || "").localeCompare(String(a.date || a.created_at || "")));
+    const arr = [...wtns];
+    arr.sort((a, b) => String(b.date || b.created_at || "").localeCompare(String(a.date || a.created_at || "")));
+    return arr;
   }, [wtns]);
 
   if (checking || loading) {
@@ -158,7 +234,7 @@ export default function CustomerHistoryPage() {
           <Link href="/app/customers" style={linkStyle}>
             ← Back to customers
           </Link>
-          <h1 style={{ margin: "10px 0 0" }}>History: {title}</h1>
+          <h1 style={{ margin: "10px 0 0" }}>History: {displayCustomerTitle(customer)}</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
             Jobs, invoices and waste paperwork for this customer.
           </p>
@@ -174,18 +250,15 @@ export default function CustomerHistoryPage() {
         </div>
       </header>
 
-      {errorMsg && (
+      {(authError || errorMsg) && (
         <section style={{ ...cardStyle, borderColor: "#ffd1d1", background: "#fff5f5" }}>
-          <p style={{ color: "#8a1f1f", margin: 0, fontWeight: 800 }}>{errorMsg}</p>
-          {debugMsg ? (
-            <pre style={preStyle}>{debugMsg}</pre>
-          ) : null}
+          <p style={{ color: "#8a1f1f", margin: 0, fontWeight: 800 }}>{authError || errorMsg}</p>
         </section>
       )}
 
       {warnings.length > 0 && (
         <section style={{ ...cardStyle, borderColor: "#ffe7b5", background: "#fffaf0" }}>
-          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Wiring warnings (safe to ignore for now)</div>
+          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Wiring warnings (paste these back to me)</div>
           <ul style={{ margin: 0, paddingLeft: 18, color: "#7a5a00", fontSize: 12 }}>
             {warnings.map((w, i) => (
               <li key={i}>{w}</li>
@@ -197,7 +270,7 @@ export default function CustomerHistoryPage() {
       <section style={cardStyle}>
         <h2 style={h2Style}>Jobs</h2>
         {jobsSorted.length === 0 ? (
-          <p style={{ margin: 0, color: "#666" }}>No jobs found (or not wired yet).</p>
+          <p style={{ margin: 0, color: "#666" }}>No jobs found (or not wired to the right table/columns yet).</p>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
@@ -206,23 +279,16 @@ export default function CustomerHistoryPage() {
                   <th style={thStyle}>Date</th>
                   <th style={thStyle}>Type</th>
                   <th style={thStyle}>Ref</th>
-                  <th style={thStyle}>Site / Postcode</th>
                   <th style={thStyle}>Status</th>
-                  <th style={thStyle}>Value</th>
                 </tr>
               </thead>
               <tbody>
                 {jobsSorted.map((j) => (
-                  <tr key={j.id || `${j.ref}-${j.date}`}>
-                    <td style={tdStyle}>{fmtDate(j.date || j.created_at || j.job_date)}</td>
-                    <td style={tdStyle}>{j.type || j.job_type || "—"}</td>
-                    <td style={tdStyle}>{j.ref || j.job_ref || j.booking_ref || "—"}</td>
-                    <td style={tdStyle}>
-                      <div>{j.site_name || j.address || j.delivery_address || "—"}</div>
-                      <div style={{ color: "#666" }}>{j.postcode || j.delivery_postcode || "—"}</div>
-                    </td>
+                  <tr key={j.id || `${j.ref || j.job_ref || "job"}-${j.created_at || Math.random()}`}>
+                    <td style={tdStyle}>{fmtDate(j.job_date || j.date || j.created_at)}</td>
+                    <td style={tdStyle}>{j.job_type || j.type || "—"}</td>
+                    <td style={tdStyle}>{j.job_ref || j.ref || j.booking_ref || "—"}</td>
                     <td style={tdStyle}>{j.status || "—"}</td>
-                    <td style={tdStyle}>{moneyGBP(j.total_inc_vat ?? j.price_inc_vat ?? j.total)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -237,7 +303,7 @@ export default function CustomerHistoryPage() {
           <p style={{ margin: 0, color: "#666" }}>No invoices found (or not wired yet).</p>
         ) : (
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1050 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
               <thead>
                 <tr>
                   <th style={thStyle}>Date</th>
@@ -249,13 +315,13 @@ export default function CustomerHistoryPage() {
               </thead>
               <tbody>
                 {invoicesSorted.map((inv) => (
-                  <tr key={inv.id || inv.invoice_id || inv.number || `${inv.date}-${inv.total}`}>
-                    <td style={tdStyle}>{fmtDate(inv.date || inv.created_at || inv.issued_at)}</td>
-                    <td style={tdStyle}>{inv.number || inv.invoice_number || inv.xero_invoice_number || "—"}</td>
+                  <tr key={inv.id || inv.invoice_id || inv.number || `${inv.created_at || Math.random()}`}>
+                    <td style={tdStyle}>{fmtDate(inv.issued_at || inv.date || inv.created_at)}</td>
+                    <td style={tdStyle}>{inv.invoice_number || inv.number || inv.xero_invoice_number || "—"}</td>
                     <td style={tdStyle}>{inv.status || inv.xero_status || "—"}</td>
                     <td style={tdStyle}>{moneyGBP(inv.total_inc_vat ?? inv.total ?? inv.amount)}</td>
                     <td style={tdStyle}>
-                      <button style={btnSmall} disabled title="Next step: wire to existing resend invoice flow">
+                      <button style={btnSmall} disabled title="Next: wire to your existing resend invoice endpoint">
                         Resend invoice
                       </button>
                     </td>
@@ -284,12 +350,12 @@ export default function CustomerHistoryPage() {
               </thead>
               <tbody>
                 {wtnsSorted.map((w) => (
-                  <tr key={w.id || `${w.date}-${w.number}`}>
+                  <tr key={w.id || `${w.created_at || Math.random()}`}>
                     <td style={tdStyle}>{fmtDate(w.date || w.created_at)}</td>
-                    <td style={tdStyle}>{w.number || w.wtn_number || "—"}</td>
+                    <td style={tdStyle}>{w.wtn_number || w.number || "—"}</td>
                     <td style={tdStyle}>{w.description || w.notes || "—"}</td>
                     <td style={tdStyle}>
-                      <button style={btnSmall} disabled title="Next step: wire resend WTN">
+                      <button style={btnSmall} disabled title="Next: wire resend WTN">
                         Resend WTN
                       </button>
                     </td>
@@ -386,16 +452,4 @@ const btnSmall = {
   color: "#111",
   cursor: "pointer",
   fontSize: 12,
-};
-
-const preStyle = {
-  marginTop: 10,
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-  fontSize: 12,
-  background: "#fff",
-  border: "1px solid #eee",
-  padding: 10,
-  borderRadius: 10,
-  color: "#333",
 };
