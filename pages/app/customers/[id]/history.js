@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
+import { supabase } from "../../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../../lib/useAuthProfile";
 
 function fmtDate(d) {
@@ -29,6 +30,7 @@ export default function CustomerHistoryPage() {
 
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
+  const [debugMsg, setDebugMsg] = useState("");
   const [payload, setPayload] = useState(null);
 
   async function load() {
@@ -43,21 +45,44 @@ export default function CustomerHistoryPage() {
 
     setLoading(true);
     setErrorMsg("");
+    setDebugMsg("");
 
     try {
-      const raw = localStorage.getItem("skiplogic-auth");
-      const token = raw ? JSON.parse(raw)?.access_token : null;
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      if (sessionErr) {
+        console.error("getSession error:", sessionErr);
+        setErrorMsg("Could not read session.");
+        setDebugMsg(sessionErr.message || String(sessionErr));
+        setPayload(null);
+        setLoading(false);
+        return;
+      }
+
+      const token = sessionData?.session?.access_token;
+      if (!token) {
+        setErrorMsg("No auth session token found. Try signing out and back in.");
+        setPayload(null);
+        setLoading(false);
+        return;
+      }
 
       const res = await fetch(`/api/customers/history?customer_id=${encodeURIComponent(customerId)}`, {
         method: "GET",
-        headers: token ? { Authorization: "Bearer " + token } : {},
+        headers: { Authorization: "Bearer " + token },
       });
 
-      const json = await res.json().catch(() => null);
+      const text = await res.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = null;
+      }
 
       if (!res.ok || !json?.ok) {
-        console.error("History API error:", res.status, json);
-        setErrorMsg(json?.error || "Could not load history.");
+        console.error("History API error:", res.status, json || text);
+        setErrorMsg(json?.error || `Could not load history (HTTP ${res.status}).`);
+        setDebugMsg(json ? JSON.stringify(json) : text);
         setPayload(null);
         setLoading(false);
         return;
@@ -68,6 +93,7 @@ export default function CustomerHistoryPage() {
     } catch (e) {
       console.error(e);
       setErrorMsg("Could not load history.");
+      setDebugMsg(e?.message || String(e));
       setPayload(null);
       setLoading(false);
     }
@@ -85,8 +111,12 @@ export default function CustomerHistoryPage() {
 
   const title = payload?.customer
     ? payload.customer.company_name
-      ? `${payload.customer.company_name}${payload.customer.first_name || payload.customer.last_name ? ` – ${(payload.customer.first_name || "") + " " + (payload.customer.last_name || "")}`.trim() : ""}`
-      : `${(payload.customer.first_name || "") + " " + (payload.customer.last_name || "")}`.trim() || "Customer"
+      ? `${payload.customer.company_name}${
+          payload.customer.first_name || payload.customer.last_name
+            ? ` – ${((payload.customer.first_name || "") + " " + (payload.customer.last_name || "")).trim()}`
+            : ""
+        }`
+      : `${((payload.customer.first_name || "") + " " + (payload.customer.last_name || "")).trim()}`.trim() || "Customer"
     : "Customer";
 
   const jobsSorted = useMemo(() => {
@@ -145,9 +175,12 @@ export default function CustomerHistoryPage() {
       </header>
 
       {errorMsg && (
-        <div style={{ marginBottom: 14 }}>
-          <p style={{ color: "red", margin: 0 }}>{errorMsg}</p>
-        </div>
+        <section style={{ ...cardStyle, borderColor: "#ffd1d1", background: "#fff5f5" }}>
+          <p style={{ color: "#8a1f1f", margin: 0, fontWeight: 800 }}>{errorMsg}</p>
+          {debugMsg ? (
+            <pre style={preStyle}>{debugMsg}</pre>
+          ) : null}
+        </section>
       )}
 
       {warnings.length > 0 && (
@@ -158,9 +191,6 @@ export default function CustomerHistoryPage() {
               <li key={i}>{w}</li>
             ))}
           </ul>
-          <div style={{ marginTop: 10, fontSize: 12, color: "#7a5a00" }}>
-            Paste these warnings back to me and I’ll wire the API to your real table/columns.
-          </div>
         </section>
       )}
 
@@ -225,22 +255,9 @@ export default function CustomerHistoryPage() {
                     <td style={tdStyle}>{inv.status || inv.xero_status || "—"}</td>
                     <td style={tdStyle}>{moneyGBP(inv.total_inc_vat ?? inv.total ?? inv.amount)}</td>
                     <td style={tdStyle}>
-                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <button
-                          style={btnSmall}
-                          disabled
-                          title="Next step: wire to existing resend invoice flow"
-                        >
-                          Resend invoice
-                        </button>
-                        {inv.url ? (
-                          <a href={inv.url} target="_blank" rel="noreferrer" style={actionLink}>
-                            Open
-                          </a>
-                        ) : (
-                          <span style={{ color: "#999", fontSize: 12 }}>—</span>
-                        )}
-                      </div>
+                      <button style={btnSmall} disabled title="Next step: wire to existing resend invoice flow">
+                        Resend invoice
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -371,4 +388,14 @@ const btnSmall = {
   fontSize: 12,
 };
 
-const actionLink = { fontSize: 12, textDecoration: "underline", color: "#0070f3" };
+const preStyle = {
+  marginTop: 10,
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  fontSize: 12,
+  background: "#fff",
+  border: "1px solid #eee",
+  padding: 10,
+  borderRadius: 10,
+  color: "#333",
+};
