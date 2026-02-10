@@ -1,4 +1,4 @@
-// pages/signup.js
+// pages/signin.js
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
@@ -50,18 +50,8 @@ function Toast({ open, kind = "info", title, message, onClose }) {
   );
 }
 
-async function getAccessToken() {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) return null;
-  return data?.session?.access_token || null;
-}
-
-export default function SignUpPage() {
+export default function SignInPage() {
   const router = useRouter();
-
-  const [companyName, setCompanyName] = useState("");
-  const [fullName, setFullName] = useState("");
-  const [phone, setPhone] = useState("");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -85,94 +75,38 @@ export default function SignUpPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleSignUp(e) {
+  async function handleSignIn(e) {
     e.preventDefault();
     closeToast();
 
-    const cn = (companyName || "").trim();
-    const fn = (fullName || "").trim();
-    const ph = (phone || "").trim();
     const em = (email || "").trim();
-
-    if (!cn) return showToast("error", "Missing company name", "Enter your company name.");
-    if (!fn) return showToast("error", "Missing name", "Enter your full name.");
-    if (!ph) return showToast("error", "Missing phone", "Enter your phone number.");
-    if (!em) return showToast("error", "Missing email", "Enter your email address.");
-    if (!password || password.length < 8) return showToast("error", "Weak password", "Use at least 8 characters.");
+    if (!em) return showToast("error", "Missing email", "Enter your email.");
+    if (!password) return showToast("error", "Missing password", "Enter your password.");
 
     setWorking(true);
-
     try {
-      // 1) Create auth user
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: em,
-        password,
-        options: {
-          data: {
-            company_name: cn,
-            full_name: fn,
-            phone: ph,
-          },
-        },
-      });
-
-      if (signUpError) {
-        showToast("error", "Sign up failed", signUpError.message || "Could not create account.");
-        setWorking(false);
-        return;
-      }
-
-      // Supabase may not return a session if email confirmations are enabled.
-      // Try to sign in immediately (works when confirmations are OFF).
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: em,
         password,
       });
 
-      if (signInError || !signInData?.session?.user) {
-        showToast(
-          "error",
-          "Check your email",
-          "Your account was created, but you may need to confirm your email before signing in. If confirmations are OFF, tell me and we’ll adjust."
-        );
+      if (error) {
+        showToast("error", "Sign in failed", error.message || "Could not sign in.");
         setWorking(false);
         return;
       }
 
-      // 2) Bootstrap tenant (subscriber + profile)
-      const token = await getAccessToken();
-      if (!token) {
-        showToast("error", "Setup failed", "Signed in but no access token. Refresh and try again.");
+      if (!data?.session?.user) {
+        showToast("error", "Sign in failed", "No user session returned.");
         setWorking(false);
         return;
       }
 
-      const resp = await fetch("/api/auth/bootstrap", {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + token,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          company_name: cn,
-          full_name: fn,
-          phone: ph,
-        }),
-      });
-
-      const json = await resp.json().catch(() => ({}));
-
-      if (!resp.ok || !json.ok) {
-        const msg = json?.error || json?.details || "Tenant bootstrap failed.";
-        showToast("error", "Setup failed", String(msg));
-        setWorking(false);
-        return;
-      }
-
-      showToast("success", "Account created", "You’re in. Redirecting to the app…");
-      setTimeout(() => router.replace("/app"), 450);
+      showToast("success", "Signed in", "Welcome back. Redirecting…");
+      // small delay so you see the popup
+      setTimeout(() => router.replace("/app"), 350);
     } catch (err) {
-      showToast("error", "Sign up failed", "Unexpected error creating your account.");
+      showToast("error", "Sign in failed", "Unexpected error signing in.");
       setWorking(false);
     }
   }
@@ -181,12 +115,10 @@ export default function SignUpPage() {
     <main style={{ minHeight: "100vh", padding: 24, fontFamily: "system-ui, sans-serif", background: "#fafafa" }}>
       <Toast open={toast.open} kind={toast.kind} title={toast.title} message={toast.message} onClose={closeToast} />
 
-      <div style={{ maxWidth: 560, margin: "0 auto", paddingTop: 30 }}>
+      <div style={{ maxWidth: 520, margin: "0 auto", paddingTop: 40 }}>
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 28, fontWeight: 950, letterSpacing: -0.2 }}>SkipLogic</div>
-          <div style={{ color: "#555", marginTop: 6 }}>
-            Create your account — <b>30-day free trial</b> (card setup comes next)
-          </div>
+          <div style={{ color: "#555", marginTop: 6 }}>Sign in to your account</div>
         </div>
 
         <section
@@ -198,91 +130,65 @@ export default function SignUpPage() {
             boxShadow: "0 8px 20px rgba(0,0,0,0.06)",
           }}
         >
-          <form onSubmit={handleSignUp}>
-            <div style={{ display: "grid", gap: 12 }}>
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Company name</label>
-                <input
-                  type="text"
-                  value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
-                  placeholder="e.g. Cox Skips & Waste Management Ltd"
-                  style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-                />
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Full name</label>
-                  <input
-                    type="text"
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    placeholder="Your name"
-                    style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-                  />
-                </div>
-
-                <div>
-                  <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Phone</label>
-                  <input
-                    type="tel"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="07…"
-                    style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@company.com"
-                  autoComplete="email"
-                  style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-                />
-              </div>
-
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="At least 8 characters"
-                  autoComplete="new-password"
-                  style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={working}
+          <form onSubmit={handleSignIn}>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: "block", marginBottom: 6, fontWeight: 800 }}>Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@company.com"
+                autoComplete="email"
                 style={{
                   width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  border: "none",
-                  background: working ? "#999" : "#0070f3",
-                  color: "#fff",
-                  fontWeight: 950,
-                  cursor: working ? "default" : "pointer",
-                  marginTop: 6,
+                  padding: 10,
+                  borderRadius: 10,
+                  border: "1px solid #ccc",
+                  outline: "none",
                 }}
-              >
-                {working ? "Creating account…" : "Create account"}
-              </button>
+              />
+            </div>
 
-              <div style={{ fontSize: 13, color: "#444" }}>
-                Already have an account?{" "}
-                <a href="/signin" style={{ fontWeight: 900 }}>
-                  Sign in
-                </a>
-              </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: "block", marginBottom: 6, fontWeight: 800 }}>Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="current-password"
+                style={{
+                  width: "100%",
+                  padding: 10,
+                  borderRadius: 10,
+                  border: "1px solid #ccc",
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={working}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 12,
+                border: "none",
+                background: working ? "#999" : "#0070f3",
+                color: "#fff",
+                fontWeight: 900,
+                cursor: working ? "default" : "pointer",
+              }}
+            >
+              {working ? "Signing in…" : "Sign in"}
+            </button>
+
+            <div style={{ marginTop: 12, fontSize: 13, color: "#444" }}>
+              No account yet?{" "}
+              <a href="/signup" style={{ fontWeight: 900 }}>
+                Create one
+              </a>
             </div>
           </form>
         </section>
