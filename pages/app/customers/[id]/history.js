@@ -35,14 +35,6 @@ function safeStr(x) {
   return String(x);
 }
 
-function pick(obj, keys) {
-  for (const k of keys) {
-    if (!obj) continue;
-    if (Object.prototype.hasOwnProperty.call(obj, k) && obj[k] != null && obj[k] !== "") return obj[k];
-  }
-  return null;
-}
-
 function uniqBy(arr, keyFn) {
   const seen = new Set();
   const out = [];
@@ -54,6 +46,72 @@ function uniqBy(arr, keyFn) {
     out.push(x);
   }
   return out;
+}
+
+function deriveJobType(j) {
+  // Based on SkipLogic job fields we saw in your debug.
+  // Priority order:
+  // 1) swap_role present -> Swap (Full/Empty if set)
+  // 2) collection_actual_date set -> Collected
+  // 3) delivery_actual_date set -> Delivered
+  // 4) collection_date set -> Collection booked
+  // 5) scheduled_date set -> Delivery booked
+  if (j.swap_role) {
+    const r = String(j.swap_role || "").toLowerCase();
+    if (r === "full") return "Swap (full)";
+    if (r === "empty") return "Swap (empty)";
+    return "Swap";
+  }
+
+  if (j.collection_actual_date) return "Collected";
+  if (j.delivery_actual_date) return "Delivered";
+
+  if (j.collection_date) return "Collection booked";
+  if (j.scheduled_date) return "Delivery booked";
+
+  // fallback to notes if present
+  if (j.notes) {
+    const n = String(j.notes).toLowerCase();
+    if (n.includes("swap")) return "Swap";
+    if (n.includes("collect")) return "Collection";
+    if (n.includes("deliver")) return "Delivery";
+  }
+
+  return "Job";
+}
+
+function derivePrimaryDate(j) {
+  // Prefer "actual" dates if they exist, then scheduled dates, then created_at.
+  return (
+    j.collection_actual_date ||
+    j.delivery_actual_date ||
+    j.collection_date ||
+    j.scheduled_date ||
+    j.work_date ||
+    j.created_at ||
+    null
+  );
+}
+
+function mapJobRow(j) {
+  const date = derivePrimaryDate(j);
+  return {
+    id: j.id,
+    date,
+    type: deriveJobType(j),
+    ref: j.job_number || "—",
+    status: j.job_status || "—",
+    postcode: j.site_postcode || "—",
+    value: j.price_inc_vat ?? null,
+    site: {
+      name: j.site_name || null,
+      line1: j.site_address_line1 || null,
+      line2: j.site_address_line2 || null,
+      town: j.site_town || null,
+      postcode: j.site_postcode || null,
+    },
+    raw: j,
+  };
 }
 
 export default function CustomerHistoryPage() {
@@ -86,70 +144,6 @@ export default function CustomerHistoryPage() {
     } catch (e) {
       return { ok: false, data: [], warning: `${tableName}: ${e?.message || String(e)}` };
     }
-  }
-
-  function mapJobRow(j) {
-    // Keep this mapping very tolerant: try lots of names, no assumptions.
-    const id = pick(j, ["id", "job_id"]);
-    const createdAt = pick(j, ["created_at", "createdAt"]);
-    const date = pick(j, ["job_date", "date", "delivery_date", "collection_date", "run_date", "created_at"]);
-
-    const type = pick(j, ["job_type", "type", "job_kind", "kind", "event_type", "work_type"]);
-    const ref = pick(j, ["job_ref", "ref", "booking_ref", "booking_number", "reference", "job_number", "job_no"]);
-    const status = pick(j, ["status", "job_status", "state", "current_status"]);
-
-    const postcode = pick(j, ["postcode", "delivery_postcode", "site_postcode", "address_postcode"]);
-    const siteOrAddr =
-      pick(j, ["site_name", "site", "address", "delivery_address", "collection_address", "address_line1"]) || null;
-
-    const value =
-      pick(j, [
-        "total_inc_vat",
-        "price_inc_vat",
-        "total",
-        "amount",
-        "amount_inc_vat",
-        "grand_total",
-        "invoice_total_inc_vat",
-      ]) ?? null;
-
-    // Invoice-ish fields (common patterns in SkipLogic builds)
-    const invoiceId = pick(j, ["xero_invoice_id", "invoice_id"]);
-    const invoiceNumber = pick(j, ["xero_invoice_number", "invoice_number", "invoice_no", "invoice_ref"]);
-    const invoiceStatus = pick(j, ["xero_status", "invoice_status", "invoice_state"]);
-    const invoiceUrl = pick(j, ["invoice_url", "xero_invoice_url", "xero_url", "xero_invoice_link"]);
-    const invoiceIssuedAt = pick(j, ["invoice_issued_at", "issued_at", "invoice_date"]);
-
-    // WTN-ish fields (if you store them on jobs)
-    const wtnNumber = pick(j, ["wtn_number", "waste_transfer_note_number", "waste_note_number"]);
-    const wtnUrl = pick(j, ["wtn_url", "waste_transfer_note_url", "waste_note_url"]);
-    const wtnCreatedAt = pick(j, ["wtn_created_at", "wtn_issued_at"]);
-
-    return {
-      id,
-      createdAt,
-      date,
-      type,
-      ref,
-      status,
-      postcode,
-      siteOrAddr,
-      value,
-      invoice: {
-        invoiceId,
-        invoiceNumber,
-        invoiceStatus,
-        invoiceUrl,
-        invoiceIssuedAt,
-        invoiceTotal: value,
-      },
-      wtn: {
-        wtnNumber,
-        wtnUrl,
-        wtnCreatedAt,
-      },
-      raw: j,
-    };
   }
 
   async function load() {
@@ -195,8 +189,8 @@ export default function CustomerHistoryPage() {
 
     const warns = [];
 
-    // Jobs
-    let jobsData = [];
+    // Jobs (this is now clearly correct: jobs.customer_id exists and is populated)
+    let jobsRaw = [];
     {
       const r = await tryTable("jobs", (t) =>
         t
@@ -206,10 +200,34 @@ export default function CustomerHistoryPage() {
           .order("created_at", { ascending: false })
           .limit(500)
       );
-
       if (r.warning) warns.push(r.warning);
-      jobsData = r.data || [];
+      jobsRaw = r.data || [];
     }
+
+    const mappedJobs = jobsRaw.map(mapJobRow);
+
+    // Invoices derived from jobs (your actual fields are xero_invoice_*)
+    const derivedInvoices = uniqBy(
+      jobsRaw
+        .map((j) => {
+          const hasInv = j.xero_invoice_id || j.xero_invoice_number || j.xero_invoice_status;
+          if (!hasInv) return null;
+          return {
+            id: j.xero_invoice_id || j.xero_invoice_number || j.id,
+            date: j.xero_synced_at || j.created_at || null,
+            number: j.xero_invoice_number || "—",
+            status: j.xero_invoice_status || j.xero_sync_status || "—",
+            total_inc_vat: j.price_inc_vat ?? null,
+            job_number: j.job_number || "—",
+            job_id: j.id,
+          };
+        })
+        .filter(Boolean),
+      (x) => safeStr(x.id)
+    );
+
+    // WTNs: none detected yet (we'll wire once we know where you store them)
+    const derivedWtns = [];
 
     // Keep your earlier warnings about missing tables (so we don't forget)
     {
@@ -226,74 +244,12 @@ export default function CustomerHistoryPage() {
       if (rWtn.warning) warns.push(rWtn.warning);
     }
 
-    // Map jobs → display rows
-    const mappedJobs = (jobsData || []).map(mapJobRow);
-
-    // Derive invoices from jobs (if any invoice fields exist)
-    const derivedInvoices = uniqBy(
-      mappedJobs
-        .map((mj) => {
-          const inv = mj.invoice;
-          const hasAnything = inv.invoiceId || inv.invoiceNumber || inv.invoiceStatus || inv.invoiceUrl;
-          if (!hasAnything) return null;
-          return {
-            id: inv.invoiceId || inv.invoiceNumber || mj.id,
-            date: inv.invoiceIssuedAt || mj.date || mj.createdAt,
-            number: inv.invoiceNumber || "—",
-            status: inv.invoiceStatus || "—",
-            total_inc_vat: inv.invoiceTotal,
-            url: inv.invoiceUrl || null,
-            source_job_id: mj.id || null,
-            source_job_ref: mj.ref || null,
-          };
-        })
-        .filter(Boolean),
-      (x) => safeStr(x.id)
-    );
-
-    // Derive WTNs from jobs (if any WTN fields exist)
-    const derivedWtns = uniqBy(
-      mappedJobs
-        .map((mj) => {
-          const w = mj.wtn;
-          const hasAnything = w.wtnNumber || w.wtnUrl;
-          if (!hasAnything) return null;
-          return {
-            id: `${w.wtnNumber || ""}-${mj.id || ""}` || mj.id,
-            date: w.wtnCreatedAt || mj.date || mj.createdAt,
-            number: w.wtnNumber || "—",
-            description: mj.ref ? `Job ${mj.ref}` : "—",
-            url: w.wtnUrl || null,
-            source_job_id: mj.id || null,
-          };
-        })
-        .filter(Boolean),
-      (x) => safeStr(x.id)
-    );
-
-    // Debug info: show keys + sample row + mapping example
-    const sampleRaw = jobsData && jobsData.length ? jobsData[0] : null;
-    const sampleMapped = mappedJobs && mappedJobs.length ? mappedJobs[0] : null;
-
+    // Debug info
+    const sample = jobsRaw && jobsRaw.length ? jobsRaw[0] : null;
     setDebugInfo({
-      job_count: jobsData?.length || 0,
-      sample_job_keys: sampleRaw ? Object.keys(sampleRaw).sort() : [],
-      sample_job_raw: sampleRaw,
-      sample_job_mapped: sampleMapped
-        ? {
-            date: sampleMapped.date,
-            type: sampleMapped.type,
-            ref: sampleMapped.ref,
-            status: sampleMapped.status,
-            postcode: sampleMapped.postcode,
-            siteOrAddr: sampleMapped.siteOrAddr,
-            value: sampleMapped.value,
-            invoiceFields: sampleMapped.invoice,
-            wtnFields: sampleMapped.wtn,
-          }
-        : null,
-      note:
-        "If Type/Ref/Status/Postcode are still blank, send me sample_job_keys (or the raw sample row) and I’ll add the exact column names.",
+      jobs_loaded: jobsRaw.length,
+      sample_keys: sample ? Object.keys(sample).sort() : [],
+      sample_row: sample,
     });
 
     setWarnings(warns);
@@ -310,7 +266,7 @@ export default function CustomerHistoryPage() {
 
   const jobsSorted = useMemo(() => {
     const arr = [...jobs];
-    arr.sort((a, b) => String(b.date || b.createdAt || "").localeCompare(String(a.date || a.createdAt || "")));
+    arr.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
     return arr;
   }, [jobs]);
 
@@ -319,12 +275,6 @@ export default function CustomerHistoryPage() {
     arr.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
     return arr;
   }, [invoices]);
-
-  const wtnsSorted = useMemo(() => {
-    const arr = [...wtns];
-    arr.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-    return arr;
-  }, [wtns]);
 
   if (checking || loading) {
     return (
@@ -392,26 +342,13 @@ export default function CustomerHistoryPage() {
       {showDebug && (
         <section style={{ ...cardStyle, borderColor: "#dbeafe", background: "#eff6ff" }}>
           <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Debug</div>
-          <div style={{ fontSize: 12, color: "#1e3a8a", marginBottom: 8 }}>{debugInfo?.note || "—"}</div>
-
           <div style={{ fontSize: 12, color: "#1e3a8a", marginBottom: 6 }}>
-            Jobs loaded: <b>{debugInfo?.job_count ?? 0}</b>
+            Jobs loaded: <b>{debugInfo?.jobs_loaded ?? 0}</b>
           </div>
-
-          <div style={{ fontSize: 12, color: "#1e3a8a", marginBottom: 6 }}>
-            Sample job keys:
-          </div>
-          <pre style={preStyle}>{(debugInfo?.sample_job_keys || []).join(", ") || "—"}</pre>
-
-          <div style={{ fontSize: 12, color: "#1e3a8a", marginBottom: 6 }}>
-            Sample mapped fields:
-          </div>
-          <pre style={preStyle}>{debugInfo?.sample_job_mapped ? JSON.stringify(debugInfo.sample_job_mapped, null, 2) : "—"}</pre>
-
-          <div style={{ fontSize: 12, color: "#1e3a8a", marginBottom: 6 }}>
-            Sample raw row:
-          </div>
-          <pre style={preStyle}>{debugInfo?.sample_job_raw ? JSON.stringify(debugInfo.sample_job_raw, null, 2) : "—"}</pre>
+          <div style={{ fontSize: 12, color: "#1e3a8a", marginBottom: 6 }}>Sample job keys:</div>
+          <pre style={preStyle}>{(debugInfo?.sample_keys || []).join(", ") || "—"}</pre>
+          <div style={{ fontSize: 12, color: "#1e3a8a", marginBottom: 6 }}>Sample raw row:</div>
+          <pre style={preStyle}>{debugInfo?.sample_row ? JSON.stringify(debugInfo.sample_row, null, 2) : "—"}</pre>
         </section>
       )}
 
@@ -434,8 +371,8 @@ export default function CustomerHistoryPage() {
               </thead>
               <tbody>
                 {jobsSorted.map((j) => (
-                  <tr key={j.id || `${j.createdAt || Math.random()}`}>
-                    <td style={tdStyle}>{fmtDate(j.date || j.createdAt)}</td>
+                  <tr key={j.id || `${j.ref}-${Math.random()}`}>
+                    <td style={tdStyle}>{fmtDate(j.date)}</td>
                     <td style={tdStyle}>{j.type || "—"}</td>
                     <td style={tdStyle}>{j.ref || "—"}</td>
                     <td style={tdStyle}>{j.status || "—"}</td>
@@ -453,15 +390,14 @@ export default function CustomerHistoryPage() {
         <h2 style={h2Style}>Invoices</h2>
         {invoicesSorted.length === 0 ? (
           <p style={{ margin: 0, color: "#666" }}>
-            No invoice fields detected on jobs yet. If invoices exist in your system, they’re likely stored under a different
-            table name — turn on <b>Show debug</b> and paste me the keys, or tell me where invoices live.
+            No invoices linked yet (no xero_invoice_number on jobs).
           </p>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1100 }}>
               <thead>
                 <tr>
-                  <th style={thStyle}>Date</th>
+                  <th style={thStyle}>Synced</th>
                   <th style={thStyle}>Invoice</th>
                   <th style={thStyle}>Status</th>
                   <th style={thStyle}>Total</th>
@@ -471,25 +407,16 @@ export default function CustomerHistoryPage() {
               </thead>
               <tbody>
                 {invoicesSorted.map((inv) => (
-                  <tr key={safeStr(inv.id) || `${inv.date}-${Math.random()}`}>
+                  <tr key={safeStr(inv.id) || `${inv.number}-${Math.random()}`}>
                     <td style={tdStyle}>{fmtDate(inv.date)}</td>
                     <td style={tdStyle}>{inv.number || "—"}</td>
                     <td style={tdStyle}>{inv.status || "—"}</td>
                     <td style={tdStyle}>{moneyGBP(inv.total_inc_vat)}</td>
-                    <td style={tdStyle}>{inv.source_job_ref || "—"}</td>
+                    <td style={tdStyle}>{inv.job_number || "—"}</td>
                     <td style={tdStyle}>
-                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                        <button style={btnSmall} disabled title="Next: wire to your existing resend invoice endpoint">
-                          Resend invoice
-                        </button>
-                        {inv.url ? (
-                          <a href={inv.url} target="_blank" rel="noreferrer" style={actionLink}>
-                            Open
-                          </a>
-                        ) : (
-                          <span style={{ color: "#999", fontSize: 12 }}>—</span>
-                        )}
-                      </div>
+                      <button style={btnSmall} disabled title="Next: wire to your existing resend invoice flow">
+                        Resend invoice
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -501,47 +428,13 @@ export default function CustomerHistoryPage() {
 
       <section style={cardStyle}>
         <h2 style={h2Style}>Waste Transfer Notes</h2>
-        {wtnsSorted.length === 0 ? (
+        {wtns.length === 0 ? (
           <p style={{ margin: 0, color: "#666" }}>
-            No WTN fields detected on jobs yet, and your schema doesn’t have <code>waste_out</code> / <code>waste_transfer_notes</code>.
-            Once we identify the real WTN storage (table or job fields), we’ll list them here + add “Resend WTN”.
+            WTNs not wired yet. Your schema doesn’t have <code>waste_out</code> / <code>waste_transfer_notes</code>, and there are no WTN fields on jobs.
+            Tell me where WTNs are generated/stored and we’ll list + resend them here.
           </p>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 950 }}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Date</th>
-                  <th style={thStyle}>WTN</th>
-                  <th style={thStyle}>Description</th>
-                  <th style={thStyle}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {wtnsSorted.map((w) => (
-                  <tr key={safeStr(w.id) || `${w.date}-${Math.random()}`}>
-                    <td style={tdStyle}>{fmtDate(w.date)}</td>
-                    <td style={tdStyle}>{w.number || "—"}</td>
-                    <td style={tdStyle}>{w.description || "—"}</td>
-                    <td style={tdStyle}>
-                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                        <button style={btnSmall} disabled title="Next: wire resend WTN">
-                          Resend WTN
-                        </button>
-                        {w.url ? (
-                          <a href={w.url} target="_blank" rel="noreferrer" style={actionLink}>
-                            Open
-                          </a>
-                        ) : (
-                          <span style={{ color: "#999", fontSize: 12 }}>—</span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <p style={{ margin: 0 }}>—</p>
         )}
       </section>
     </main>
@@ -631,8 +524,6 @@ const btnSmall = {
   cursor: "pointer",
   fontSize: 12,
 };
-
-const actionLink = { fontSize: 12, textDecoration: "underline", color: "#0070f3" };
 
 const preStyle = {
   marginTop: 6,
