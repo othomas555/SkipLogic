@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
 
-function Toast({ open, kind = "info", title, message, onClose }) {
+function Toast({ open, kind = "info", title, message, actions = null, onClose }) {
   if (!open) return null;
   const bg = kind === "error" ? "#fff1f0" : kind === "success" ? "#e6ffed" : "#f0f5ff";
   const border = kind === "error" ? "#ffccc7" : kind === "success" ? "#b7eb8f" : "#adc6ff";
@@ -18,7 +18,7 @@ function Toast({ open, kind = "info", title, message, onClose }) {
         right: 16,
         top: 16,
         zIndex: 2000,
-        width: "min(520px, calc(100vw - 32px))",
+        width: "min(560px, calc(100vw - 32px))",
         background: bg,
         border: `1px solid ${border}`,
         borderRadius: 12,
@@ -30,7 +30,10 @@ function Toast({ open, kind = "info", title, message, onClose }) {
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 900, color, marginBottom: 4 }}>{title}</div>
           <div style={{ fontSize: 13, color: "#333", whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{message}</div>
+
+          {actions ? <div style={{ marginTop: 10 }}>{actions}</div> : null}
         </div>
+
         <button
           type="button"
           onClick={onClose}
@@ -68,12 +71,20 @@ export default function SignUpPage() {
 
   const [working, setWorking] = useState(false);
 
-  const [toast, setToast] = useState({ open: false, kind: "info", title: "", message: "" });
-  function showToast(kind, title, message) {
-    setToast({ open: true, kind, title, message });
+  const [toast, setToast] = useState({
+    open: false,
+    kind: "info",
+    title: "",
+    message: "",
+    actions: null,
+  });
+
+  function showToast(kind, title, message, actions = null) {
+    setToast({ open: true, kind, title, message, actions });
   }
+
   function closeToast() {
-    setToast((t) => ({ ...t, open: false }));
+    setToast((t) => ({ ...t, open: false, actions: null }));
   }
 
   useEffect(() => {
@@ -84,6 +95,36 @@ export default function SignUpPage() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function resendConfirmationEmail(targetEmail) {
+    const em = String(targetEmail || "").trim();
+    if (!em) return;
+
+    try {
+      // Supabase v2
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email: em,
+      });
+
+      if (error) {
+        showToast(
+          "error",
+          "Could not resend email",
+          error.message || "Resend failed. Check Supabase email settings / SMTP."
+        );
+        return;
+      }
+
+      showToast(
+        "success",
+        "Confirmation email sent",
+        "If you don’t see it, check spam/junk. If you still don’t receive it, Supabase email delivery may not be configured yet (SMTP)."
+      );
+    } catch (e) {
+      showToast("error", "Could not resend email", "Resend failed unexpectedly.");
+    }
+  }
 
   async function handleSignUp(e) {
     e.preventDefault();
@@ -104,7 +145,7 @@ export default function SignUpPage() {
 
     try {
       // 1) Create auth user
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      const { error: signUpError } = await supabase.auth.signUp({
         email: em,
         password,
         options: {
@@ -122,24 +163,59 @@ export default function SignUpPage() {
         return;
       }
 
-      // Supabase may not return a session if email confirmations are enabled.
-      // Try to sign in immediately (works when confirmations are OFF).
+      // 2) Try sign in immediately (works when email confirmations are OFF)
       const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
         email: em,
         password,
       });
 
+      // If confirmations are ON, sign in will fail until they confirm — that's NOT an error state for the user.
       if (signInError || !signInData?.session?.user) {
         showToast(
-          "error",
-          "Check your email",
-          "Your account was created, but you may need to confirm your email before signing in. If confirmations are OFF, tell me and we’ll adjust."
+          "info",
+          "Account created",
+          "Your account was created successfully.\n\nNext step: confirm your email address (check spam/junk too). Once confirmed, you can sign in.",
+          (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => resendConfirmationEmail(em)}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #1677ff",
+                  background: "#1677ff",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontWeight: 900,
+                }}
+              >
+                Resend confirmation email
+              </button>
+
+              <a
+                href="/signin"
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #ddd",
+                  background: "#fff",
+                  color: "#111",
+                  textDecoration: "none",
+                  fontWeight: 900,
+                }}
+              >
+                Go to sign in
+              </a>
+            </div>
+          )
         );
+
         setWorking(false);
         return;
       }
 
-      // 2) Bootstrap tenant (subscriber + profile)
+      // 3) Bootstrap tenant (subscriber + profile)
       const token = await getAccessToken();
       if (!token) {
         showToast("error", "Setup failed", "Signed in but no access token. Refresh and try again.");
@@ -179,7 +255,14 @@ export default function SignUpPage() {
 
   return (
     <main style={{ minHeight: "100vh", padding: 24, fontFamily: "system-ui, sans-serif", background: "#fafafa" }}>
-      <Toast open={toast.open} kind={toast.kind} title={toast.title} message={toast.message} onClose={closeToast} />
+      <Toast
+        open={toast.open}
+        kind={toast.kind}
+        title={toast.title}
+        message={toast.message}
+        actions={toast.actions}
+        onClose={closeToast}
+      />
 
       <div style={{ maxWidth: 560, margin: "0 auto", paddingTop: 30 }}>
         <div style={{ marginBottom: 14 }}>
