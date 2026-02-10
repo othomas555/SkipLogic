@@ -151,7 +151,9 @@ export default function CustomersPage() {
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button style={btnSecondary} onClick={load}>Refresh</button>
+          <button style={btnSecondary} onClick={load}>
+            Refresh
+          </button>
           <button style={btnPrimary} onClick={() => router.push("/app/customers/new")}>
             + Add customer
           </button>
@@ -218,9 +220,14 @@ export default function CustomersPage() {
                     </td>
                     <td style={tdStyle}>{c.term_hire_days_override ?? "—"}</td>
                     <td style={tdStyle}>
-                      <Link href={`/app/customers/${c.id}`} style={actionLink}>
-                        View / Edit
-                      </Link>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        <Link href={`/app/customers/${c.id}`} style={actionLink}>
+                          View / Edit
+                        </Link>
+                        <Link href={`/app/customers/${c.id}/history`} style={actionLink}>
+                          View history
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 ))}
