@@ -522,6 +522,24 @@ export default function SettingsPage() {
         </div>
       </section>
 
+      {/* Vehicles alerts (link only) */}
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <h2 style={h2Style}>Vehicle alerts</h2>
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
+              Transport manager email + compliance alert days (daily digest).
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Link href="/app/settings/vehicles" style={{ ...btnPrimaryDark, textDecoration: "none", display: "inline-block" }}>
+              Open vehicle alert settings
+            </Link>
+          </div>
+        </div>
+      </section>
+
       {/* Invoicing section (link only) */}
       <section style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
