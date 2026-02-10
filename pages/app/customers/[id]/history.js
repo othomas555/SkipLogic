@@ -110,7 +110,7 @@ export default function CustomerHistoryPage() {
 
   const [jobs, setJobs] = useState([]);
   const [invoices, setInvoices] = useState([]);
-  const [wtns] = useState([]); // still not wired (no fields/tables yet)
+  const [wtns] = useState([]); // still not wired
 
   const [showDebug, setShowDebug] = useState(false);
   const [debugInfo, setDebugInfo] = useState(null);
@@ -143,7 +143,6 @@ export default function CustomerHistoryPage() {
     setInvoices([]);
     setDebugInfo(null);
 
-    // Customer
     const { data: cust, error: custErr } = await supabase
       .from("customers")
       .select("id, first_name, last_name, company_name, email, phone, account_code")
@@ -160,7 +159,6 @@ export default function CustomerHistoryPage() {
     }
     setCustomer(cust);
 
-    // Jobs
     const { data: jobsRaw, error: jobsErr } = await supabase
       .from("jobs")
       .select("*")
@@ -180,7 +178,6 @@ export default function CustomerHistoryPage() {
 
     const mappedJobs = (jobsRaw || []).map(mapJobRow);
 
-    // Invoices derived from jobs (your real fields are xero_invoice_*)
     const derivedInvoices = uniqBy(
       (jobsRaw || [])
         .map((j) => {
@@ -194,6 +191,7 @@ export default function CustomerHistoryPage() {
             total_inc_vat: j.price_inc_vat ?? null,
             job_number: j.job_number || "—",
             job_id: j.id,
+            xero_invoice_id: j.xero_invoice_id || null,
           };
         })
         .filter(Boolean),
@@ -212,7 +210,7 @@ export default function CustomerHistoryPage() {
     setLoading(false);
   }
 
-  async function syncInvoiceForJob(jobId, jobNumber) {
+  async function emailInvoiceForJob(jobId, jobNumber) {
     setActionMsg("");
     setActionErr("");
     setBusyInvoiceJobId(jobId);
@@ -223,7 +221,7 @@ export default function CustomerHistoryPage() {
       const token = sessionData?.session?.access_token;
       if (!token) throw new Error("No auth session token found. Try signing out and back in.");
 
-      const res = await fetch("/api/xero/xero_sync_invoice_for_job", {
+      const res = await fetch("/api/xero/xero_email_invoice_for_job", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -235,15 +233,14 @@ export default function CustomerHistoryPage() {
       const json = await res.json().catch(() => null);
 
       if (!res.ok || !json?.ok) {
-        console.error("xero_sync_invoice_for_job failed:", res.status, json);
-        throw new Error(json?.error || `Failed to sync invoice (HTTP ${res.status}).`);
+        console.error("xero_email_invoice_for_job failed:", res.status, json);
+        throw new Error(json?.error || `Failed to email invoice (HTTP ${res.status}).`);
       }
 
-      setActionMsg(`Invoice sync queued/complete for ${jobNumber || "job"}.`);
-      // Reload to pull updated xero_invoice_* fields
+      setActionMsg(`Invoice email sent from Xero for ${jobNumber || "job"}.`);
       await load();
     } catch (e) {
-      setActionErr(e?.message || "Failed to sync invoice.");
+      setActionErr(e?.details || e?.message || "Failed to email invoice.");
     } finally {
       setBusyInvoiceJobId(null);
     }
@@ -406,11 +403,11 @@ export default function CustomerHistoryPage() {
                     <td style={tdStyle}>
                       <button
                         style={btnSmall}
-                        onClick={() => syncInvoiceForJob(inv.job_id, inv.job_number)}
+                        onClick={() => emailInvoiceForJob(inv.job_id, inv.job_number)}
                         disabled={!inv.job_id || busyInvoiceJobId === inv.job_id}
-                        title={!inv.job_id ? "Missing job id" : "Re-sync invoice for this job in Xero"}
+                        title={!inv.job_id ? "Missing job id" : "Email invoice from Xero"}
                       >
-                        {busyInvoiceJobId === inv.job_id ? "Working…" : "Resend invoice"}
+                        {busyInvoiceJobId === inv.job_id ? "Working…" : "Email invoice"}
                       </button>
                     </td>
                   </tr>
@@ -420,9 +417,7 @@ export default function CustomerHistoryPage() {
           </div>
         )}
         <p style={{ margin: "10px 0 0", color: "#666", fontSize: 12 }}>
-          Note: “Resend invoice” currently re-syncs the invoice for the job in Xero (via xero_sync_invoice_for_job). If you also
-          want it to **email the customer**, we can add that as a second action once you confirm the preferred method (Xero “Email”
-          API vs sending from SkipLogic).
+          This uses Xero’s invoice email action. Xero decides the recipient based on the contact + email on the invoice.
         </p>
       </section>
 
@@ -430,8 +425,7 @@ export default function CustomerHistoryPage() {
         <h2 style={h2Style}>Waste Transfer Notes</h2>
         {wtns.length === 0 ? (
           <p style={{ margin: 0, color: "#666" }}>
-            WTNs not wired yet. Your schema doesn’t have a WTN table under the names we tried, and there are no WTN fields on jobs.
-            Tell me where WTNs are generated/stored and we’ll list + resend them here.
+            WTNs not wired yet. Tell me where WTNs are generated/stored and we’ll list + resend them here.
           </p>
         ) : (
           <p style={{ margin: 0 }}>—</p>
