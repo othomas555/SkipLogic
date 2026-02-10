@@ -30,6 +30,22 @@ function displayCustomerTitle(c) {
   return base || "Customer";
 }
 
+function norm(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+function safeStr(x) {
+  if (x == null) return "";
+  return String(x);
+}
+
+function pick(obj, keys) {
+  for (const k of keys) {
+    if (obj && Object.prototype.hasOwnProperty.call(obj, k) && obj[k] != null && obj[k] !== "") return obj[k];
+  }
+  return null;
+}
+
 export default function CustomerHistoryPage() {
   const router = useRouter();
   const customerId = router.query?.id ? String(router.query.id) : "";
@@ -41,9 +57,15 @@ export default function CustomerHistoryPage() {
   const [warnings, setWarnings] = useState([]);
 
   const [customer, setCustomer] = useState(null);
+
   const [jobs, setJobs] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [wtns, setWtns] = useState([]);
+
+  // Debug helpers
+  const [jobsByCustomerEmpty, setJobsByCustomerEmpty] = useState(false);
+  const [recentJobs, setRecentJobs] = useState([]);
+  const [jobLinkClues, setJobLinkClues] = useState([]);
 
   async function tryTable(tableName, buildQuery) {
     try {
@@ -56,6 +78,49 @@ export default function CustomerHistoryPage() {
     } catch (e) {
       return { ok: false, data: [], warning: `${tableName}: ${e?.message || String(e)}` };
     }
+  }
+
+  function detectJobLinkClues(rows) {
+    // We look for likely customer linking fields present in the jobs rows.
+    const candidateKeys = [
+      "customer_id",
+      "customer_uuid",
+      "customer",
+      "customer_ref",
+      "customer_reference",
+      "customer_account_id",
+      "account_id",
+      "account_uuid",
+      "customer_profile_id",
+      "customer_contact_id",
+      "contact_id",
+      "xero_contact_id",
+      "xero_contactid",
+      "account_code",
+      "customer_code",
+    ];
+
+    const present = new Set();
+    const examples = [];
+
+    for (const r of rows || []) {
+      for (const k of candidateKeys) {
+        if (Object.prototype.hasOwnProperty.call(r, k)) {
+          present.add(k);
+        }
+      }
+    }
+
+    const presentKeys = Array.from(present);
+    for (const k of presentKeys) {
+      // find first example value
+      const exRow = (rows || []).find((r) => r && r[k] != null && r[k] !== "");
+      if (exRow) {
+        examples.push({ key: k, example: safeStr(exRow[k]) });
+      }
+    }
+
+    return { presentKeys, examples };
   }
 
   async function load() {
@@ -77,11 +142,17 @@ export default function CustomerHistoryPage() {
     setLoading(true);
     setErrorMsg("");
     setWarnings([]);
+    setJobs([]);
+    setInvoices([]);
+    setWtns([]);
+    setJobsByCustomerEmpty(false);
+    setRecentJobs([]);
+    setJobLinkClues([]);
 
     // 1) Load customer (tenant scoped)
     const { data: cust, error: custErr } = await supabase
       .from("customers")
-      .select("id, first_name, last_name, company_name, email, phone")
+      .select("id, first_name, last_name, company_name, email, phone, account_code")
       .eq("subscriber_id", subscriberId)
       .eq("id", customerId)
       .single();
@@ -90,9 +161,6 @@ export default function CustomerHistoryPage() {
       console.error(custErr);
       setErrorMsg("Could not load customer.");
       setCustomer(null);
-      setJobs([]);
-      setInvoices([]);
-      setWtns([]);
       setLoading(false);
       return;
     }
@@ -101,82 +169,103 @@ export default function CustomerHistoryPage() {
 
     const warns = [];
 
-    // 2) Jobs (try common tables)
+    // 2) Jobs: try the assumed link first
     let jobsData = [];
     {
-      const attempts = [
-        ["jobs", (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500)],
-        [
-          "delivery_jobs",
-          (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500),
-        ],
-        ["skip_jobs", (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500)],
-      ];
+      const r = await tryTable("jobs", (t) =>
+        t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500)
+      );
 
-      for (const [name, fn] of attempts) {
-        // eslint-disable-next-line no-await-in-loop
-        const r = await tryTable(name, fn);
-        if (r.warning) warns.push(r.warning);
-        if (r.ok && r.data.length) {
-          jobsData = r.data;
-          break;
+      if (r.warning) warns.push(r.warning);
+      jobsData = r.data || [];
+
+      // If nothing, run a debug query (latest jobs for subscriber) so we can see what columns exist
+      if (!jobsData.length) {
+        setJobsByCustomerEmpty(true);
+
+        const r2 = await tryTable("jobs", (t) =>
+          t
+            .select("*")
+            .eq("subscriber_id", subscriberId)
+            .order("created_at", { ascending: false })
+            .limit(200)
+        );
+
+        if (r2.warning) warns.push(`jobs(debug): ${r2.warning.replace(/^jobs:\s*/, "")}`);
+
+        const rows = r2.data || [];
+        setRecentJobs(rows);
+
+        const clues = detectJobLinkClues(rows);
+        const extras = [];
+
+        if ((clues.presentKeys || []).length) {
+          extras.push(
+            `Jobs link fields detected on jobs rows: ${clues.presentKeys.join(", ")}`
+          );
+          if ((clues.examples || []).length) {
+            const ex = clues.examples.slice(0, 8).map((x) => `${x.key}=${x.example}`).join(" | ");
+            extras.push(`Examples: ${ex}`);
+          }
+        } else {
+          extras.push("No obvious customer link fields detected on jobs rows (from a set of common names).");
         }
-      }
 
-      if (!jobsData.length) warns.push("Jobs: no rows returned from jobs/delivery_jobs/skip_jobs (may be a different table/column).");
+        // Also try a client-side match using any detected keys (best-effort)
+        // If we find a field that equals customerId, we can filter immediately and show jobs.
+        const candidates = ["customer_id", "customer_uuid", "customer", "customer_ref", "customer_reference", "account_id", "customer_account_id"];
+        const matched = rows.filter((j) => {
+          for (const k of candidates) {
+            if (Object.prototype.hasOwnProperty.call(j, k)) {
+              if (safeStr(j[k]) === safeStr(customerId)) return true;
+            }
+          }
+          return false;
+        });
+
+        if (matched.length) {
+          jobsData = matched;
+          extras.push(`Auto-match: found ${matched.length} jobs where one of the detected link fields equals this customer id.`);
+        } else {
+          // If customer has an account_code and jobs rows have account_code/customer_code, try that too.
+          const custCode = cust?.account_code ? norm(cust.account_code) : "";
+          if (custCode) {
+            const matched2 = rows.filter((j) => {
+              const v = pick(j, ["account_code", "customer_code", "customer_account_code"]);
+              return v && norm(v) === custCode;
+            });
+            if (matched2.length) {
+              jobsData = matched2;
+              extras.push(`Auto-match: found ${matched2.length} jobs where account_code/customer_code matches the customer account_code.`);
+            }
+          }
+        }
+
+        setJobLinkClues(extras);
+      }
     }
 
-    // 3) Invoices (try common tables)
-    let invoicesData = [];
+    // 3) Invoices + WTNs: we now know your guessed table names don't exist.
+    // For now we keep this as placeholders and we’ll wire it once we identify where your invoice + WTN records actually live.
+    // We still keep the warnings so you can paste them back later if needed.
     {
-      const attempts = [
-        ["invoices", (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500)],
-        [
-          "xero_invoices",
-          (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500),
-        ],
-      ];
+      const rInv = await tryTable("invoices", (t) => t.select("*").limit(1));
+      if (rInv.warning) warns.push(rInv.warning);
 
-      for (const [name, fn] of attempts) {
-        // eslint-disable-next-line no-await-in-loop
-        const r = await tryTable(name, fn);
-        if (r.warning) warns.push(r.warning);
-        if (r.ok && r.data.length) {
-          invoicesData = r.data;
-          break;
-        }
-      }
-    }
+      const rX = await tryTable("xero_invoices", (t) => t.select("*").limit(1));
+      if (rX.warning) warns.push(rX.warning);
 
-    // 4) WTNs (try common tables)
-    let wtnsData = [];
-    {
-      const attempts = [
-        [
-          "waste_out",
-          (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500),
-        ],
-        [
-          "waste_transfer_notes",
-          (t) => t.select("*").eq("subscriber_id", subscriberId).eq("customer_id", customerId).limit(500),
-        ],
-      ];
+      const rWo = await tryTable("waste_out", (t) => t.select("*").limit(1));
+      if (rWo.warning) warns.push(rWo.warning);
 
-      for (const [name, fn] of attempts) {
-        // eslint-disable-next-line no-await-in-loop
-        const r = await tryTable(name, fn);
-        if (r.warning) warns.push(r.warning);
-        if (r.ok && r.data.length) {
-          wtnsData = r.data;
-          break;
-        }
-      }
+      const rWtn = await tryTable("waste_transfer_notes", (t) => t.select("*").limit(1));
+      if (rWtn.warning) warns.push(rWtn.warning);
     }
 
     setWarnings(warns);
     setJobs(jobsData);
-    setInvoices(invoicesData);
-    setWtns(wtnsData);
+    setInvoices([]); // not wired yet
+    setWtns([]); // not wired yet
     setLoading(false);
   }
 
@@ -192,20 +281,6 @@ export default function CustomerHistoryPage() {
     );
     return arr;
   }, [jobs]);
-
-  const invoicesSorted = useMemo(() => {
-    const arr = [...invoices];
-    arr.sort((a, b) =>
-      String(b.issued_at || b.date || b.created_at || "").localeCompare(String(a.issued_at || a.date || a.created_at || ""))
-    );
-    return arr;
-  }, [invoices]);
-
-  const wtnsSorted = useMemo(() => {
-    const arr = [...wtns];
-    arr.sort((a, b) => String(b.date || b.created_at || "").localeCompare(String(a.date || a.created_at || "")));
-    return arr;
-  }, [wtns]);
 
   if (checking || loading) {
     return (
@@ -258,7 +333,7 @@ export default function CustomerHistoryPage() {
 
       {warnings.length > 0 && (
         <section style={{ ...cardStyle, borderColor: "#ffe7b5", background: "#fffaf0" }}>
-          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Wiring warnings (paste these back to me)</div>
+          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Wiring warnings</div>
           <ul style={{ margin: 0, paddingLeft: 18, color: "#7a5a00", fontSize: 12 }}>
             {warnings.map((w, i) => (
               <li key={i}>{w}</li>
@@ -267,28 +342,55 @@ export default function CustomerHistoryPage() {
         </section>
       )}
 
+      {jobsByCustomerEmpty && (
+        <section style={{ ...cardStyle, borderColor: "#dbeafe", background: "#eff6ff" }}>
+          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
+            Jobs link not found yet (debug)
+          </div>
+          <div style={{ fontSize: 12, color: "#1e3a8a" }}>
+            The jobs table exists, but <b>jobs.customer_id</b> didn’t return any rows for this customer.
+            This usually means jobs link to customers via a different field (or via a join table).
+          </div>
+          {jobLinkClues.length > 0 && (
+            <ul style={{ margin: "10px 0 0", paddingLeft: 18, fontSize: 12, color: "#1e3a8a" }}>
+              {jobLinkClues.map((x, i) => (
+                <li key={i}>{x}</li>
+              ))}
+            </ul>
+          )}
+          <div style={{ marginTop: 10, fontSize: 12, color: "#1e3a8a" }}>
+            If you can tell me which field on jobs links to customers (or paste 1 example job row),
+            I’ll wire it so this page shows the correct jobs only.
+          </div>
+        </section>
+      )}
+
       <section style={cardStyle}>
         <h2 style={h2Style}>Jobs</h2>
         {jobsSorted.length === 0 ? (
-          <p style={{ margin: 0, color: "#666" }}>No jobs found (or not wired to the right table/columns yet).</p>
+          <p style={{ margin: 0, color: "#666" }}>No jobs found for this customer yet (link not wired).</p>
         ) : (
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1100 }}>
               <thead>
                 <tr>
                   <th style={thStyle}>Date</th>
                   <th style={thStyle}>Type</th>
                   <th style={thStyle}>Ref</th>
                   <th style={thStyle}>Status</th>
+                  <th style={thStyle}>Postcode</th>
+                  <th style={thStyle}>Value</th>
                 </tr>
               </thead>
               <tbody>
                 {jobsSorted.map((j) => (
-                  <tr key={j.id || `${j.ref || j.job_ref || "job"}-${j.created_at || Math.random()}`}>
+                  <tr key={j.id || `${j.created_at || Math.random()}`}>
                     <td style={tdStyle}>{fmtDate(j.job_date || j.date || j.created_at)}</td>
                     <td style={tdStyle}>{j.job_type || j.type || "—"}</td>
                     <td style={tdStyle}>{j.job_ref || j.ref || j.booking_ref || "—"}</td>
                     <td style={tdStyle}>{j.status || "—"}</td>
+                    <td style={tdStyle}>{j.postcode || j.delivery_postcode || "—"}</td>
+                    <td style={tdStyle}>{moneyGBP(j.total_inc_vat ?? j.price_inc_vat ?? j.total)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -299,73 +401,69 @@ export default function CustomerHistoryPage() {
 
       <section style={cardStyle}>
         <h2 style={h2Style}>Invoices</h2>
-        {invoicesSorted.length === 0 ? (
-          <p style={{ margin: 0, color: "#666" }}>No invoices found (or not wired yet).</p>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Date</th>
-                  <th style={thStyle}>Invoice</th>
-                  <th style={thStyle}>Status</th>
-                  <th style={thStyle}>Total</th>
-                  <th style={thStyle}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invoicesSorted.map((inv) => (
-                  <tr key={inv.id || inv.invoice_id || inv.number || `${inv.created_at || Math.random()}`}>
-                    <td style={tdStyle}>{fmtDate(inv.issued_at || inv.date || inv.created_at)}</td>
-                    <td style={tdStyle}>{inv.invoice_number || inv.number || inv.xero_invoice_number || "—"}</td>
-                    <td style={tdStyle}>{inv.status || inv.xero_status || "—"}</td>
-                    <td style={tdStyle}>{moneyGBP(inv.total_inc_vat ?? inv.total ?? inv.amount)}</td>
-                    <td style={tdStyle}>
-                      <button style={btnSmall} disabled title="Next: wire to your existing resend invoice endpoint">
-                        Resend invoice
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <p style={{ margin: 0, color: "#666" }}>
+          Not wired yet — your schema doesn’t have <code>invoices</code> or <code>xero_invoices</code>.  
+          Once we identify where invoice records live, we’ll list them here + add “Resend invoice”.
+        </p>
       </section>
 
       <section style={cardStyle}>
         <h2 style={h2Style}>Waste Transfer Notes</h2>
-        {wtnsSorted.length === 0 ? (
-          <p style={{ margin: 0, color: "#666" }}>No WTNs found (or not wired yet).</p>
-        ) : (
+        <p style={{ margin: 0, color: "#666" }}>
+          Not wired yet — your schema doesn’t have <code>waste_out</code> or <code>waste_transfer_notes</code>.  
+          Once we identify the real WTN table/name, we’ll list them here + add “Resend WTN”.
+        </p>
+      </section>
+
+      {recentJobs.length > 0 && (
+        <section style={cardStyle}>
+          <h2 style={h2Style}>Recent jobs (debug)</h2>
+          <p style={{ margin: "0 0 10px", color: "#666", fontSize: 12 }}>
+            Showing latest <b>{recentJobs.length}</b> jobs for this subscriber. Use this to spot which field links to the customer.
+          </p>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 950 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1400 }}>
               <thead>
                 <tr>
-                  <th style={thStyle}>Date</th>
-                  <th style={thStyle}>WTN</th>
-                  <th style={thStyle}>Description</th>
-                  <th style={thStyle}>Actions</th>
+                  <th style={thStyle}>Created</th>
+                  <th style={thStyle}>Ref</th>
+                  <th style={thStyle}>Type</th>
+                  <th style={thStyle}>Status</th>
+                  <th style={thStyle}>Possible customer fields (values)</th>
                 </tr>
               </thead>
               <tbody>
-                {wtnsSorted.map((w) => (
-                  <tr key={w.id || `${w.created_at || Math.random()}`}>
-                    <td style={tdStyle}>{fmtDate(w.date || w.created_at)}</td>
-                    <td style={tdStyle}>{w.wtn_number || w.number || "—"}</td>
-                    <td style={tdStyle}>{w.description || w.notes || "—"}</td>
-                    <td style={tdStyle}>
-                      <button style={btnSmall} disabled title="Next: wire resend WTN">
-                        Resend WTN
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {recentJobs.slice(0, 50).map((j) => {
+                  const fields = [
+                    ["customer_id", j.customer_id],
+                    ["customer_uuid", j.customer_uuid],
+                    ["customer_ref", j.customer_ref],
+                    ["customer_reference", j.customer_reference],
+                    ["account_id", j.account_id],
+                    ["customer_account_id", j.customer_account_id],
+                    ["account_code", j.account_code],
+                    ["customer_code", j.customer_code],
+                    ["xero_contact_id", j.xero_contact_id],
+                  ]
+                    .filter(([, v]) => v != null && v !== "")
+                    .map(([k, v]) => `${k}=${safeStr(v)}`)
+                    .join(" | ");
+
+                  return (
+                    <tr key={j.id || `${j.created_at || Math.random()}`}>
+                      <td style={tdStyle}>{fmtDate(j.created_at)}</td>
+                      <td style={tdStyle}>{j.job_ref || j.ref || j.booking_ref || "—"}</td>
+                      <td style={tdStyle}>{j.job_type || j.type || "—"}</td>
+                      <td style={tdStyle}>{j.status || "—"}</td>
+                      <td style={tdStyle}>{fields || "— (no candidate fields present on this row)"}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-        )}
-      </section>
+        </section>
+      )}
     </main>
   );
 }
@@ -442,14 +540,4 @@ const btnSecondary = {
   color: "#111",
   cursor: "pointer",
   fontSize: 13,
-};
-
-const btnSmall = {
-  padding: "6px 10px",
-  borderRadius: 8,
-  border: "1px solid #ccc",
-  background: "#f5f5f5",
-  color: "#111",
-  cursor: "pointer",
-  fontSize: 12,
 };
