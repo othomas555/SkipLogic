@@ -2,8 +2,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { supabase } from "../../lib/supabaseClient";
-import { useAuthProfile } from "../../lib/useAuthProfile";
+import { supabase } from "../../../lib/supabaseClient";
+import { useAuthProfile } from "../../../lib/useAuthProfile";
 
 /**
  * Goals:
