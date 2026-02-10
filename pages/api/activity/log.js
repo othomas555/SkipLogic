@@ -1,3 +1,4 @@
+// pages/api/activity/log.js
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
 function getBearer(req) {
@@ -34,15 +35,18 @@ export default async function handler(req, res) {
     // get subscriber_id from profile
     const { data: prof, error: profErr } = await supabaseAdmin
       .from("profiles")
-      .select("id, subscriber_id")
+      .select("id, subscriber_id, is_active")
       .eq("id", user_id)
       .maybeSingle();
 
     if (profErr) throw new Error(profErr.message);
-    assert(prof?.subscriber_id, "Profile missing subscriber_id");
+    assert(prof, "Profile not found");
+    assert(prof.is_active !== false, "Profile inactive");
+    assert(prof.subscriber_id, "Profile missing subscriber_id");
 
-    // update last_seen_at (this also feeds health)
-    await supabaseAdmin.from("profiles").update({ last_seen_at: new Date().toISOString() }).eq("id", user_id);
+    // update last_seen_at
+    const nowIso = new Date().toISOString();
+    await supabaseAdmin.from("profiles").update({ last_seen_at: nowIso }).eq("id", user_id);
 
     // insert activity event
     const { data: ev, error: evErr } = await supabaseAdmin
@@ -55,7 +59,7 @@ export default async function handler(req, res) {
         entity_id,
         meta,
       })
-      .select("id, created_at")
+      .select("id, subscriber_id, created_at")
       .maybeSingle();
 
     if (evErr) throw new Error(evErr.message);
