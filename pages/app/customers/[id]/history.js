@@ -49,13 +49,6 @@ function uniqBy(arr, keyFn) {
 }
 
 function deriveJobType(j) {
-  // Based on SkipLogic job fields we saw in your debug.
-  // Priority order:
-  // 1) swap_role present -> Swap (Full/Empty if set)
-  // 2) collection_actual_date set -> Collected
-  // 3) delivery_actual_date set -> Delivered
-  // 4) collection_date set -> Collection booked
-  // 5) scheduled_date set -> Delivery booked
   if (j.swap_role) {
     const r = String(j.swap_role || "").toLowerCase();
     if (r === "full") return "Swap (full)";
@@ -69,7 +62,6 @@ function deriveJobType(j) {
   if (j.collection_date) return "Collection booked";
   if (j.scheduled_date) return "Delivery booked";
 
-  // fallback to notes if present
   if (j.notes) {
     const n = String(j.notes).toLowerCase();
     if (n.includes("swap")) return "Swap";
@@ -81,7 +73,6 @@ function deriveJobType(j) {
 }
 
 function derivePrimaryDate(j) {
-  // Prefer "actual" dates if they exist, then scheduled dates, then created_at.
   return (
     j.collection_actual_date ||
     j.delivery_actual_date ||
@@ -103,14 +94,6 @@ function mapJobRow(j) {
     status: j.job_status || "—",
     postcode: j.site_postcode || "—",
     value: j.price_inc_vat ?? null,
-    site: {
-      name: j.site_name || null,
-      line1: j.site_address_line1 || null,
-      line2: j.site_address_line2 || null,
-      town: j.site_town || null,
-      postcode: j.site_postcode || null,
-    },
-    raw: j,
   };
 }
 
@@ -122,29 +105,19 @@ export default function CustomerHistoryPage() {
 
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
-  const [warnings, setWarnings] = useState([]);
 
   const [customer, setCustomer] = useState(null);
 
   const [jobs, setJobs] = useState([]);
   const [invoices, setInvoices] = useState([]);
-  const [wtns, setWtns] = useState([]);
+  const [wtns] = useState([]); // still not wired (no fields/tables yet)
 
   const [showDebug, setShowDebug] = useState(false);
   const [debugInfo, setDebugInfo] = useState(null);
 
-  async function tryTable(tableName, buildQuery) {
-    try {
-      const q = buildQuery(supabase.from(tableName));
-      const { data, error } = await q;
-      if (error) {
-        return { ok: false, data: [], warning: `${tableName}: ${error.message}` };
-      }
-      return { ok: true, data: data || [], warning: null };
-    } catch (e) {
-      return { ok: false, data: [], warning: `${tableName}: ${e?.message || String(e)}` };
-    }
-  }
+  const [actionMsg, setActionMsg] = useState("");
+  const [actionErr, setActionErr] = useState("");
+  const [busyInvoiceJobId, setBusyInvoiceJobId] = useState(null);
 
   async function load() {
     if (!customerId) return;
@@ -164,10 +137,10 @@ export default function CustomerHistoryPage() {
 
     setLoading(true);
     setErrorMsg("");
-    setWarnings([]);
+    setActionMsg("");
+    setActionErr("");
     setJobs([]);
     setInvoices([]);
-    setWtns([]);
     setDebugInfo(null);
 
     // Customer
@@ -187,34 +160,35 @@ export default function CustomerHistoryPage() {
     }
     setCustomer(cust);
 
-    const warns = [];
+    // Jobs
+    const { data: jobsRaw, error: jobsErr } = await supabase
+      .from("jobs")
+      .select("*")
+      .eq("subscriber_id", subscriberId)
+      .eq("customer_id", customerId)
+      .order("created_at", { ascending: false })
+      .limit(500);
 
-    // Jobs (this is now clearly correct: jobs.customer_id exists and is populated)
-    let jobsRaw = [];
-    {
-      const r = await tryTable("jobs", (t) =>
-        t
-          .select("*")
-          .eq("subscriber_id", subscriberId)
-          .eq("customer_id", customerId)
-          .order("created_at", { ascending: false })
-          .limit(500)
-      );
-      if (r.warning) warns.push(r.warning);
-      jobsRaw = r.data || [];
+    if (jobsErr) {
+      console.error(jobsErr);
+      setErrorMsg("Could not load jobs.");
+      setJobs([]);
+      setInvoices([]);
+      setLoading(false);
+      return;
     }
 
-    const mappedJobs = jobsRaw.map(mapJobRow);
+    const mappedJobs = (jobsRaw || []).map(mapJobRow);
 
-    // Invoices derived from jobs (your actual fields are xero_invoice_*)
+    // Invoices derived from jobs (your real fields are xero_invoice_*)
     const derivedInvoices = uniqBy(
-      jobsRaw
+      (jobsRaw || [])
         .map((j) => {
           const hasInv = j.xero_invoice_id || j.xero_invoice_number || j.xero_invoice_status;
           if (!hasInv) return null;
           return {
             id: j.xero_invoice_id || j.xero_invoice_number || j.id,
-            date: j.xero_synced_at || j.created_at || null,
+            synced_at: j.xero_synced_at || j.created_at || null,
             number: j.xero_invoice_number || "—",
             status: j.xero_invoice_status || j.xero_sync_status || "—",
             total_inc_vat: j.price_inc_vat ?? null,
@@ -226,37 +200,53 @@ export default function CustomerHistoryPage() {
       (x) => safeStr(x.id)
     );
 
-    // WTNs: none detected yet (we'll wire once we know where you store them)
-    const derivedWtns = [];
-
-    // Keep your earlier warnings about missing tables (so we don't forget)
-    {
-      const rInv = await tryTable("invoices", (t) => t.select("*").limit(1));
-      if (rInv.warning) warns.push(rInv.warning);
-
-      const rX = await tryTable("xero_invoices", (t) => t.select("*").limit(1));
-      if (rX.warning) warns.push(rX.warning);
-
-      const rWo = await tryTable("waste_out", (t) => t.select("*").limit(1));
-      if (rWo.warning) warns.push(rWo.warning);
-
-      const rWtn = await tryTable("waste_transfer_notes", (t) => t.select("*").limit(1));
-      if (rWtn.warning) warns.push(rWtn.warning);
-    }
-
-    // Debug info
     const sample = jobsRaw && jobsRaw.length ? jobsRaw[0] : null;
     setDebugInfo({
-      jobs_loaded: jobsRaw.length,
+      jobs_loaded: jobsRaw?.length || 0,
       sample_keys: sample ? Object.keys(sample).sort() : [],
       sample_row: sample,
     });
 
-    setWarnings(warns);
     setJobs(mappedJobs);
     setInvoices(derivedInvoices);
-    setWtns(derivedWtns);
     setLoading(false);
+  }
+
+  async function syncInvoiceForJob(jobId, jobNumber) {
+    setActionMsg("");
+    setActionErr("");
+    setBusyInvoiceJobId(jobId);
+
+    try {
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      if (sessionErr) throw new Error(sessionErr.message || "Could not read session");
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("No auth session token found. Try signing out and back in.");
+
+      const res = await fetch("/api/xero/xero_sync_invoice_for_job", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + token,
+        },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok || !json?.ok) {
+        console.error("xero_sync_invoice_for_job failed:", res.status, json);
+        throw new Error(json?.error || `Failed to sync invoice (HTTP ${res.status}).`);
+      }
+
+      setActionMsg(`Invoice sync queued/complete for ${jobNumber || "job"}.`);
+      // Reload to pull updated xero_invoice_* fields
+      await load();
+    } catch (e) {
+      setActionErr(e?.message || "Failed to sync invoice.");
+    } finally {
+      setBusyInvoiceJobId(null);
+    }
   }
 
   useEffect(() => {
@@ -272,7 +262,7 @@ export default function CustomerHistoryPage() {
 
   const invoicesSorted = useMemo(() => {
     const arr = [...invoices];
-    arr.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    arr.sort((a, b) => String(b.synced_at || "").localeCompare(String(a.synced_at || "")));
     return arr;
   }, [invoices]);
 
@@ -328,14 +318,16 @@ export default function CustomerHistoryPage() {
         </section>
       )}
 
-      {warnings.length > 0 && (
-        <section style={{ ...cardStyle, borderColor: "#ffe7b5", background: "#fffaf0" }}>
-          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Wiring warnings</div>
-          <ul style={{ margin: 0, paddingLeft: 18, color: "#7a5a00", fontSize: 12 }}>
-            {warnings.map((w, i) => (
-              <li key={i}>{w}</li>
-            ))}
-          </ul>
+      {(actionMsg || actionErr) && (
+        <section
+          style={{
+            ...cardStyle,
+            borderColor: actionErr ? "#ffd1d1" : "#c7f9cc",
+            background: actionErr ? "#fff5f5" : "#f0fff4",
+          }}
+        >
+          {actionMsg ? <p style={{ margin: 0, color: "#0f5132", fontWeight: 800 }}>{actionMsg}</p> : null}
+          {actionErr ? <p style={{ margin: 0, color: "#8a1f1f", fontWeight: 800 }}>{actionErr}</p> : null}
         </section>
       )}
 
@@ -389,9 +381,7 @@ export default function CustomerHistoryPage() {
       <section style={cardStyle}>
         <h2 style={h2Style}>Invoices</h2>
         {invoicesSorted.length === 0 ? (
-          <p style={{ margin: 0, color: "#666" }}>
-            No invoices linked yet (no xero_invoice_number on jobs).
-          </p>
+          <p style={{ margin: 0, color: "#666" }}>No invoices linked yet (no xero_invoice_number on jobs).</p>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1100 }}>
@@ -408,14 +398,19 @@ export default function CustomerHistoryPage() {
               <tbody>
                 {invoicesSorted.map((inv) => (
                   <tr key={safeStr(inv.id) || `${inv.number}-${Math.random()}`}>
-                    <td style={tdStyle}>{fmtDate(inv.date)}</td>
+                    <td style={tdStyle}>{fmtDate(inv.synced_at)}</td>
                     <td style={tdStyle}>{inv.number || "—"}</td>
                     <td style={tdStyle}>{inv.status || "—"}</td>
                     <td style={tdStyle}>{moneyGBP(inv.total_inc_vat)}</td>
                     <td style={tdStyle}>{inv.job_number || "—"}</td>
                     <td style={tdStyle}>
-                      <button style={btnSmall} disabled title="Next: wire to your existing resend invoice flow">
-                        Resend invoice
+                      <button
+                        style={btnSmall}
+                        onClick={() => syncInvoiceForJob(inv.job_id, inv.job_number)}
+                        disabled={!inv.job_id || busyInvoiceJobId === inv.job_id}
+                        title={!inv.job_id ? "Missing job id" : "Re-sync invoice for this job in Xero"}
+                      >
+                        {busyInvoiceJobId === inv.job_id ? "Working…" : "Resend invoice"}
                       </button>
                     </td>
                   </tr>
@@ -424,13 +419,18 @@ export default function CustomerHistoryPage() {
             </table>
           </div>
         )}
+        <p style={{ margin: "10px 0 0", color: "#666", fontSize: 12 }}>
+          Note: “Resend invoice” currently re-syncs the invoice for the job in Xero (via xero_sync_invoice_for_job). If you also
+          want it to **email the customer**, we can add that as a second action once you confirm the preferred method (Xero “Email”
+          API vs sending from SkipLogic).
+        </p>
       </section>
 
       <section style={cardStyle}>
         <h2 style={h2Style}>Waste Transfer Notes</h2>
         {wtns.length === 0 ? (
           <p style={{ margin: 0, color: "#666" }}>
-            WTNs not wired yet. Your schema doesn’t have <code>waste_out</code> / <code>waste_transfer_notes</code>, and there are no WTN fields on jobs.
+            WTNs not wired yet. Your schema doesn’t have a WTN table under the names we tried, and there are no WTN fields on jobs.
             Tell me where WTNs are generated/stored and we’ll list + resend them here.
           </p>
         ) : (
