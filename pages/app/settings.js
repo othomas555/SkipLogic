@@ -466,7 +466,7 @@ export default function SettingsPage() {
           </Link>
           <h1 style={{ margin: "10px 0 0" }}>Settings</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            Skip hire terms + integrations + permits.
+            Skip hire terms + integrations + permits + emails + waste.
           </p>
         </div>
 
@@ -485,6 +485,42 @@ export default function SettingsPage() {
           {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
         </div>
       )}
+
+      {/* Emails (link only) */}
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <h2 style={h2Style}>Emails</h2>
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
+              Sender setup + domain verification + HTML templates.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Link href="/app/settings/emails" style={{ ...btnPrimaryDark, textDecoration: "none", display: "inline-block" }}>
+              Open email settings
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Waste (link only) */}
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <h2 style={h2Style}>Waste</h2>
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
+              Manage waste outlets + EWC codes + regulator (NRW/EA). “Waste out” entries will use these lists.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Link href="/app/settings/waste" style={{ ...btnPrimaryDark, textDecoration: "none", display: "inline-block" }}>
+              Open waste settings
+            </Link>
+          </div>
+        </div>
+      </section>
 
       {/* Invoicing section (link only) */}
       <section style={cardStyle}>
