@@ -79,6 +79,7 @@ export default async function handler(req, res) {
     assert(settings, "Email settings missing");
     assert(settings.is_enabled, "Email sending is disabled in settings");
     assert(settings.from_email, "Missing from_email in settings");
+
     const fromName = settings.from_name || "SkipLogic";
     const from = `${fromName} <${settings.from_email}>`;
 
@@ -114,19 +115,35 @@ export default async function handler(req, res) {
     });
 
     if (!sendRes.ok) {
+      const details = sendRes.json || {};
+
       await supabaseAdmin
         .from("email_outbox")
-        .update({ status: "failed", error: JSON.stringify(sendRes.json || {}), sent_at: new Date().toISOString() })
+        .update({
+          status: "failed",
+          error: JSON.stringify(details),
+          sent_at: new Date().toISOString(),
+        })
         .eq("id", out.id);
 
-      return res.status(400).json({ ok: false, error: "Resend send failed", details: sendRes.json });
+      // ✅ This is the important change: return details to the UI
+      return res.status(400).json({
+        ok: false,
+        error: "Resend send failed",
+        details,
+        resend_status: sendRes.status,
+      });
     }
 
     const messageId = sendRes.json?.id || null;
 
     await supabaseAdmin
       .from("email_outbox")
-      .update({ status: "sent", provider_message_id: messageId, sent_at: new Date().toISOString() })
+      .update({
+        status: "sent",
+        provider_message_id: messageId,
+        sent_at: new Date().toISOString(),
+      })
       .eq("id", out.id);
 
     return res.status(200).json({ ok: true, message_id: messageId });
