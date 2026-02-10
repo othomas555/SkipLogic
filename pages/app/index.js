@@ -58,6 +58,18 @@ export default function AppDashboardPage() {
           href="/app/jobs/scheduler"
         />
 
+        {/* Waste */}
+        <DashboardCard
+          title="Waste Out"
+          description="Record waste transfers (WTN, tonnes, outlet, EWC)."
+          href="/app/waste/out"
+        />
+        <DashboardCard
+          title="Waste Returns"
+          description="Quarterly totals + CSV export (coming next)."
+          href="/app/waste/returns"
+        />
+
         {/* Customers & people */}
         <DashboardCard
           title="Customers"
@@ -90,6 +102,11 @@ export default function AppDashboardPage() {
           title="Postcodes Served"
           description="Define service areas for pricing."
           href="/app/postcodes-served"
+        />
+        <DashboardCard
+          title="Waste Settings"
+          description="Manage outlets, EWC codes, regulator (NRW/EA)."
+          href="/app/settings/waste"
         />
         <DashboardCard
           title="Settings"
