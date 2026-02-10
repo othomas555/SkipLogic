@@ -29,22 +29,31 @@ async function requirePlatformAdmin(req, supabaseAdmin) {
   return { ok: true, user_id: userId, profile: prof };
 }
 
-function displayCompany(row) {
-  return row.company_name || row.name || row.slug || row.subscriber_id || "—";
+function displayCompanyMerged(healthRow, subscriberRow) {
+  const s = subscriberRow || {};
+  const h = healthRow || {};
+  return (
+    s.company_name ||
+    s.name ||
+    s.slug ||
+    h.company_name ||
+    h.primary_email ||
+    h.subscriber_id ||
+    "—"
+  );
 }
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
   const supabaseAdmin = getSupabaseAdmin();
-
   const authz = await requirePlatformAdmin(req, supabaseAdmin);
   if (!authz.ok) return res.status(authz.status).json({ ok: false, error: authz.error });
 
   const q = String(req.query.q || "").trim().toLowerCase();
 
-  // Pull from health view (usage + billing + health)
-  const { data: rows, error } = await supabaseAdmin
+  // 1) Get health rows (usage/billing/health)
+  const { data: healthRows, error: hErr } = await supabaseAdmin
     .from("v_platform_subscriber_health")
     .select(
       [
@@ -72,18 +81,41 @@ export default async function handler(req, res) {
         "errors_7d",
         "health_state",
       ].join(",")
-    )
-    .order("company_name", { ascending: true, nullsFirst: true });
+    );
 
-  if (error) return res.status(500).json({ ok: false, error: error.message });
+  if (hErr) return res.status(500).json({ ok: false, error: hErr.message });
 
-  // If view has null company_name, we can also join subscribers to get name/slug in the future.
-  // For now, filter client-side using the fields we have.
-  let out = rows || [];
+  const rows = healthRows || [];
+  const ids = rows.map((r) => r.subscriber_id).filter(Boolean);
+
+  // 2) Pull subscriber rows for names/slug
+  const { data: subs, error: sErr } = await supabaseAdmin
+    .from("subscribers")
+    .select("id,name,slug,company_name,primary_email,status,plan")
+    .in("id", ids);
+
+  if (sErr) return res.status(500).json({ ok: false, error: sErr.message });
+
+  const byId = new Map((subs || []).map((s) => [s.id, s]));
+
+  // 3) Merge
+  let out = rows.map((h) => {
+    const s = byId.get(h.subscriber_id);
+    return {
+      ...h,
+      // prefer canonical subscriber fields if present
+      status: s?.status ?? h.status,
+      plan: s?.plan ?? h.plan,
+      primary_email: s?.primary_email ?? h.primary_email,
+      display_company: displayCompanyMerged(h, s),
+    };
+  });
+
+  // 4) Search filter
   if (q) {
     out = out.filter((r) => {
       const hay = [
-        displayCompany(r),
+        r.display_company || "",
         r.primary_email || "",
         r.status || "",
         r.plan || "",
@@ -97,10 +129,8 @@ export default async function handler(req, res) {
     });
   }
 
-  out = out.map((r) => ({
-    ...r,
-    display_company: displayCompany(r),
-  }));
+  // 5) Sort by display name (null-safe)
+  out.sort((a, b) => String(a.display_company || "").localeCompare(String(b.display_company || "")));
 
   return res.status(200).json({ ok: true, subscribers: out });
 }
