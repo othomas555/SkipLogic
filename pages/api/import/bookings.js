@@ -99,6 +99,15 @@ function parseDateTimeToISO(value) {
   return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
 }
 
+// ✅ NEW: detect weekend from YYYY-MM-DD (UTC-safe)
+function isWeekendISODate(isoDate) {
+  const s = String(isoDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const dt = new Date(s + "T00:00:00Z");
+  const day = dt.getUTCDay(); // 0 Sun ... 6 Sat
+  return day === 0 || day === 6;
+}
+
 function parseCSV(text) {
   const rows = [];
   let row = [];
@@ -190,11 +199,10 @@ function deriveJobStatus(r) {
   return "booked";
 }
 
-// ✅ FIX: never return null because jobs.placement_type is NOT NULL
+// never null
 function derivePlacementType(value) {
   const s = clean(value);
 
-  // Anything that smells like road/public placement
   if (
     s.includes("road") ||
     s.includes("public") ||
@@ -206,7 +214,6 @@ function derivePlacementType(value) {
     return "road";
   }
 
-  // Default everything else to private
   return "private";
 }
 
@@ -486,12 +493,12 @@ export default async function handler(req, res) {
         collection_actual_date: collectionActual || null,
 
         skip_type_id: skipMatch.id || null,
-
-        // ✅ always non-null now
         placement_type: derivePlacementType(r.placement),
 
-        price_inc_vat: price,
+        // ✅ FIX for constraint: allow weekend dates by setting weekend_override
+        weekend_override: isWeekendISODate(deliveryDate),
 
+        price_inc_vat: price,
         job_status: deriveJobStatus(r),
         payment_type: derivePaymentType(r.booking_type),
 
