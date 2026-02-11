@@ -26,6 +26,7 @@ function clean(s) {
 function parseDateToISODate(value) {
   const s = String(value || "").trim();
   if (!s) return "";
+
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -55,6 +56,7 @@ function parseMoney(value) {
   return n;
 }
 
+// Robust-ish CSV parser that supports quoted fields with commas/newlines.
 function parseCSV(text) {
   const rows = [];
   let row = [];
@@ -164,7 +166,7 @@ export default function ImportBookingsPage() {
   const [parseErr, setParseErr] = useState("");
 
   const [headers, setHeaders] = useState([]);
-  const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState([]); // array of {__raw, __mapped}
   const [previewCount, setPreviewCount] = useState(20);
 
   const [importBusy, setImportBusy] = useState(false);
@@ -381,11 +383,11 @@ export default function ImportBookingsPage() {
     if (!rows.length) return false;
     if (skipTypesLoading) return false;
     if (skipTypesErr) return false;
+    if (!rawText.trim()) return false;
     if (analysis.unknownSkipSizes.length) return false;
     if (analysis.invalidRows.length) return false;
-    if (!rawText.trim()) return false;
     return true;
-  }, [rows.length, skipTypesLoading, skipTypesErr, analysis.unknownSkipSizes.length, analysis.invalidRows.length, rawText]);
+  }, [rows.length, skipTypesLoading, skipTypesErr, rawText, analysis.unknownSkipSizes.length, analysis.invalidRows.length]);
 
   async function doImport() {
     setImportOk("");
@@ -401,14 +403,8 @@ export default function ImportBookingsPage() {
 
       const res = await fetch("/api/import/bookings", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + token,
-        },
-        body: JSON.stringify({
-          csv_text: rawText,
-          file_name: fileName || null,
-        }),
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ csv_text: rawText, file_name: fileName || null }),
       });
 
       const json = await res.json().catch(() => null);
@@ -538,6 +534,110 @@ export default function ImportBookingsPage() {
       {rows.length > 0 && (
         <>
           <section style={cardStyle}>
+            <h2 style={h2Style}>Summary</h2>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <div style={statCard}>
+                <div style={statLabel}>Rows</div>
+                <div style={statValue}>{analysis.totalRows}</div>
+              </div>
+
+              <div style={statCard}>
+                <div style={statLabel}>Unique customers (estimated)</div>
+                <div style={statValue}>{analysis.customerCount}</div>
+              </div>
+
+              <div style={statCard}>
+                <div style={statLabel}>Jobs</div>
+                <div style={statValue}>{analysis.jobCount}</div>
+              </div>
+
+              <div style={{ ...statCard, borderColor: analysis.invalidRows.length ? "#ffd1d1" : "#eee" }}>
+                <div style={statLabel}>Invalid rows</div>
+                <div style={{ ...statValue, color: analysis.invalidRows.length ? "#8a1f1f" : "#111" }}>
+                  {analysis.invalidRows.length}
+                </div>
+              </div>
+
+              <div style={{ ...statCard, borderColor: analysis.unknownSkipSizes.length ? "#ffe7b5" : "#eee" }}>
+                <div style={statLabel}>Unknown skip sizes</div>
+                <div style={{ ...statValue, color: analysis.unknownSkipSizes.length ? "#7a5a00" : "#111" }}>
+                  {analysis.unknownSkipSizes.length}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {analysis.unknownSkipSizes.length > 0 && (
+            <section style={{ ...cardStyle, borderColor: "#ffe7b5", background: "#fffaf0" }}>
+              <h2 style={h2Style}>Unknown skip sizes (blocked)</h2>
+              <p style={{ margin: "0 0 10px", fontSize: 12, color: "#7a5a00" }}>
+                These skip sizes did not match any record in <code>skip_types</code>.
+              </p>
+
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Skip size (cleaned)</th>
+                      <th style={thStyle}>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analysis.unknownSkipSizes.slice(0, 50).map((x) => (
+                      <tr key={x.skipSize}>
+                        <td style={tdStyle}>{x.skipSize}</td>
+                        <td style={tdStyle}>{x.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {analysis.invalidRows.length > 0 && (
+            <section style={{ ...cardStyle, borderColor: "#ffd1d1", background: "#fff5f5" }}>
+              <h2 style={h2Style}>Invalid rows (blocked)</h2>
+              <p style={{ margin: "0 0 10px", fontSize: 12, color: "#8a1f1f" }}>
+                These rows are missing required fields (Job No, Delivery Date, Address, Postcode, Skip Size).
+              </p>
+
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>CSV row</th>
+                      <th style={thStyle}>Job No</th>
+                      <th style={thStyle}>Errors</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analysis.invalidRows.slice(0, 50).map((x) => (
+                      <tr key={`${x.rowIndex}-${x.jobNo}`}>
+                        <td style={tdStyle}>{x.rowIndex}</td>
+                        <td style={tdStyle}>{x.jobNo}</td>
+                        <td style={tdStyle}>
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {x.errors.map((e, idx) => (
+                              <li key={idx}>{e}</li>
+                            ))}
+                          </ul>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {analysis.invalidRows.length > 50 && (
+                <p style={{ margin: "10px 0 0", fontSize: 12, color: "#8a1f1f" }}>
+                  Showing first 50 invalid rows only.
+                </p>
+              )}
+            </section>
+          )}
+
+          <section style={cardStyle}>
             <h2 style={h2Style}>Preview (first {previewCount} rows)</h2>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1400 }}>
@@ -574,6 +674,24 @@ export default function ImportBookingsPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          </section>
+
+          <section style={{ ...cardStyle, borderColor: "#e5e7eb", background: "#fafafa" }}>
+            <h2 style={h2Style}>Columns detected</h2>
+            <div style={{ fontSize: 12, color: "#444" }}>
+              {headers.length ? (
+                <div style={{ lineHeight: 1.6 }}>
+                  {headers.map((h, idx) => (
+                    <span key={h}>
+                      {idx ? ", " : ""}
+                      {h}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                "—"
+              )}
             </div>
           </section>
         </>
@@ -673,6 +791,18 @@ const btnSecondary = {
   cursor: "pointer",
   fontSize: 13,
 };
+
+const statCard = {
+  minWidth: 160,
+  flex: "0 0 auto",
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 12,
+  background: "#fff",
+};
+
+const statLabel = { fontSize: 12, color: "#666" };
+const statValue = { fontSize: 22, fontWeight: 900, marginTop: 6 };
 
 const preStyle = {
   marginTop: 10,
