@@ -1,22 +1,4 @@
 // pages/api/import/bookings.js
-//
-// POST { csv_text, file_name? }
-// Auth: Office user via Authorization: Bearer <supabase access token>
-//
-// Purpose:
-// Imports historical bookings from a CSV (Google Sheets export) into:
-// - customers (created if missing)
-// - jobs (created if missing)
-//
-// Safety / guarantees:
-// - Tenant-safe: uses subscriber_id from office auth context
-// - Idempotent: skips jobs where job_number already exists for subscriber
-// - Does NOT touch any Xero fields / send emails
-//
-// Notes:
-// - Uses Supabase Admin client (bypasses RLS safely server-side).
-// - Performs batch inserts.
-
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
@@ -34,6 +16,25 @@ function clean(s) {
     .trim();
 }
 
+function aliasSkipSizeForMatching(raw) {
+  const s = clean(raw);
+  if (!s) return "";
+
+  const m = s.match(/(\d{1,2})\s*(yd|yard|yards)?/);
+  const n = m ? Number(m[1]) : null;
+
+  if (Number.isFinite(n)) {
+    if (n >= 12) return "maxi";
+    if (n >= 8) return "builders";
+    if (n >= 6) return "midi";
+    return "mini";
+  }
+
+  if (s.includes("roofing")) return "builders";
+
+  return s;
+}
+
 function parseMoney(value) {
   const s = String(value || "").trim();
   if (!s) return null;
@@ -46,10 +47,8 @@ function parseDateToISODate(value) {
   const s = String(value || "").trim();
   if (!s) return "";
 
-  // YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
-  // DD/MM/YYYY
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) {
     const dd = String(m[1]).padStart(2, "0");
@@ -58,7 +57,6 @@ function parseDateToISODate(value) {
     return `${yyyy}-${mm}-${dd}`;
   }
 
-  // Try Date parse fallback
   const dt = new Date(s);
   if (!Number.isNaN(dt.getTime())) {
     const yyyy = dt.getFullYear();
@@ -71,21 +69,14 @@ function parseDateToISODate(value) {
 }
 
 function parseDateTimeToISO(value) {
-  // Try to preserve time for created_at when present.
-  // Accept:
-  // - DD/MM/YYYY HH:MM
-  // - DD/MM/YYYY HH:MM:SS
-  // - ISO strings
   const s = String(value || "").trim();
   if (!s) return null;
 
-  // ISO already
   if (/^\d{4}-\d{2}-\d{2}t/i.test(s)) {
     const dt = new Date(s);
     return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
   }
 
-  // DD/MM/YYYY HH:MM(:SS)?
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (m) {
     const dd = Number(m[1]);
@@ -94,25 +85,20 @@ function parseDateTimeToISO(value) {
     const hh = m[4] != null ? Number(m[4]) : 0;
     const min = m[5] != null ? Number(m[5]) : 0;
     const ss = m[6] != null ? Number(m[6]) : 0;
-
-    // Create as local time then convert to ISO; good enough for import history
     const dt = new Date(yyyy, mm - 1, dd, hh, min, ss);
     return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
   }
 
-  // date only
   const d = parseDateToISODate(s);
   if (d) {
     const dt = new Date(d + "T00:00:00");
     return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
   }
 
-  // last resort
   const dt = new Date(s);
   return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
 }
 
-// Robust CSV parser (handles quotes/newlines in fields)
 function parseCSV(text) {
   const rows = [];
   let row = [];
@@ -245,7 +231,6 @@ export default async function handler(req, res) {
 
     const supabase = getSupabaseAdmin();
 
-    // Load skip types for mapping
     const { data: skipTypes, error: stErr } = await supabase
       .from("skip_types")
       .select("id, name, subscriber_id")
@@ -264,16 +249,16 @@ export default async function handler(req, res) {
     }));
 
     function matchSkipTypeId(skipSizeRaw) {
-      const ss = clean(skipSizeRaw);
-      if (!ss) return { id: "", match: "", method: "" };
+      const aliased = aliasSkipSizeForMatching(skipSizeRaw);
+      const ss = clean(aliased);
+      if (!ss) return { id: "", match: "", method: "", aliased };
       const exact = skipIndex.find((x) => x.key === ss);
-      if (exact) return { id: exact.id, match: exact.name, method: "exact" };
+      if (exact) return { id: exact.id, match: exact.name, method: "exact", aliased };
       const contains = skipIndex.find((x) => x.key.includes(ss) || ss.includes(x.key));
-      if (contains) return { id: contains.id, match: contains.name, method: "contains" };
-      return { id: "", match: "", method: "" };
+      if (contains) return { id: contains.id, match: contains.name, method: "contains", aliased };
+      return { id: "", match: "", method: "", aliased };
     }
 
-    // Convert rows to mapped objects
     const mappedRows = [];
     for (let i = 1; i < grid.length; i++) {
       const arr = grid[i];
@@ -314,7 +299,6 @@ export default async function handler(req, res) {
       mappedRows.push({ rowIndex: i + 1, r });
     }
 
-    // Basic validation + unknown skip sizes
     const invalid = [];
     const unknownSkips = new Map();
     const distinctCustomerKeys = new Map();
@@ -359,7 +343,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Load existing customers + jobs to support idempotency
     const { data: existingCustomers, error: custErr } = await supabase
       .from("customers")
       .select("id, subscriber_id, first_name, last_name, company_name, email, phone")
@@ -394,7 +377,6 @@ export default async function handler(req, res) {
 
     const existingJobNumbers = new Set((existingJobs || []).map((j) => String(j.job_number || "").trim()).filter(Boolean));
 
-    // Create missing customers
     const customersToInsert = [];
     for (const [ck, r] of distinctCustomerKeys.entries()) {
       if (customerByKey.has(ck)) continue;
@@ -434,7 +416,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Build jobs to insert
     const jobsToInsert = [];
     let jobsSkipped = 0;
 
@@ -451,7 +432,6 @@ export default async function handler(req, res) {
       const custKey = makeUniqueCustomerKey(r);
       const cust = customerByKey.get(custKey);
       if (!cust?.id) {
-        // should never happen if customer insert succeeded
         return res.status(500).json({ ok: false, error: "Customer mapping failed", details: { job_no: jobNo, cust_key: custKey } });
       }
 
@@ -460,7 +440,8 @@ export default async function handler(req, res) {
       const collectionSched = parseDateToISODate(r.staff_collection_date);
       const collectionActual = parseDateToISODate(r.on_hire_end);
 
-      const skipMatch = matchSkipTypeId(r.skip_size);
+      const originalSkip = String(r.skip_size || "").trim();
+      const skipMatch = matchSkipTypeId(originalSkip);
       const price = parseMoney(r.base_skip_price_inc_vat);
 
       const notesParts = [];
@@ -468,6 +449,13 @@ export default async function handler(req, res) {
       const n1 = String(r.notes_1 || "").trim();
       if (n0) notesParts.push(n0);
       if (n1) notesParts.push(n1);
+
+      // Preserve original skip size if it was aliased / non-standard
+      const aliased = String(skipMatch.aliased || "").trim();
+      if (originalSkip && aliased && clean(originalSkip) !== clean(aliased)) {
+        notesParts.push(`Original skip size: ${originalSkip}`);
+      }
+
       notesParts.push("Imported from Google Sheet");
       const notes = notesParts.filter(Boolean).join("\n");
 
@@ -478,36 +466,28 @@ export default async function handler(req, res) {
         customer_id: cust.id,
         job_number: jobNo,
 
-        // Site
         site_address_line1: String(r.address || "").trim() || null,
         site_postcode: String(r.postcode || "").trim() || null,
 
-        // Scheduling / actuals
         scheduled_date: deliveryDate || null,
         delivery_actual_date: deliveryActual || null,
         collection_date: collectionSched || null,
         collection_actual_date: collectionActual || null,
 
-        // Commercial
         skip_type_id: skipMatch.id || null,
         placement_type: derivePlacementType(r.placement),
         price_inc_vat: price,
 
-        // Status / payment
         job_status: deriveJobStatus(r),
         payment_type: derivePaymentType(r.booking_type),
 
-        // Notes
         notes,
-
-        // Preserve booking date if possible
         created_at: createdAtISO,
       });
 
       existingJobNumbers.add(jobNo);
     }
 
-    // Insert jobs in chunks
     const CHUNK = 500;
     let jobsInserted = 0;
 
