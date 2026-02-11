@@ -3,17 +3,30 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { useAuthProfile } from "../../lib/useAuthProfile";
 
-function CardLink({ href, title, desc }) {
+function Card({ href, title, desc, badge }) {
   return (
     <Link href={href} style={cardLink}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ fontWeight: 900, fontSize: 14, color: "#111" }}>{title}</div>
-        <div style={{ fontSize: 12, color: "#666", lineHeight: 1.3 }}>{desc}</div>
-        <div style={{ marginTop: 6, fontSize: 12, color: "#0070f3", textDecoration: "underline" }}>
-          Open →
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 900, fontSize: 14, color: "#111" }}>{title}</div>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#666", lineHeight: 1.35 }}>{desc}</div>
         </div>
+        {badge ? <span style={badgeStyle}>{badge}</span> : null}
       </div>
+      <div style={{ marginTop: 10, fontSize: 12, color: "#0070f3", textDecoration: "underline" }}>Open →</div>
     </Link>
+  );
+}
+
+function Section({ title, children, subtitle }) {
+  return (
+    <section style={{ marginBottom: 14 }}>
+      <div style={{ marginBottom: 10 }}>
+        <h2 style={{ margin: 0, fontSize: 14 }}>{title}</h2>
+        {subtitle ? <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>{subtitle}</div> : null}
+      </div>
+      <div style={grid}>{children}</div>
+    </section>
   );
 }
 
@@ -47,7 +60,7 @@ export default function DashboardPage() {
         <div>
           <h1 style={{ margin: 0 }}>Dashboard</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            Quick links to everything in SkipLogic.
+            Everything you need for day-to-day ops.
           </p>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 12 }}>
             Subscriber: <b>{subscriberId || "—"}</b> • User: <b>{profile?.email || user?.email || "—"}</b>
@@ -56,46 +69,89 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={btnSecondary} onClick={() => router.push("/app/routes")}>Route map</button>
           <button style={btnSecondary} onClick={() => router.push("/app/settings")}>Settings</button>
         </div>
       </header>
 
-      <section style={grid}>
-        {/* Core */}
-        <CardLink href="/app/jobs" title="Jobs" desc="Search, filter, sort, view and manage jobs." />
-        <CardLink href="/app/jobs/book" title="Book a job" desc="Create a new delivery / collection / swap booking." />
-        <CardLink href="/app/customers" title="Customers" desc="Customer records, credit settings, view history." />
+      <Section
+        title="Operations"
+        subtitle="Booking, planning and running the day."
+      >
+        <Card href="/app/jobs/book" title="Book a job" desc="Create a new delivery booking." badge="Start here" />
+        <Card href="/app/jobs" title="Jobs" desc="All jobs with filters/sorting." />
+        <Card href="/app/jobs/day-planner" title="Day planner" desc="Plan the day by work date." />
+        <Card href="/app/jobs/scheduler" title="Scheduler" desc="Schedule deliveries / collections." />
+        <Card href="/app/staff" title="Staff" desc="Staff tools and internal pages." />
+      </Section>
 
-        {/* Ops */}
-        <CardLink href="/app/scheduler" title="Scheduler" desc="Plan deliveries/collections and driver runs." />
-        <CardLink href="/app/driver" title="Driver portal" desc="Driver work list and mark jobs complete." />
-        <CardLink href="/app/drivers" title="Drivers" desc="Manage drivers (active/inactive, details)." />
+      <Section
+        title="Customers"
+        subtitle="Customers, credit, and history."
+      >
+        <Card href="/app/customers" title="Customers" desc="Search, create and edit customers." />
+        <Card href="/app/customers/new" title="Add customer" desc="Create a customer record." />
+      </Section>
 
-        {/* Fleet */}
-        <CardLink href="/app/vehicles" title="Vehicles" desc="Fleet register + compliance dates and status." />
+      <Section
+        title="Drivers"
+        subtitle="Driver portal, runs and driver setup."
+      >
+        <Card href="/app/driver" title="Driver portal" desc="Driver work list (deliver / collect / swap)." />
+        <Card href="/app/driver/run" title="Driver run" desc="Run view for the driver." />
+        <Card href="/app/drivers" title="Drivers" desc="Manage drivers." />
+        <Card href="/app/drivers/run" title="Drivers run" desc="Staff run view / grouping." />
+      </Section>
 
-        {/* Waste */}
-        <CardLink href="/app/waste/out" title="Waste out" desc="Waste movements / outbound loads (if enabled)." />
-        <CardLink href="/app/settings/waste" title="Waste settings" desc="Outlets, EWC codes, waste configuration." />
+      <Section
+        title="Fleet"
+        subtitle="Vehicles and compliance."
+      >
+        <Card href="/app/vehicles" title="Vehicles" desc="Fleet list + compliance badges." />
+      </Section>
 
-        {/* Finance */}
-        <CardLink href="/app/settings/invoicing" title="Invoicing settings" desc="Invoice numbering + Xero settings." />
-        <CardLink href="/app/settings/emails" title="Email settings" desc="Outbound email templates/config." />
+      <Section
+        title="Waste"
+        subtitle="Waste out + returns."
+      >
+        <Card href="/app/waste/out" title="Waste out" desc="Waste movements (outbound loads)." />
+        <Card href="/app/waste/returns" title="Waste returns" desc="Returns / quarterly reporting." />
+      </Section>
 
-        {/* Admin / Tools */}
-        <CardLink href="/app/import/bookings" title="Import bookings" desc="Import historical bookings from CSV." />
-        <CardLink href="/app/staff" title="Staff" desc="Staff tools / internal pages (if enabled)." />
-        <CardLink href="/app/settings/vehicles" title="Vehicle alerts" desc="Daily compliance alerts configuration." />
-        <CardLink href="/app/settings/term-hire" title="Term hire" desc="Term hire reminders and rules." />
-      </section>
+      <Section
+        title="Settings"
+        subtitle="Operational settings, pricing and integrations."
+      >
+        <Card href="/app/settings" title="Settings home" desc="All settings sections." />
+        <Card href="/app/settings/invoicing" title="Invoicing" desc="Invoice behaviour + Xero wiring." />
+        <Card href="/app/settings/emails" title="Emails" desc="Email templates / sending configuration." />
+        <Card href="/app/settings/waste" title="Waste settings" desc="Outlets, EWC codes, waste config." />
+        <Card href="/app/settings/vehicles" title="Vehicle alerts" desc="Daily compliance alert settings." />
+        <Card href="/app/settings/skip-hire-extras" title="Skip hire extras" desc="Extras and rules." />
+        <Card href="/app/skip-types" title="Skip types" desc="Manage skip types." />
+        <Card href="/app/postcodes-served" title="Postcodes served" desc="Coverage rules by postcode." />
+      </Section>
 
-      <section style={cardStyle}>
-        <h2 style={{ margin: "0 0 10px", fontSize: 14 }}>Next step</h2>
-        <p style={{ margin: 0, color: "#666", fontSize: 12 }}>
-          Run <code>node scripts/list-routes.js</code> and paste the JSON here — I’ll replace this dashboard
-          with an auto-curated set of links that exactly matches your repo (no dead links).
-        </p>
-      </section>
+      <Section
+        title="Imports"
+        subtitle="Tools for bringing data in."
+      >
+        <Card href="/app/import/bookings" title="Import bookings" desc="Import historical bookings from CSV." />
+      </Section>
+
+      <Section
+        title="Admin / Platform"
+        subtitle="Multi-tenant admin pages (usually not daily use)."
+      >
+        <Card href="/app/platform/subscribers" title="Subscribers" desc="Platform subscriber list." badge="Admin" />
+      </Section>
+
+      <Section
+        title="Finance (reference)"
+        subtitle="Integration helper pages."
+      >
+        <Card href="/app/xero-accounts" title="Xero accounts" desc="View Xero accounts/bank accounts." />
+      </Section>
     </main>
   );
 }
@@ -128,22 +184,28 @@ const grid = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
   gap: 12,
-  marginBottom: 14,
 };
 
-const cardStyle = {
+const cardLink = {
   background: "#fff",
   border: "1px solid #eee",
   borderRadius: 12,
   padding: 14,
+  textDecoration: "none",
+  color: "inherit",
   boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
 };
 
-const cardLink = {
-  ...cardStyle,
-  textDecoration: "none",
-  color: "inherit",
-  display: "block",
+const badgeStyle = {
+  display: "inline-block",
+  padding: "3px 8px",
+  borderRadius: 999,
+  fontSize: 11,
+  fontWeight: 900,
+  background: "#eef6ff",
+  color: "#0b3d91",
+  border: "1px solid #b6d7ff",
+  whiteSpace: "nowrap",
 };
 
 const btnPrimary = {
