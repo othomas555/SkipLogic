@@ -190,12 +190,24 @@ function deriveJobStatus(r) {
   return "booked";
 }
 
+// ✅ FIX: never return null because jobs.placement_type is NOT NULL
 function derivePlacementType(value) {
   const s = clean(value);
-  if (!s) return null;
-  if (s.includes("road") || s.includes("public")) return "road";
-  if (s.includes("private")) return "private";
-  return null;
+
+  // Anything that smells like road/public placement
+  if (
+    s.includes("road") ||
+    s.includes("public") ||
+    s.includes("highway") ||
+    s.includes("pavement") ||
+    s.includes("kerb") ||
+    s.includes("council")
+  ) {
+    return "road";
+  }
+
+  // Default everything else to private
+  return "private";
 }
 
 function derivePaymentType(value) {
@@ -450,7 +462,6 @@ export default async function handler(req, res) {
       if (n0) notesParts.push(n0);
       if (n1) notesParts.push(n1);
 
-      // Preserve original skip size if it was aliased / non-standard
       const aliased = String(skipMatch.aliased || "").trim();
       if (originalSkip && aliased && clean(originalSkip) !== clean(aliased)) {
         notesParts.push(`Original skip size: ${originalSkip}`);
@@ -475,7 +486,10 @@ export default async function handler(req, res) {
         collection_actual_date: collectionActual || null,
 
         skip_type_id: skipMatch.id || null,
+
+        // ✅ always non-null now
         placement_type: derivePlacementType(r.placement),
+
         price_inc_vat: price,
 
         job_status: deriveJobStatus(r),
