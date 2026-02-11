@@ -2,11 +2,54 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { supabase } from "../../lib/supabaseClient";
 import { useAuthProfile } from "../../lib/useAuthProfile";
 
 function norm(s) {
   return String(s || "").trim().toLowerCase();
+}
+
+// Fetch and parse Next.js build manifest from the browser.
+// This is the most reliable way to list routes on Vercel (no filesystem access).
+async function fetchBuildRoutes() {
+  // buildId is embedded into the HTML by Next
+  const buildId = typeof window !== "undefined" ? window.__NEXT_DATA__?.buildId : null;
+  if (!buildId) throw new Error("Could not find Next buildId (window.__NEXT_DATA__.buildId).");
+
+  const url = `/_next/static/${buildId}/_buildManifest.js`;
+
+  const res = await fetch(url, { method: "GET" });
+  const text = await res.text();
+
+  // The manifest is JS that assigns self.__BUILD_MANIFEST = { ... }
+  // We safely evaluate it in a tiny sandbox object.
+  const sandbox = {};
+  try {
+    // eslint-disable-next-line no-new-func
+    const getManifest = new Function(
+      "self",
+      `${text}\n; return self.__BUILD_MANIFEST || null;`
+    );
+    const manifest = getManifest(sandbox);
+
+    if (!manifest) throw new Error("Build manifest did not expose __BUILD_MANIFEST.");
+
+    // Next usually provides sortedPages, otherwise we fall back to keys.
+    const pages = Array.isArray(manifest.sortedPages)
+      ? manifest.sortedPages
+      : Object.keys(manifest).filter((k) => k.startsWith("/"));
+
+    // Keep only /app routes, remove Next internals
+    const routes = pages
+      .filter((p) => typeof p === "string")
+      .filter((p) => p.startsWith("/app"))
+      .filter((p) => !p.startsWith("/app/_")) // just in case
+      .sort((a, b) => a.localeCompare(b));
+
+    // Dedup (just in case)
+    return Array.from(new Set(routes));
+  } catch (e) {
+    throw new Error(`Failed to parse build manifest: ${String(e?.message || e)}`);
+  }
 }
 
 export default function RoutesPage() {
@@ -21,23 +64,11 @@ export default function RoutesPage() {
   async function load() {
     setErrorMsg("");
     setLoading(true);
-
     try {
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-      if (sessionErr) throw new Error(sessionErr.message || "Could not read session");
-      const token = sessionData?.session?.access_token;
-      if (!token) throw new Error("No auth token (please sign in again).");
-
-      const res = await fetch("/api/dev/routes", {
-        method: "GET",
-        headers: { Authorization: "Bearer " + token },
-      });
-
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.ok) throw new Error(json?.error || `Failed to load routes (HTTP ${res.status})`);
-
-      setRoutes(json.routes || []);
+      const r = await fetchBuildRoutes();
+      setRoutes(r);
     } catch (e) {
+      setRoutes([]);
       setErrorMsg(String(e?.message || e));
     } finally {
       setLoading(false);
@@ -89,7 +120,7 @@ export default function RoutesPage() {
           </Link>
           <h1 style={{ margin: "10px 0 0" }}>Route map</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            This is the full list of your app pages that exist in the repo (auto-generated).
+            This list comes from Next.js build manifest (so it matches what’s actually deployed).
           </p>
         </div>
 
@@ -100,7 +131,14 @@ export default function RoutesPage() {
 
       {(authError || errorMsg) && (
         <section style={{ ...cardStyle, borderColor: "#ffd1d1", background: "#fff5f5" }}>
-          <p style={{ color: "#8a1f1f", margin: 0, fontWeight: 900 }}>{authError || errorMsg}</p>
+          <p style={{ color: "#8a1f1f", margin: 0, fontWeight: 900 }}>
+            {authError || errorMsg}
+          </p>
+          {errorMsg ? (
+            <p style={{ margin: "8px 0 0", color: "#8a1f1f", fontSize: 12 }}>
+              If you see “Failed to parse build manifest”, tell me exactly what it says and I’ll adjust the parser.
+            </p>
+          ) : null}
         </section>
       )}
 
