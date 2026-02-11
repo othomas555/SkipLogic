@@ -6,20 +6,6 @@ import { useRouter } from "next/router";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
-/**
- * Goals:
- * - Dry-run preview ONLY (no DB writes)
- * - Upload CSV (Google Sheets export)
- * - Parse rows, detect columns, validate
- * - Fetch skip_types from Supabase and map Skip Size -> skip_type_id
- * - Show:
- *   - total rows
- *   - customers to create (unique)
- *   - jobs to create
- *   - unknown skip sizes
- *   - invalid rows
- */
-
 function moneyGBP(n) {
   if (n == null || n === "") return "—";
   const x = Number(n);
@@ -32,29 +18,16 @@ function clean(s) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ")
-    .replace(/\bskip\b/g, "") // strip the word 'skip'
+    .replace(/\bskip\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function safeStr(x) {
-  if (x == null) return "";
-  return String(x);
-}
-
 function parseDateToISODate(value) {
-  // Accept:
-  // - YYYY-MM-DD
-  // - DD/MM/YYYY
-  // - Excel-like date strings
-  // Return: YYYY-MM-DD or "" if not parseable
   const s = String(value || "").trim();
   if (!s) return "";
-
-  // YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
-  // DD/MM/YYYY
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) {
     const dd = String(m[1]).padStart(2, "0");
@@ -63,7 +36,6 @@ function parseDateToISODate(value) {
     return `${yyyy}-${mm}-${dd}`;
   }
 
-  // Try Date parse
   const dt = new Date(s);
   if (!Number.isNaN(dt.getTime())) {
     const yyyy = dt.getFullYear();
@@ -78,14 +50,11 @@ function parseDateToISODate(value) {
 function parseMoney(value) {
   const s = String(value || "").trim();
   if (!s) return null;
-  // remove currency symbols/commas
   const n = Number(s.replace(/[^0-9.\-]/g, ""));
   if (!Number.isFinite(n)) return null;
   return n;
 }
 
-// Robust-ish CSV parser that supports quoted fields with commas/newlines.
-// Assumes delimiter comma.
 function parseCSV(text) {
   const rows = [];
   let row = [];
@@ -119,9 +88,7 @@ function parseCSV(text) {
       continue;
     }
 
-    if (ch === "\r") {
-      continue;
-    }
+    if (ch === "\r") continue;
 
     if (ch === "\n") {
       row.push(cur);
@@ -200,6 +167,11 @@ export default function ImportBookingsPage() {
   const [rows, setRows] = useState([]);
   const [previewCount, setPreviewCount] = useState(20);
 
+  const [importBusy, setImportBusy] = useState(false);
+  const [importOk, setImportOk] = useState("");
+  const [importErr, setImportErr] = useState("");
+  const [importResult, setImportResult] = useState(null);
+
   async function loadSkipTypes() {
     if (checking) return;
     if (!user || !subscriberId) return;
@@ -254,6 +226,9 @@ export default function ImportBookingsPage() {
     setParseErr("");
     setHeaders([]);
     setRows([]);
+    setImportOk("");
+    setImportErr("");
+    setImportResult(null);
   }
 
   async function handleFile(e) {
@@ -308,7 +283,6 @@ export default function ImportBookingsPage() {
             "price_inc_vat",
             "Price (inc VAT)",
           ]),
-          total_price: getCell(obj, normMap, ["Total Price (inc VAT + No VAT)", "Total Price", "total_price"]),
           notes: getCell(obj, normMap, ["Notes", "notes"]),
           notes_1: getCell(obj, normMap, ["Notes 1", "notes_1"]),
           wtn_pdf_link: getCell(obj, normMap, ["WTN PDF Link", "wtn_pdf_link"]),
@@ -368,9 +342,7 @@ export default function ImportBookingsPage() {
 
       if (r.base_skip_price_inc_vat && basePrice == null) errs.push("Price present but not parseable");
 
-      if (errs.length) {
-        invalid.push({ rowIndex: i + 2, jobNo: jobNo || "—", errors: errs });
-      }
+      if (errs.length) invalid.push({ rowIndex: i + 2, jobNo: jobNo || "—", errors: errs });
 
       if (preview.length < previewCount) {
         preview.push({
@@ -411,8 +383,49 @@ export default function ImportBookingsPage() {
     if (skipTypesErr) return false;
     if (analysis.unknownSkipSizes.length) return false;
     if (analysis.invalidRows.length) return false;
+    if (!rawText.trim()) return false;
     return true;
-  }, [rows.length, skipTypesLoading, skipTypesErr, analysis.unknownSkipSizes.length, analysis.invalidRows.length]);
+  }, [rows.length, skipTypesLoading, skipTypesErr, analysis.unknownSkipSizes.length, analysis.invalidRows.length, rawText]);
+
+  async function doImport() {
+    setImportOk("");
+    setImportErr("");
+    setImportResult(null);
+    setImportBusy(true);
+
+    try {
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      if (sessionErr) throw new Error(sessionErr.message || "Could not read session");
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("No auth session token found. Try signing out and back in.");
+
+      const res = await fetch("/api/import/bookings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + token,
+        },
+        body: JSON.stringify({
+          csv_text: rawText,
+          file_name: fileName || null,
+        }),
+      });
+
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok || !json?.ok) {
+        console.error("Import failed:", res.status, json);
+        throw new Error(json?.error || `Import failed (HTTP ${res.status})`);
+      }
+
+      setImportResult(json);
+      setImportOk("Import completed successfully.");
+    } catch (e) {
+      setImportErr(String(e?.message || e));
+    } finally {
+      setImportBusy(false);
+    }
+  }
 
   if (checking) {
     return (
@@ -441,9 +454,9 @@ export default function ImportBookingsPage() {
           <Link href="/app" style={linkStyle}>
             ← Back to dashboard
           </Link>
-          <h1 style={{ margin: "10px 0 0" }}>Import bookings (dry run)</h1>
+          <h1 style={{ margin: "10px 0 0" }}>Import bookings</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            Upload your historical CSV and preview what will be imported. No writes yet.
+            Upload your historical CSV and preview what will be imported.
           </p>
         </div>
 
@@ -457,6 +470,20 @@ export default function ImportBookingsPage() {
       {(authError || skipTypesErr || parseErr) && (
         <section style={{ ...cardStyle, borderColor: "#ffd1d1", background: "#fff5f5" }}>
           <p style={{ color: "#8a1f1f", margin: 0, fontWeight: 800 }}>{authError || skipTypesErr || parseErr}</p>
+        </section>
+      )}
+
+      {(importOk || importErr) && (
+        <section
+          style={{
+            ...cardStyle,
+            borderColor: importErr ? "#ffd1d1" : "#c7f9cc",
+            background: importErr ? "#fff5f5" : "#f0fff4",
+          }}
+        >
+          {importOk ? <p style={{ margin: 0, color: "#0f5132", fontWeight: 900 }}>{importOk}</p> : null}
+          {importErr ? <p style={{ margin: 0, color: "#8a1f1f", fontWeight: 900 }}>{importErr}</p> : null}
+          {importResult ? <pre style={preStyle}>{JSON.stringify(importResult, null, 2)}</pre> : null}
         </section>
       )}
 
@@ -493,126 +520,23 @@ export default function ImportBookingsPage() {
                 style={{ ...inputStyle, width: 90, marginLeft: 8 }}
               />
             </label>
+
+            <button style={canProceed ? btnPrimary : btnDisabled} onClick={doImport} disabled={!canProceed || importBusy}>
+              {importBusy ? "Importing…" : "Import CSV"}
+            </button>
           </div>
         </div>
 
         {rows.length > 0 && (
           <div style={{ marginTop: 12, fontSize: 12, color: "#666" }}>
-            Parsed <b>{analysis.totalRows}</b> rows, <b>{headers.length}</b> columns.
+            Parsed <b>{analysis.totalRows}</b> rows, <b>{headers.length}</b> columns. Ready:{" "}
+            {canProceed ? <b style={{ color: "#0f5132" }}>YES</b> : <b style={{ color: "#8a1f1f" }}>NO</b>}
           </div>
         )}
       </section>
 
       {rows.length > 0 && (
         <>
-          <section style={cardStyle}>
-            <h2 style={h2Style}>Summary</h2>
-
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <div style={statCard}>
-                <div style={statLabel}>Rows</div>
-                <div style={statValue}>{analysis.totalRows}</div>
-              </div>
-
-              <div style={statCard}>
-                <div style={statLabel}>Unique customers (estimated)</div>
-                <div style={statValue}>{analysis.customerCount}</div>
-              </div>
-
-              <div style={statCard}>
-                <div style={statLabel}>Jobs</div>
-                <div style={statValue}>{analysis.jobCount}</div>
-              </div>
-
-              <div style={{ ...statCard, borderColor: analysis.invalidRows.length ? "#ffd1d1" : "#eee" }}>
-                <div style={statLabel}>Invalid rows</div>
-                <div style={{ ...statValue, color: analysis.invalidRows.length ? "#8a1f1f" : "#111" }}>
-                  {analysis.invalidRows.length}
-                </div>
-              </div>
-
-              <div style={{ ...statCard, borderColor: analysis.unknownSkipSizes.length ? "#ffe7b5" : "#eee" }}>
-                <div style={statLabel}>Unknown skip sizes</div>
-                <div style={{ ...statValue, color: analysis.unknownSkipSizes.length ? "#7a5a00" : "#111" }}>
-                  {analysis.unknownSkipSizes.length}
-                </div>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12, fontSize: 12, color: "#666" }}>
-              Ready to import:{" "}
-              {canProceed ? (
-                <span style={{ fontWeight: 900, color: "#0f5132" }}>YES (dry-run clean)</span>
-              ) : (
-                <span style={{ fontWeight: 900, color: "#8a1f1f" }}>NO (fix issues first)</span>
-              )}
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-              Note: This page does <b>not</b> write to the database. Next step (after you approve) will add a server-side import
-              endpoint + optional cleanup SQL.
-            </div>
-          </section>
-
-          {analysis.unknownSkipSizes.length > 0 && (
-            <section style={{ ...cardStyle, borderColor: "#ffe7b5", background: "#fffaf0" }}>
-              <h2 style={h2Style}>Unknown skip sizes (blocked)</h2>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-                  <thead>
-                    <tr>
-                      <th style={thStyle}>Skip size (cleaned)</th>
-                      <th style={thStyle}>Count</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analysis.unknownSkipSizes.slice(0, 50).map((x) => (
-                      <tr key={x.skipSize}>
-                        <td style={tdStyle}>{x.skipSize}</td>
-                        <td style={tdStyle}>{x.count}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
-
-          {analysis.invalidRows.length > 0 && (
-            <section style={{ ...cardStyle, borderColor: "#ffd1d1", background: "#fff5f5" }}>
-              <h2 style={h2Style}>Invalid rows (blocked)</h2>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
-                  <thead>
-                    <tr>
-                      <th style={thStyle}>CSV row</th>
-                      <th style={thStyle}>Job No</th>
-                      <th style={thStyle}>Errors</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analysis.invalidRows.slice(0, 50).map((x) => (
-                      <tr key={`${x.rowIndex}-${x.jobNo}`}>
-                        <td style={tdStyle}>{x.rowIndex}</td>
-                        <td style={tdStyle}>{x.jobNo}</td>
-                        <td style={tdStyle}>
-                          <ul style={{ margin: 0, paddingLeft: 18 }}>
-                            {x.errors.map((e, idx) => (
-                              <li key={idx}>{e}</li>
-                            ))}
-                          </ul>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {analysis.invalidRows.length > 50 && (
-                <p style={{ margin: "10px 0 0", fontSize: 12, color: "#8a1f1f" }}>Showing first 50 invalid rows only.</p>
-              )}
-            </section>
-          )}
-
           <section style={cardStyle}>
             <h2 style={h2Style}>Preview (first {previewCount} rows)</h2>
             <div style={{ overflowX: "auto" }}>
@@ -650,24 +574,6 @@ export default function ImportBookingsPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
-          </section>
-
-          <section style={{ ...cardStyle, borderColor: "#e5e7eb", background: "#fafafa" }}>
-            <h2 style={h2Style}>Columns detected</h2>
-            <div style={{ fontSize: 12, color: "#444" }}>
-              {headers.length ? (
-                <div style={{ lineHeight: 1.6 }}>
-                  {headers.map((h, idx) => (
-                    <span key={h}>
-                      {idx ? ", " : ""}
-                      {h}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                "—"
-              )}
             </div>
           </section>
         </>
@@ -738,6 +644,26 @@ const inputStyle = {
   background: "#fff",
 };
 
+const btnPrimary = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #0070f3",
+  background: "#0070f3",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 13,
+};
+
+const btnDisabled = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #ccc",
+  background: "#eee",
+  color: "#777",
+  cursor: "not-allowed",
+  fontSize: 13,
+};
+
 const btnSecondary = {
   padding: "8px 12px",
   borderRadius: 8,
@@ -748,14 +674,14 @@ const btnSecondary = {
   fontSize: 13,
 };
 
-const statCard = {
-  minWidth: 160,
-  flex: "0 0 auto",
-  border: "1px solid #eee",
-  borderRadius: 12,
-  padding: 12,
+const preStyle = {
+  marginTop: 10,
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  fontSize: 12,
   background: "#fff",
+  border: "1px solid #ddd",
+  padding: 10,
+  borderRadius: 10,
+  color: "#111",
 };
-
-const statLabel = { fontSize: 12, color: "#666" };
-const statValue = { fontSize: 22, fontWeight: 900, marginTop: 6 };
