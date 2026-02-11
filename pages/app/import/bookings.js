@@ -23,6 +23,31 @@ function clean(s) {
     .trim();
 }
 
+// --- NEW: skip size aliasing for import ---
+function aliasSkipSizeForMatching(raw) {
+  const s = clean(raw);
+  if (!s) return "";
+
+  // Extract a number if present (e.g. "12yd enclosed", "8 yd", etc.)
+  const m = s.match(/(\d{1,2})\s*(yd|yard|yards)?/);
+  const n = m ? Number(m[1]) : null;
+
+  // Known sizing mapping to your existing 4/5 skip types
+  // Adjust if your business labels differ.
+  if (Number.isFinite(n)) {
+    if (n >= 12) return "maxi";
+    if (n >= 8) return "builders";
+    if (n >= 6) return "midi";
+    return "mini";
+  }
+
+  // Weird text that isn't a size (e.g. "amt roofing")
+  // Default to builders, but we’ll preserve original text in notes during import.
+  if (s.includes("roofing")) return "builders";
+
+  return s;
+}
+
 function parseDateToISODate(value) {
   const s = String(value || "").trim();
   if (!s) return "";
@@ -212,16 +237,17 @@ export default function ImportBookingsPage() {
   }, [skipTypes]);
 
   function matchSkipTypeIdFromSize(skipSizeRaw) {
-    const ss = clean(skipSizeRaw);
-    if (!ss) return { id: "", match: "", method: "" };
+    const aliased = aliasSkipSizeForMatching(skipSizeRaw);
+    const ss = clean(aliased);
+    if (!ss) return { id: "", match: "", method: "", aliased: "" };
 
     const exact = skipTypeIndex.find((x) => x.key === ss);
-    if (exact) return { id: exact.id, match: exact.name, method: "exact" };
+    if (exact) return { id: exact.id, match: exact.name, method: "exact", aliased };
 
     const contains = skipTypeIndex.find((x) => x.key.includes(ss) || ss.includes(x.key));
-    if (contains) return { id: contains.id, match: contains.name, method: "contains" };
+    if (contains) return { id: contains.id, match: contains.name, method: "contains", aliased };
 
-    return { id: "", match: "", method: "" };
+    return { id: "", match: "", method: "", aliased };
   }
 
   function resetParsed() {
@@ -347,12 +373,14 @@ export default function ImportBookingsPage() {
       if (errs.length) invalid.push({ rowIndex: i + 2, jobNo: jobNo || "—", errors: errs });
 
       if (preview.length < previewCount) {
+        const displaySkip = skipMatch.aliased && clean(skipSize) !== clean(skipMatch.aliased) ? `${skipSize} → ${skipMatch.aliased}` : skipSize;
+
         preview.push({
           rowIndex: i + 2,
           jobNo,
           deliveryDate,
           status: deriveJobStatus(r),
-          skipSize,
+          skipSize: displaySkip,
           skipTypeMatch: skipMatch.id ? `${skipMatch.match} (${skipMatch.method})` : "—",
           postcode,
           address,
@@ -565,15 +593,16 @@ export default function ImportBookingsPage() {
                 </div>
               </div>
             </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+              Import aliases enabled: <b>8yd → Builders</b>, <b>12yd → Maxi</b>, small sizes fall back to Midi/Mini.
+              Non-size text (eg “roofing”) defaults to Builders but is preserved in notes.
+            </div>
           </section>
 
           {analysis.unknownSkipSizes.length > 0 && (
             <section style={{ ...cardStyle, borderColor: "#ffe7b5", background: "#fffaf0" }}>
-              <h2 style={h2Style}>Unknown skip sizes (blocked)</h2>
-              <p style={{ margin: "0 0 10px", fontSize: 12, color: "#7a5a00" }}>
-                These skip sizes did not match any record in <code>skip_types</code>.
-              </p>
-
+              <h2 style={h2Style}>Unknown skip sizes (still blocked)</h2>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
                   <thead>
@@ -592,48 +621,6 @@ export default function ImportBookingsPage() {
                   </tbody>
                 </table>
               </div>
-            </section>
-          )}
-
-          {analysis.invalidRows.length > 0 && (
-            <section style={{ ...cardStyle, borderColor: "#ffd1d1", background: "#fff5f5" }}>
-              <h2 style={h2Style}>Invalid rows (blocked)</h2>
-              <p style={{ margin: "0 0 10px", fontSize: 12, color: "#8a1f1f" }}>
-                These rows are missing required fields (Job No, Delivery Date, Address, Postcode, Skip Size).
-              </p>
-
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
-                  <thead>
-                    <tr>
-                      <th style={thStyle}>CSV row</th>
-                      <th style={thStyle}>Job No</th>
-                      <th style={thStyle}>Errors</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analysis.invalidRows.slice(0, 50).map((x) => (
-                      <tr key={`${x.rowIndex}-${x.jobNo}`}>
-                        <td style={tdStyle}>{x.rowIndex}</td>
-                        <td style={tdStyle}>{x.jobNo}</td>
-                        <td style={tdStyle}>
-                          <ul style={{ margin: 0, paddingLeft: 18 }}>
-                            {x.errors.map((e, idx) => (
-                              <li key={idx}>{e}</li>
-                            ))}
-                          </ul>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {analysis.invalidRows.length > 50 && (
-                <p style={{ margin: "10px 0 0", fontSize: 12, color: "#8a1f1f" }}>
-                  Showing first 50 invalid rows only.
-                </p>
-              )}
             </section>
           )}
 
@@ -674,24 +661,6 @@ export default function ImportBookingsPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
-          </section>
-
-          <section style={{ ...cardStyle, borderColor: "#e5e7eb", background: "#fafafa" }}>
-            <h2 style={h2Style}>Columns detected</h2>
-            <div style={{ fontSize: 12, color: "#444" }}>
-              {headers.length ? (
-                <div style={{ lineHeight: 1.6 }}>
-                  {headers.map((h, idx) => (
-                    <span key={h}>
-                      {idx ? ", " : ""}
-                      {h}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                "—"
-              )}
             </div>
           </section>
         </>
