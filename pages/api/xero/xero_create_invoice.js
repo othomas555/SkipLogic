@@ -17,6 +17,10 @@
 // IMPORTANT (Option B):
 // - DO NOT set InvoiceNumber. Let Xero auto-assign (INV-####).
 // - Use job.job_number in Reference for traceability.
+//
+// NOTE ABOUT ADDRESS ON INVOICE:
+// - Xero shows the address from the *Contact* record (usually the Postal/POBOX address).
+// - So we upsert the customer's billing address onto the Xero contact before invoicing.
 
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
@@ -174,22 +178,83 @@ async function getTaxTypeByRateName({ accessToken, tenantId, rateName }) {
   return String(match.TaxType);
 }
 
+// ---- Address helpers (Xero invoice uses contact postal address) ----
+
+function buildXeroPostalAddressFromCustomer(customer) {
+  const line1 = asText(customer.billing_address_line1);
+  const line2 = asText(customer.billing_address_line2);
+  const city = asText(customer.billing_city);
+  const region = asText(customer.billing_region);
+  const postcode = asText(customer.billing_postcode);
+  const country = asText(customer.billing_country) || "United Kingdom";
+
+  // If we have *nothing*, skip updating.
+  const hasAnything = !!(line1 || line2 || city || region || postcode || country);
+  if (!hasAnything) return null;
+
+  // Xero generally wants something meaningful; require at least line1 or postcode/city.
+  const hasUseful =
+    !!line1 || (!!postcode && (!!city || !!region)) || (!!city && !!postcode);
+  if (!hasUseful) return null;
+
+  return {
+    AddressType: "POBOX", // Postal address shown on invoices
+    AddressLine1: line1 || undefined,
+    AddressLine2: line2 || undefined,
+    City: city || undefined,
+    Region: region || undefined,
+    PostalCode: postcode || undefined,
+    Country: country || undefined,
+  };
+}
+
+async function upsertContactPostalAddress({ accessToken, tenantId, contactId, postalAddress }) {
+  if (!postalAddress) return;
+
+  // Update the contact with a POBOX address. This is idempotent (Xero will store/replace).
+  const payload = {
+    Contacts: [
+      {
+        ContactID: String(contactId),
+        Addresses: [postalAddress],
+      },
+    ],
+  };
+
+  await xeroRequest({
+    accessToken,
+    tenantId,
+    path: "/Contacts",
+    method: "POST",
+    body: payload,
+  });
+}
+
 async function findOrCreateContact({ accessToken, tenantId, customer }) {
   const name = buildContactName(customer);
   const contactNumber = customer.account_code ? String(customer.account_code) : "";
+  const postalAddress = buildXeroPostalAddressFromCustomer(customer);
 
   if (contactNumber) {
     const where = encodeURIComponent(`ContactNumber=="${escapeForXeroWhere(contactNumber)}"`);
     const found = await xeroRequest({ accessToken, tenantId, path: `/Contacts?where=${where}` });
     const contacts = Array.isArray(found?.Contacts) ? found.Contacts : [];
-    if (contacts[0]?.ContactID) return String(contacts[0].ContactID);
+    if (contacts[0]?.ContactID) {
+      const id = String(contacts[0].ContactID);
+      await upsertContactPostalAddress({ accessToken, tenantId, contactId: id, postalAddress });
+      return id;
+    }
   }
 
   {
     const where = encodeURIComponent(`Name=="${escapeForXeroWhere(name)}"`);
     const found = await xeroRequest({ accessToken, tenantId, path: `/Contacts?where=${where}` });
     const contacts = Array.isArray(found?.Contacts) ? found.Contacts : [];
-    if (contacts[0]?.ContactID) return String(contacts[0].ContactID);
+    if (contacts[0]?.ContactID) {
+      const id = String(contacts[0].ContactID);
+      await upsertContactPostalAddress({ accessToken, tenantId, contactId: id, postalAddress });
+      return id;
+    }
   }
 
   const payload = {
@@ -198,6 +263,7 @@ async function findOrCreateContact({ accessToken, tenantId, customer }) {
         Name: name,
         EmailAddress: customer.email || undefined,
         ContactNumber: contactNumber || undefined,
+        Addresses: postalAddress ? [postalAddress] : undefined,
       },
     ],
   };
@@ -212,7 +278,11 @@ async function findOrCreateContact({ accessToken, tenantId, customer }) {
 
   const contact = Array.isArray(created?.Contacts) ? created.Contacts[0] : null;
   if (!contact?.ContactID) throw new Error("Failed to create Xero contact");
-  return String(contact.ContactID);
+
+  const id = String(contact.ContactID);
+  // Ensure address is set (belt & braces; if create ignored it for any reason)
+  await upsertContactPostalAddress({ accessToken, tenantId, contactId: id, postalAddress });
+  return id;
 }
 
 async function getInvoiceById({ accessToken, tenantId, invoiceId }) {
@@ -359,7 +429,14 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       company_name,
       email,
       is_credit_account,
-      account_code
+      account_code,
+
+      billing_address_line1,
+      billing_address_line2,
+      billing_city,
+      billing_region,
+      billing_postcode,
+      billing_country
     `
     )
     .eq("id", job.customer_id)
@@ -386,6 +463,7 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
     rateName: TAX_RATE_NAME_NO_VAT,
   });
 
+  // ✅ Contact is ensured to have postal address (billing) before invoice creation
   const contactId = await findOrCreateContact({ accessToken, tenantId, customer });
 
   let permitName = "Council";
@@ -460,7 +538,6 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
     await writeJobXeroFields(inv);
 
     // 2) Card: only apply payment if the job is already marked paid in SkipLogic
-    // (office flow: you book → later click Mark as paid; public flow can pre-mark paid before calling invoice)
     if (paymentType === "card" && job.paid_at) {
       const totalToPay = skipAmountIncVat + (permitLine ? Number(permitAmountNoVat) : 0);
 
@@ -483,7 +560,6 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       };
     }
 
-    // cash: unpaid, card-unpaid: invoice exists, unpaid
     return {
       mode: paymentType === "card" ? "card" : "cash",
       invoiceId: String(inv.InvoiceID),
@@ -567,7 +643,6 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       .eq("customer_id", customer.id)
       .eq("period_ym", ym);
 
-    // ✅ Persist invoice link back onto the job
     await writeJobXeroFields(updated);
 
     return {
