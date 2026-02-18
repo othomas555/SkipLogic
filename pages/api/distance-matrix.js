@@ -29,8 +29,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "GOOGLE_MAPS_API_KEY not configured" });
     }
 
-    // IMPORTANT: This endpoint is designed for N 1:1 pairs:
-    // origins[i] -> destinations[i], read element [i][i]
+    // This endpoint expects 1:1 pairs: origins[i] -> destinations[i], read [i][i]
     const origins = cleaned.map((p) => p.from).join("|");
     const destinations = cleaned.map((p) => p.to).join("|");
 
@@ -45,9 +44,13 @@ export default async function handler(req, res) {
     const resp = await fetch(url);
     const data = await resp.json();
 
-    // If Google returns an error, surface it properly
     if (data.status !== "OK") {
-      console.error("Distance Matrix API error:", data);
+      console.error("Distance Matrix API error:", {
+        status: data.status,
+        error_message: data.error_message,
+        origins_count: cleaned.length,
+      });
+
       return res.status(500).json({
         error: "Distance Matrix API error",
         status: data.status,
@@ -61,13 +64,11 @@ export default async function handler(req, res) {
       const element = row?.elements?.[idx];
 
       if (!element || element.status !== "OK") {
-        // Keep undefined; caller can fallback
         out[pair.key] = null;
         return;
       }
 
-      const minutes = element.duration?.value ? element.duration.value / 60 : null;
-      out[pair.key] = minutes;
+      out[pair.key] = element.duration?.value ? element.duration.value / 60 : null;
     });
 
     return res.status(200).json({ ok: true, travelMinutes: out });
