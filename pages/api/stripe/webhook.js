@@ -1,6 +1,5 @@
 // pages/api/stripe/webhook.js
 import Stripe from "stripe";
-import { buffer } from "micro";
 import { createClient } from "@supabase/supabase-js";
 
 export const config = {
@@ -53,8 +52,14 @@ function supabaseAdmin() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
+async function readRawBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
 async function getSubscriberIdFromStripe(sub, stripeCustomerId, supabase) {
-  // Preferred: metadata.subscriber_id (we’ll set this when we create checkout/subscription later)
+  // Preferred: metadata.subscriber_id (we’ll set this later when creating checkout/subscription)
   const meta = sub?.metadata?.subscriber_id;
   if (meta) return meta;
 
@@ -88,7 +93,6 @@ async function updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId,
   const status = normalizeStatus(sub);
   const trialEndsAt = toIsoOrNull(sub.trial_end);
 
-  // Load current grace/lock so we don't overwrite grace repeatedly
   const { data: current, error: curErr } = await supabase
     .from("subscribers")
     .select("grace_ends_at, locked_at")
@@ -103,15 +107,14 @@ async function updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId,
     trial_ends_at: trialEndsAt,
   };
 
-  // Grace / lock rules:
+  const now = isoNow();
+
+  // Rules:
   // - past_due => start grace (7 days) if not already set
   // - active/trialing => clear grace + unlock
   // - canceled/unpaid => lock immediately
-  const now = isoNow();
-
   if (status === "past_due") {
     if (!current.grace_ends_at) patch.grace_ends_at = addDays(now, 7);
-    // keep access during grace
   } else if (status === "active" || status === "trialing") {
     patch.grace_ends_at = null;
     patch.locked_at = null;
@@ -123,7 +126,7 @@ async function updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId,
   const { error } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
   if (error) throw error;
 
-  // If grace expired and still past_due, lock and mark status locked
+  // If grace expired and still past_due, lock + mark status locked
   const { data: after, error: afterErr } = await supabase
     .from("subscribers")
     .select("subscription_status, grace_ends_at, locked_at")
@@ -151,7 +154,7 @@ export default async function handler(req, res) {
 
   let event;
   try {
-    const rawBody = await buffer(req);
+    const rawBody = await readRawBody(req);
     const sig = req.headers["stripe-signature"];
     event = stripe.webhooks.constructEvent(rawBody, sig, mustEnv("STRIPE_WEBHOOK_SECRET"));
   } catch (err) {
@@ -185,11 +188,9 @@ export default async function handler(req, res) {
       const stripeCustomerId = typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
       const stripeSubId = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
-      let subscriberId = null;
-
       if (stripeSubId) {
         const sub = await stripe.subscriptions.retrieve(stripeSubId);
-        subscriberId = await getSubscriberIdFromStripe(sub, stripeCustomerId, supabase);
+        const subscriberId = await getSubscriberIdFromStripe(sub, stripeCustomerId, supabase);
         await logEventBestEffort(supabase, subscriberId, event);
 
         if (subscriberId) {
@@ -202,7 +203,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // Ignore other event types (keep lean)
     await logEventBestEffort(supabase, null, event);
     return res.status(200).json({ ok: true });
   } catch (err) {
