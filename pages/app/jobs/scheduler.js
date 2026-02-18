@@ -34,7 +34,9 @@ function fmtGBP(n) {
 
 function buildAddress(job) {
   if (!job) return "";
-  return [job.site_address_line1, job.site_address_line2, job.site_town, job.site_postcode].filter(Boolean).join(", ");
+  return [job.site_address_line1, job.site_address_line2, job.site_town, job.site_postcode]
+    .filter(Boolean)
+    .join(", ");
 }
 
 function clampInt(n, min, max) {
@@ -53,7 +55,7 @@ function parseHmToMinutes(hm) {
 }
 
 function minutesToHm(totalMins) {
-  const m = ((totalMins % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const m = ((totalMins % (24 * 60)) + 24 * 60) % (24 * 60);
   const hh = String(Math.floor(m / 60)).padStart(2, "0");
   const mm = String(m % 60).padStart(2, "0");
   return `${hh}:${mm}`;
@@ -63,21 +65,16 @@ function normalisePostcode(pc) {
   return String(pc || "").trim().toUpperCase().replace(/\s+/g, " ");
 }
 
-/**
- * Decide whether a job should appear on the schedule as "work to do".
- */
 function isWorkToDo(job, selectedDate) {
   if (!job) return false;
   const status = String(job.job_status || "");
 
-  // Collection leg
   if (job.swap_role === "collect") {
     if (job.collection_actual_date) return false;
     if (status === "collected" || status === "completed") return false;
     return String(job.collection_date || "") === String(selectedDate);
   }
 
-  // Delivery leg (incl swap deliver)
   if (job.delivery_actual_date) return false;
   if (status === "delivered" || status === "completed") return false;
   return String(job.scheduled_date || "") === String(selectedDate);
@@ -85,7 +82,7 @@ function isWorkToDo(job, selectedDate) {
 
 function jobRunDate(job) {
   if (!job) return "";
-  return job.swap_role === "collect" ? (job.collection_date || "") : (job.scheduled_date || "");
+  return job.swap_role === "collect" ? job.collection_date || "" : job.scheduled_date || "";
 }
 
 function cardKey(card) {
@@ -100,7 +97,6 @@ function groupIntoCards(jobs, selectedDate) {
   const used = new Set();
   const cards = [];
 
-  // Group swap legs by swap_group_id (only when BOTH legs exist on the selected date)
   const bySwap = new Map();
   for (const j of jobs || []) {
     if (!j?.swap_group_id) continue;
@@ -119,7 +115,6 @@ function groupIntoCards(jobs, selectedDate) {
     if (collect && deliver) {
       used.add(String(collect.id));
       used.add(String(deliver.id));
-
       cards.push({
         type: "swap",
         swap_group_id: swapId,
@@ -131,17 +126,14 @@ function groupIntoCards(jobs, selectedDate) {
     }
   }
 
-  // Everything else as single-job cards
   for (const j of jobs || []) {
     if (!j?.id) continue;
     if (used.has(String(j.id))) continue;
     if (String(jobRunDate(j)) !== String(selectedDate)) continue;
     if (!isWorkToDo(j, selectedDate)) continue;
-
     cards.push({ type: "job", job: j });
   }
 
-  // Sort by driver_run_group then job number so runs look stable
   cards.sort((a, b) => {
     const ag = Number(a.driver_run_group ?? a.job?.driver_run_group ?? 999999);
     const bg = Number(b.driver_run_group ?? b.job?.driver_run_group ?? 999999);
@@ -155,6 +147,17 @@ function groupIntoCards(jobs, selectedDate) {
   return cards;
 }
 
+function postcodeForCard(card) {
+  if (!card) return "";
+  if (card.type === "swap") {
+    return normalisePostcode(card.deliver?.site_postcode || card.collect?.site_postcode || "");
+  }
+  if (card.type === "job") {
+    return normalisePostcode(card.job?.site_postcode || "");
+  }
+  return "";
+}
+
 export default function SchedulerPage() {
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
   const router = useRouter();
@@ -166,30 +169,36 @@ export default function SchedulerPage() {
   const [err, setErr] = useState("");
 
   const [drivers, setDrivers] = useState([]);
-  const [customers, setCustomers] = useState([]); // optional (may fail due to RLS)
+  const [customers, setCustomers] = useState([]);
   const [skipTypes, setSkipTypes] = useState([]);
   const [jobs, setJobs] = useState([]);
 
-  // Roll-forward UI
   const [rolling, setRolling] = useState(false);
 
-  // Base start location
+  // Planning inputs
   const [yardPostcode, setYardPostcode] = useState("CF33 6BN");
-
-  // “Blocks” toolbox + timings
   const [startTime, setStartTime] = useState("08:00");
   const [minsVehicleChecks, setMinsVehicleChecks] = useState(15);
-  const [minsDelivery, setMinsDelivery] = useState(12);     // ON-SITE TIME
-  const [minsCollection, setMinsCollection] = useState(10); // ON-SITE TIME
-  const [minsSwap, setMinsSwap] = useState(18);             // ON-SITE TIME for swap at stop
+  const [minsDelivery, setMinsDelivery] = useState(12);     // ON-SITE
+  const [minsCollection, setMinsCollection] = useState(10); // ON-SITE
+  const [minsSwap, setMinsSwap] = useState(18);             // ON-SITE at stop
   const [minsReturn, setMinsReturn] = useState(15);         // Yard admin time once back
   const [minsBreak, setMinsBreak] = useState(30);
 
-  // Local-only blocks placed on runs (not saved to DB)
+  // Local blocks placed on runs
   const [extrasByDriverId, setExtrasByDriverId] = useState({});
 
-  // Travel minutes keyed by "from->to" string
-  const [travelMinutesByKey, setTravelMinutesByKey] = useState({});
+  // Frozen computed timings (only populated when you click Get timings)
+  // structure:
+  // {
+  //   computedAt: ISO,
+  //   yardPostcode, startTime,
+  //   perDriver: { [driverId]: { [cardKey]: { arriveMin, departMin, travelMins, fromPc, toPc } } },
+  //   perJobId: { [jobId]: { arrive, depart, travelMins, driverId, job_number, type, address, postcode } }
+  // }
+  const [computed, setComputed] = useState(null);
+  const [computing, setComputing] = useState(false);
+  const [sending, setSending] = useState(false);
 
   const customerById = useMemo(() => {
     const m = {};
@@ -210,23 +219,19 @@ export default function SchedulerPage() {
     setLoading(true);
 
     try {
-      // Drivers
       const { data: dRows, error: dErr } = await supabase
         .from("drivers")
         .select("id, name, email")
         .eq("subscriber_id", subscriberId)
         .order("name", { ascending: true });
-
       if (dErr) throw new Error("Failed to load drivers");
       setDrivers(dRows || []);
 
-      // Customers (OPTIONAL)
       try {
         const { data: cRows, error: cErr } = await supabase
           .from("customers")
-          .select("id, first_name, last_name, company_name, phone, mobile, telephone")
+          .select("id, first_name, last_name, company_name, phone, mobile, telephone, email")
           .eq("subscriber_id", subscriberId);
-
         if (cErr) throw cErr;
         setCustomers(cRows || []);
       } catch (e) {
@@ -234,16 +239,13 @@ export default function SchedulerPage() {
         setCustomers([]);
       }
 
-      // Skip types (labels only)
       const { data: sRows, error: sErr } = await supabase
         .from("skip_types")
         .select("id, name")
         .eq("subscriber_id", subscriberId);
-
       if (sErr) throw new Error("Failed to load skip types");
       setSkipTypes(sRows || []);
 
-      // Jobs for this run date (delivery or collection date)
       const { data: jRows, error: jErr } = await supabase
         .from("jobs")
         .select(
@@ -273,7 +275,6 @@ export default function SchedulerPage() {
         )
         .eq("subscriber_id", subscriberId)
         .or(`scheduled_date.eq.${date},collection_date.eq.${date}`);
-
       if (jErr) throw new Error("Failed to load jobs");
 
       setJobs(jRows || []);
@@ -292,6 +293,24 @@ export default function SchedulerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, subscriberId, date]);
 
+  // If the plan changes, clear computed timings so you must re-run Get timings
+  useEffect(() => {
+    setComputed(null);
+  }, [
+    date,
+    yardPostcode,
+    startTime,
+    minsVehicleChecks,
+    minsDelivery,
+    minsCollection,
+    minsSwap,
+    minsReturn,
+    minsBreak,
+    extrasByDriverId,
+    jobs,
+    drivers,
+  ]);
+
   const cards = useMemo(() => groupIntoCards(jobs, date), [jobs, date]);
 
   const cardsByDriverId = useMemo(() => {
@@ -306,7 +325,6 @@ export default function SchedulerPage() {
       m[String(driverId)].push(c);
     }
 
-    // Merge blocks
     for (const driverId of Object.keys(m)) {
       const blocks = (extrasByDriverId[String(driverId)] || []).map((b) => ({
         type: "block",
@@ -315,13 +333,11 @@ export default function SchedulerPage() {
       m[String(driverId)] = [...m[String(driverId)], ...blocks];
     }
 
-    // sort within each driver column by driver_run_group
     for (const k of Object.keys(m)) {
       m[k].sort((a, b) => {
         const ag = Number(a.driver_run_group ?? a.job?.driver_run_group ?? 999999);
         const bg = Number(b.driver_run_group ?? b.job?.driver_run_group ?? 999999);
         if (ag !== bg) return ag - bg;
-
         const an = String(a.job?.job_number ?? a.collect?.job_number ?? a.label ?? "");
         const bn = String(b.job?.job_number ?? b.collect?.job_number ?? b.label ?? "");
         return an.localeCompare(bn);
@@ -357,6 +373,12 @@ export default function SchedulerPage() {
     return c.phone || c.mobile || c.telephone || "";
   }
 
+  function customerEmail(customerId) {
+    const c = customerById[String(customerId)];
+    if (!c) return "";
+    return c.email || "";
+  }
+
   function skipLabel(skipTypeId) {
     const s = skipTypeById[String(skipTypeId)];
     return s?.name || "—";
@@ -381,30 +403,20 @@ export default function SchedulerPage() {
     try {
       if (card.type === "swap") {
         const ids = [card.collect?.id, card.deliver?.id].filter(Boolean).map(String);
-
         const { error } = await supabase
           .from("jobs")
-          .update({
-            assigned_driver_id: driverId,
-            driver_run_group: group,
-          })
+          .update({ assigned_driver_id: driverId, driver_run_group: group })
           .eq("subscriber_id", subscriberId)
           .in("id", ids);
-
         if (error) throw new Error("Failed to assign swap");
       } else if (card.type === "job") {
         const id = String(card.job?.id || "");
         if (!id) return;
-
         const { error } = await supabase
           .from("jobs")
-          .update({
-            assigned_driver_id: driverId,
-            driver_run_group: group,
-          })
+          .update({ assigned_driver_id: driverId, driver_run_group: group })
           .eq("subscriber_id", subscriberId)
           .eq("id", id);
-
         if (error) throw new Error("Failed to assign job");
       } else if (card.type === "block") {
         setExtrasByDriverId((prev) => {
@@ -431,16 +443,11 @@ export default function SchedulerPage() {
     try {
       if (card.type === "swap") {
         const ids = [card.collect?.id, card.deliver?.id].filter(Boolean).map(String);
-
         const { error } = await supabase
           .from("jobs")
-          .update({
-            assigned_driver_id: null,
-            driver_run_group: null,
-          })
+          .update({ assigned_driver_id: null, driver_run_group: null })
           .eq("subscriber_id", subscriberId)
           .in("id", ids);
-
         if (error) throw new Error("Failed to unassign swap");
         await loadAll();
         return;
@@ -449,16 +456,11 @@ export default function SchedulerPage() {
       if (card.type === "job") {
         const id = String(card.job?.id || "");
         if (!id) return;
-
         const { error } = await supabase
           .from("jobs")
-          .update({
-            assigned_driver_id: null,
-            driver_run_group: null,
-          })
+          .update({ assigned_driver_id: null, driver_run_group: null })
           .eq("subscriber_id", subscriberId)
           .eq("id", id);
-
         if (error) throw new Error("Failed to unassign job");
         await loadAll();
         return;
@@ -467,7 +469,6 @@ export default function SchedulerPage() {
       if (card.type === "block") {
         const driverId = String(driverIdHint || "");
         if (!driverId) return;
-
         setExtrasByDriverId((prev) => {
           const next = { ...(prev || {}) };
           const arr = [...(next[driverId] || [])].filter(
@@ -521,7 +522,9 @@ export default function SchedulerPage() {
       }
 
       if (payload.type === "job") {
-        const card = cards.find((c) => c.type === "job" && String(c.job?.id) === String(payload.job_id));
+        const card = cards.find(
+          (c) => c.type === "job" && String(c.job?.id) === String(payload.job_id)
+        );
         if (card) await assignCardToDriver(card, driverId);
         return;
       }
@@ -557,7 +560,9 @@ export default function SchedulerPage() {
       }
 
       if (payload.type === "job") {
-        const card = cards.find((c) => c.type === "job" && String(c.job?.id) === String(payload.job_id));
+        const card = cards.find(
+          (c) => c.type === "job" && String(c.job?.id) === String(payload.job_id)
+        );
         if (card) await unassignCard(card);
       }
     } catch {}
@@ -582,10 +587,7 @@ export default function SchedulerPage() {
           updates.push(
             supabase
               .from("jobs")
-              .update({
-                collection_actual_date: date,
-                job_status: "collected",
-              })
+              .update({ collection_actual_date: date, job_status: "collected" })
               .eq("subscriber_id", subscriberId)
               .eq("id", collectId)
           );
@@ -594,20 +596,14 @@ export default function SchedulerPage() {
           updates.push(
             supabase
               .from("jobs")
-              .update({
-                delivery_actual_date: date,
-                job_status: "delivered",
-              })
+              .update({ delivery_actual_date: date, job_status: "delivered" })
               .eq("subscriber_id", subscriberId)
               .eq("id", deliverId)
           );
         }
 
         const results = await Promise.all(updates);
-        for (const r of results) {
-          if (r?.error) throw new Error("Failed to mark swap complete");
-        }
-
+        for (const r of results) if (r?.error) throw new Error("Failed to mark swap complete");
         await loadAll();
         return;
       }
@@ -619,24 +615,16 @@ export default function SchedulerPage() {
         if (j.swap_role === "collect") {
           const { error } = await supabase
             .from("jobs")
-            .update({
-              collection_actual_date: date,
-              job_status: "collected",
-            })
+            .update({ collection_actual_date: date, job_status: "collected" })
             .eq("subscriber_id", subscriberId)
             .eq("id", j.id);
-
           if (error) throw new Error("Failed to mark collection complete");
         } else {
           const { error } = await supabase
             .from("jobs")
-            .update({
-              delivery_actual_date: date,
-              job_status: "delivered",
-            })
+            .update({ delivery_actual_date: date, job_status: "delivered" })
             .eq("subscriber_id", subscriberId)
             .eq("id", j.id);
-
           if (error) throw new Error("Failed to mark delivery complete");
         }
 
@@ -654,7 +642,6 @@ export default function SchedulerPage() {
     }
   }
 
-  // One-button roll forward (assigned + unassigned, any incomplete)
   async function rollForwardFromYesterday() {
     if (!subscriberId) return;
 
@@ -664,17 +651,7 @@ export default function SchedulerPage() {
     try {
       const { data: prevJobs, error: prevErr } = await supabase
         .from("jobs")
-        .select(
-          [
-            "id",
-            "scheduled_date",
-            "collection_date",
-            "delivery_actual_date",
-            "collection_actual_date",
-            "job_status",
-            "swap_role",
-          ].join(",")
-        )
+        .select("id,scheduled_date,collection_date,delivery_actual_date,collection_actual_date,job_status,swap_role")
         .eq("subscriber_id", subscriberId)
         .or(`scheduled_date.eq.${prevDate},collection_date.eq.${prevDate}`);
 
@@ -700,7 +677,6 @@ export default function SchedulerPage() {
           .update({ scheduled_date: date })
           .eq("subscriber_id", subscriberId)
           .in("id", deliveryIds);
-
         if (error) throw new Error("Failed to roll deliveries forward");
       }
 
@@ -710,7 +686,6 @@ export default function SchedulerPage() {
           .update({ collection_date: date })
           .eq("subscriber_id", subscriberId)
           .in("id", collectionIds);
-
         if (error) throw new Error("Failed to roll collections forward");
       }
 
@@ -725,36 +700,15 @@ export default function SchedulerPage() {
 
   const toolboxBlocks = useMemo(() => {
     return [
-      {
-        type: "block",
-        block_id: "tool_vehicle_checks",
-        block_type: "vehicle_checks",
-        label: "Vehicle checks",
-        duration_mins: clampInt(minsVehicleChecks, 0, 600),
-      },
-      {
-        type: "block",
-        block_id: "tool_break",
-        block_type: "break",
-        label: "Break",
-        duration_mins: clampInt(minsBreak, 0, 600),
-      },
-      {
-        type: "block",
-        block_id: "tool_return",
-        block_type: "return_yard",
-        label: "Return to yard",
-        duration_mins: clampInt(minsReturn, 0, 600),
-      },
+      { type: "block", block_id: "tool_vehicle_checks", block_type: "vehicle_checks", label: "Vehicle checks", duration_mins: clampInt(minsVehicleChecks, 0, 600) },
+      { type: "block", block_id: "tool_break", block_type: "break", label: "Break", duration_mins: clampInt(minsBreak, 0, 600) },
+      { type: "block", block_id: "tool_return", block_type: "return_yard", label: "Return to yard", duration_mins: clampInt(minsReturn, 0, 600) },
     ];
   }, [minsVehicleChecks, minsBreak, minsReturn]);
 
-  function durationOnSiteForCard(card) {
+  function onSiteMinsForCard(card) {
     if (!card) return 0;
-    if (card.type === "block") {
-      // For return_yard, this is the "yard admin" time once back (travel is separate)
-      return clampInt(card.duration_mins, 0, 600);
-    }
+    if (card.type === "block") return clampInt(card.duration_mins, 0, 600);
     if (card.type === "swap") return clampInt(minsSwap, 0, 600);
     if (card.type === "job") {
       const j = card.job;
@@ -764,176 +718,258 @@ export default function SchedulerPage() {
     return 0;
   }
 
-  function postcodeForCard(card) {
-    if (!card) return "";
-    if (card.type === "swap") {
-      // Both legs should be same site; pick deliver first
-      return normalisePostcode(card.deliver?.site_postcode || card.collect?.site_postcode || "");
-    }
-    if (card.type === "job") {
-      return normalisePostcode(card.job?.site_postcode || "");
-    }
-    return "";
-  }
+  // -------------------------
+  // GET TIMINGS (manual button)
+  // -------------------------
+  async function getTimings() {
+    setErr("");
+    setComputing(true);
 
-  // Build all travel pairs we need and fetch from your /api/distance-matrix
-  useEffect(() => {
-    const yard = normalisePostcode(yardPostcode);
-    if (!yard) return;
+    try {
+      const yard = normalisePostcode(yardPostcode);
+      if (!yard) throw new Error("Enter a yard postcode first.");
 
-    // Build pairs from all driver lanes
-    const pairs = [];
-    const seen = new Set();
+      // Build all required travel pairs for ALL driver lanes in one batch
+      const pairs = [];
+      const seen = new Set();
 
-    const addPair = (from, to) => {
-      const f = normalisePostcode(from);
-      const t = normalisePostcode(to);
-      if (!f || !t) return;
-      const key = `${f}→${t}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      pairs.push({ key, from: f, to: t });
-    };
+      const addPair = (from, to) => {
+        const f = normalisePostcode(from);
+        const t = normalisePostcode(to);
+        if (!f || !t) return;
+        const key = `${f}→${t}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        pairs.push({ key, from: f, to: t });
+      };
 
-    for (const d of drivers || []) {
-      const list = (cardsByDriverId[String(d.id)] || []).map((c) => (c?.type === "block" ? { ...c, _driverId: String(d.id) } : c));
+      // Build pairs by walking each driver lane
+      for (const d of drivers || []) {
+        const list = (cardsByDriverId[String(d.id)] || []).map((c) =>
+          c?.type === "block" ? { ...c, _driverId: String(d.id) } : c
+        );
 
-      // Sort already stable, just walk the lane
-      let lastStopPc = yard;
-      let hasStopYet = false;
+        let lastPc = yard;
+        let hasStop = false;
 
-      for (const item of list) {
-        if (item.type === "block") {
-          // Return-to-yard: add travel from last stop to yard (if we have a stop)
-          if (item.block_type === "return_yard" && hasStopYet) {
-            addPair(lastStopPc, yard);
+        for (const item of list) {
+          if (item.type === "block") {
+            if (item.block_type === "return_yard" && hasStop) {
+              addPair(lastPc, yard);
+              lastPc = yard;
+              hasStop = false;
+            }
+            continue;
           }
-          // other blocks don't affect locations
-          continue;
+
+          const pc = postcodeForCard(item);
+          if (!pc) continue;
+
+          addPair(hasStop ? lastPc : yard, pc);
+          lastPc = pc;
+          hasStop = true;
         }
-
-        const pc = postcodeForCard(item);
-        if (!pc) continue;
-
-        addPair(hasStopYet ? lastStopPc : yard, pc);
-        lastStopPc = pc;
-        hasStopYet = true;
       }
-    }
 
-    if (!pairs.length) return;
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const res = await fetch("/api/distance-matrix", {
+      // Fetch travel minutes (can be empty if no assigned jobs)
+      let travelMinutes = {};
+      if (pairs.length) {
+        const resp = await fetch("/api/distance-matrix", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pairs }),
         });
-
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Distance matrix failed");
-
-        const tm = data?.travelMinutes || {};
-        if (cancelled) return;
-
-        setTravelMinutesByKey((prev) => ({ ...(prev || {}), ...(tm || {}) }));
-      } catch (e) {
-        console.warn("Distance matrix fetch failed (scheduler will fall back to 0 travel):", e?.message || e);
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data?.error || "Distance Matrix failed");
+        travelMinutes = data?.travelMinutes || {};
       }
-    })();
 
-    return () => {
-      cancelled = true;
-    };
-  }, [drivers, cardsByDriverId, yardPostcode]);
+      // Now compute per-driver timeline and per-job timeline
+      const perDriver = {};
+      const perJobId = {};
 
-  // Timeline per driver: uses travel time + on-site time
-  function laneTimeline(list) {
-    const yard = normalisePostcode(yardPostcode);
-    const base = parseHmToMinutes(startTime);
-    let t = base;
+      const base = parseHmToMinutes(startTime);
 
-    let lastStopPc = yard;
-    let hasStopYet = false;
+      for (const d of drivers || []) {
+        const driverId = String(d.id);
+        const list = (cardsByDriverId[driverId] || []).map((c) =>
+          c?.type === "block" ? { ...c, _driverId: driverId } : c
+        );
 
-    const map = {};
-    for (const item of list || []) {
-      const k = cardKey(item);
+        let t = base;
+        let lastPc = yard;
+        let hasStop = false;
 
-      if (item.type === "block") {
-        const blockType = item.block_type || "block";
+        const lane = {};
 
-        if (blockType === "return_yard" && hasStopYet) {
-          const travelKey = `${normalisePostcode(lastStopPc)}→${yard}`;
-          const travel = Number(travelMinutesByKey[travelKey] || 0);
-          const travelMins = Number.isFinite(travel) ? travel : 0;
+        for (const item of list) {
+          const key = cardKey(item);
 
-          const start = t + travelMins;
-          const end = start + durationOnSiteForCard(item);
+          if (item.type === "block") {
+            const bt = item.block_type || "block";
 
-          map[k] = { start, end, travelMins, travelKey, note: "Return to yard" };
-          t = end;
-          // now at yard
-          lastStopPc = yard;
-          hasStopYet = false;
-          continue;
+            if (bt === "return_yard" && hasStop) {
+              const tk = `${normalisePostcode(lastPc)}→${yard}`;
+              const travelMins = Number(travelMinutes[tk] || 0);
+              const arriveMin = t + (Number.isFinite(travelMins) ? travelMins : 0);
+              const departMin = arriveMin + onSiteMinsForCard(item);
+              lane[key] = { arriveMin, departMin, travelMins: Number.isFinite(travelMins) ? travelMins : 0, fromPc: lastPc, toPc: yard, kind: "return_yard" };
+              t = departMin;
+              lastPc = yard;
+              hasStop = false;
+            } else {
+              const arriveMin = t;
+              const departMin = arriveMin + onSiteMinsForCard(item);
+              lane[key] = { arriveMin, departMin, travelMins: 0, fromPc: "", toPc: "", kind: bt };
+              t = departMin;
+            }
+            continue;
+          }
+
+          const toPc = postcodeForCard(item);
+          const fromPc = hasStop ? lastPc : yard;
+          const tk = `${normalisePostcode(fromPc)}→${normalisePostcode(toPc)}`;
+          const travelMins = Number(travelMinutes[tk] || 0);
+          const travelOk = Number.isFinite(travelMins) ? travelMins : 0;
+
+          const arriveMin = t + travelOk; // arrival
+          const departMin = arriveMin + onSiteMinsForCard(item); // ready to leave
+          lane[key] = { arriveMin, departMin, travelMins: travelOk, fromPc, toPc, kind: item.type };
+
+          t = departMin;
+          if (toPc) {
+            lastPc = toPc;
+            hasStop = true;
+          }
+
+          // Also store per-jobId for messaging
+          if (item.type === "job") {
+            const j = item.job;
+            if (j?.id) {
+              perJobId[String(j.id)] = {
+                job_id: String(j.id),
+                job_number: j.job_number || "",
+                type: j.swap_role === "collect" ? "collection" : "delivery",
+                driver_id: driverId,
+                driver_name: driverLabel(d),
+                arrive: minutesToHm(arriveMin),
+                depart: minutesToHm(departMin),
+                travel_mins: Math.round(travelOk),
+                postcode: normalisePostcode(j.site_postcode || ""),
+                address: buildAddress(j),
+                customer_id: j.customer_id || null,
+                customer_name: customerLabel(j.customer_id),
+                customer_phone: customerPhone(j.customer_id),
+                customer_email: customerEmail(j.customer_id),
+              };
+            }
+          } else if (item.type === "swap") {
+            const collect = item.collect;
+            const deliver = item.deliver;
+            const pc = normalisePostcode(deliver?.site_postcode || collect?.site_postcode || "");
+            const addr = buildAddress(deliver || collect);
+
+            // Both legs share the same stop window
+            if (collect?.id) {
+              perJobId[String(collect.id)] = {
+                job_id: String(collect.id),
+                job_number: collect.job_number || "",
+                type: "swap_collect",
+                driver_id: driverId,
+                driver_name: driverLabel(d),
+                arrive: minutesToHm(arriveMin),
+                depart: minutesToHm(departMin),
+                travel_mins: Math.round(travelOk),
+                postcode: pc,
+                address: addr,
+                customer_id: collect.customer_id || null,
+                customer_name: customerLabel(collect.customer_id),
+                customer_phone: customerPhone(collect.customer_id),
+                customer_email: customerEmail(collect.customer_id),
+              };
+            }
+            if (deliver?.id) {
+              perJobId[String(deliver.id)] = {
+                job_id: String(deliver.id),
+                job_number: deliver.job_number || "",
+                type: "swap_deliver",
+                driver_id: driverId,
+                driver_name: driverLabel(d),
+                arrive: minutesToHm(arriveMin),
+                depart: minutesToHm(departMin),
+                travel_mins: Math.round(travelOk),
+                postcode: pc,
+                address: addr,
+                customer_id: deliver.customer_id || null,
+                customer_name: customerLabel(deliver.customer_id),
+                customer_phone: customerPhone(deliver.customer_id),
+                customer_email: customerEmail(deliver.customer_id),
+              };
+            }
+          }
         }
 
-        // other blocks: no travel component
-        const start = t;
-        const end = t + durationOnSiteForCard(item);
-        map[k] = { start, end, travelMins: 0, travelKey: null, note: null };
-        t = end;
-        continue;
+        perDriver[driverId] = lane;
       }
 
-      // job / swap = travel in + on-site time
-      const pc = postcodeForCard(item);
-      const fromPc = hasStopYet ? lastStopPc : yard;
-      const travelKey = `${normalisePostcode(fromPc)}→${normalisePostcode(pc)}`;
-      const travel = Number(travelMinutesByKey[travelKey] || 0);
-      const travelMins = Number.isFinite(travel) ? travel : 0;
+      setComputed({
+        computedAt: new Date().toISOString(),
+        date,
+        yardPostcode: normalisePostcode(yardPostcode),
+        startTime,
+        perDriver,
+        perJobId,
+      });
 
-      const start = t + travelMins; // arrival
-      const end = start + durationOnSiteForCard(item); // depart
-      map[k] = { start, end, travelMins, travelKey, note: null };
-      t = end;
-
-      if (pc) {
-        lastStopPc = pc;
-        hasStopYet = true;
-      }
+      setComputing(false);
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to compute timings");
+      setComputing(false);
     }
-
-    return map;
   }
 
-  const timelineByDriverId = useMemo(() => {
-    const m = {};
-    for (const d of drivers || []) {
-      const list = (cardsByDriverId[String(d.id)] || []).map((c) => {
-        if (c?.type === "block") return { ...c, _driverId: String(d.id) };
-        return c;
+  // -------------------------
+  // SEND MESSAGES (manual button)
+  // -------------------------
+  async function sendMessages() {
+    if (!computed?.perJobId) return;
+    setErr("");
+    setSending(true);
+
+    try {
+      const payload = {
+        date,
+        yard_postcode: computed.yardPostcode,
+        computed_at: computed.computedAt,
+        jobs: Object.values(computed.perJobId),
+      };
+
+      const resp = await fetch("/api/scheduler/send-timings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
-      m[String(d.id)] = laneTimeline(list);
+
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error || "Send failed");
+
+      // For now we just show a success message. Actual sending is handled server-side.
+      setSending(false);
+      alert(`Sent/queued ${data?.queued || 0} message(s).`);
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to send messages");
+      setSending(false);
     }
-    return m;
-  }, [
-    drivers,
-    cardsByDriverId,
-    startTime,
-    minsVehicleChecks,
-    minsDelivery,
-    minsCollection,
-    minsSwap,
-    minsReturn,
-    minsBreak,
-    yardPostcode,
-    travelMinutesByKey,
-  ]);
+  }
+
+  function timingFor(driverId, card) {
+    if (!computed?.perDriver) return null;
+    const lane = computed.perDriver[String(driverId)] || null;
+    if (!lane) return null;
+    return lane[cardKey(card)] || null;
+  }
 
   if (checking) {
     return (
@@ -958,9 +994,7 @@ export default function SchedulerPage() {
       <header style={headerStyle}>
         <div>
           <h1 style={{ margin: 0 }}>Skip hire scheduler</h1>
-          <div style={{ marginTop: 6, color: "#555", fontSize: 13 }}>
-            Signed in as {user.email}
-          </div>
+          <div style={{ marginTop: 6, color: "#555", fontSize: 13 }}>Signed in as {user.email}</div>
           <div style={{ marginTop: 8 }}>
             <a href="/app/jobs" style={{ fontSize: 14 }}>← Back to jobs</a>
           </div>
@@ -968,30 +1002,10 @@ export default function SchedulerPage() {
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              type="button"
-              style={btnSecondary}
-              onClick={() => setDate((d) => ymdAddDays(d, -1))}
-              title="Previous day"
-            >
-              ◀
-            </button>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value || ymdTodayLocal())}
-              style={input}
-            />
-            <button
-              type="button"
-              style={btnSecondary}
-              onClick={() => setDate((d) => ymdAddDays(d, 1))}
-              title="Next day"
-            >
-              ▶
-            </button>
+            <button type="button" style={btnSecondary} onClick={() => setDate((d) => ymdAddDays(d, -1))}>◀</button>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value || ymdTodayLocal())} style={input} />
+            <button type="button" style={btnSecondary} onClick={() => setDate((d) => ymdAddDays(d, 1))}>▶</button>
           </div>
-
           <button type="button" onClick={loadAll} style={btnSecondary}>Refresh</button>
         </div>
       </header>
@@ -1003,18 +1017,32 @@ export default function SchedulerPage() {
           <div style={{ fontWeight: 900, marginBottom: 6 }}>Day controls</div>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <button
-              type="button"
-              style={btnPrimary}
-              onClick={rollForwardFromYesterday}
-              disabled={rolling}
-              title="Move yesterday's unfinished deliveries/collections onto today's date"
-            >
+            <button type="button" style={btnPrimary} onClick={rollForwardFromYesterday} disabled={rolling}>
               {rolling ? "Rolling…" : `Roll forward unfinished jobs from ${prevDate} → ${date}`}
             </button>
 
             <div style={{ color: "#666", fontSize: 12 }}>
               Rolls forward <b>all incomplete</b> jobs (assigned or unassigned).
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button type="button" style={btnPrimaryAlt} onClick={getTimings} disabled={computing}>
+              {computing ? "Getting timings…" : "Get timings"}
+            </button>
+
+            <button
+              type="button"
+              style={btnPrimary}
+              onClick={sendMessages}
+              disabled={sending || !computed?.perJobId || Object.keys(computed.perJobId).length === 0}
+              title={!computed ? "Run Get timings first" : ""}
+            >
+              {sending ? "Sending…" : "Send messages"}
+            </button>
+
+            <div style={{ color: "#666", fontSize: 12, alignSelf: "center" }}>
+              {computed ? `Timings computed at ${new Date(computed.computedAt).toLocaleTimeString()}` : "Timings not computed yet."}
             </div>
           </div>
         </div>
@@ -1025,22 +1053,12 @@ export default function SchedulerPage() {
           <div style={timingGrid}>
             <div style={timingCell}>
               <div style={timingLabel}>Yard postcode</div>
-              <input
-                value={yardPostcode}
-                onChange={(e) => setYardPostcode(e.target.value)}
-                placeholder="e.g. CF33 6BN"
-                style={input}
-              />
+              <input value={yardPostcode} onChange={(e) => setYardPostcode(e.target.value)} placeholder="e.g. CF33 6BN" style={input} />
             </div>
 
             <div style={timingCell}>
               <div style={timingLabel}>Start time</div>
-              <input
-                type="time"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value || "08:00")}
-                style={input}
-              />
+              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value || "08:00")} style={input} />
             </div>
 
             <TimingInput label="Vehicle checks (mins)" value={minsVehicleChecks} onChange={setMinsVehicleChecks} />
@@ -1052,9 +1070,7 @@ export default function SchedulerPage() {
           </div>
 
           <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>
-              Drag blocks into a driver lane:
-            </div>
+            <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>Drag blocks into a driver lane:</div>
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               {toolboxBlocks.map((b) => (
@@ -1063,7 +1079,6 @@ export default function SchedulerPage() {
                   draggable
                   onDragStart={(e) => onDragStart(e, b)}
                   style={toolBlockStyle(b.block_type)}
-                  title="Drag into a driver lane"
                 >
                   <div style={{ fontWeight: 900 }}>{b.label}</div>
                   <div style={{ fontSize: 12, color: "#555" }}>{b.duration_mins} mins</div>
@@ -1089,7 +1104,6 @@ export default function SchedulerPage() {
                 <SchedulerCard
                   key={cardKey(c)}
                   card={c}
-                  date={date}
                   customerLabel={customerLabel}
                   customerPhone={customerPhone}
                   skipLabel={skipLabel}
@@ -1097,7 +1111,7 @@ export default function SchedulerPage() {
                   onDragStart={onDragStart}
                   onOpenJob={openJob}
                   onComplete={markComplete}
-                  timelineRow={null}
+                  timing={null}
                   onUnassign={() => unassignCard(c)}
                 />
               )) : (
@@ -1108,12 +1122,10 @@ export default function SchedulerPage() {
 
           <section style={driversWrap}>
             {(drivers || []).map((d) => {
-              const list = (cardsByDriverId[String(d.id)] || []).map((c) => {
-                if (c?.type === "block") return { ...c, _driverId: String(d.id) };
-                return c;
-              });
-
-              const tl = timelineByDriverId[String(d.id)] || {};
+              const driverId = String(d.id);
+              const list = (cardsByDriverId[driverId] || []).map((c) =>
+                c?.type === "block" ? { ...c, _driverId: driverId } : c
+              );
 
               return (
                 <div
@@ -1132,7 +1144,6 @@ export default function SchedulerPage() {
                       <SchedulerCard
                         key={cardKey(c)}
                         card={c}
-                        date={date}
                         customerLabel={customerLabel}
                         customerPhone={customerPhone}
                         skipLabel={skipLabel}
@@ -1140,7 +1151,7 @@ export default function SchedulerPage() {
                         onDragStart={onDragStart}
                         onOpenJob={openJob}
                         onComplete={markComplete}
-                        timelineRow={tl[cardKey(c)] || null}
+                        timing={timingFor(driverId, c)}
                         onUnassign={() => {
                           if (c.type === "block") return unassignCard(c, d.id);
                           return unassignCard(c);
@@ -1178,7 +1189,6 @@ function TimingInput({ label, value, onChange }) {
 
 function SchedulerCard({
   card,
-  date,
   customerLabel,
   customerPhone,
   skipLabel,
@@ -1186,16 +1196,13 @@ function SchedulerCard({
   onDragStart,
   onOpenJob,
   onComplete,
-  timelineRow,
+  timing,
   onUnassign,
 }) {
   if (!card) return null;
 
-  const timeLabel = timelineRow ? `${minutesToHm(timelineRow.start)}–${minutesToHm(timelineRow.end)}` : null;
-  const travelLabel =
-    timelineRow && timelineRow.travelMins && timelineRow.travelMins > 0
-      ? `Travel: ${Math.round(timelineRow.travelMins)} mins`
-      : null;
+  const timeLabel = timing ? `${minutesToHm(timing.arriveMin)}–${minutesToHm(timing.departMin)}` : null;
+  const travelLabel = timing && timing.travelMins > 0 ? `Travel: ${Math.round(timing.travelMins)} mins` : null;
 
   if (card.type === "block") {
     const blockType = card.block_type || "block";
@@ -1295,9 +1302,7 @@ function SchedulerCard({
 
   const isCollection = j?.swap_role === "collect";
   const typeLabel = isCollection ? "COLLECTION" : "DELIVERY";
-  const actionLabel = isCollection
-    ? `Collect: ${skipLabel(j?.skip_type_id)}`
-    : `Deliver: ${skipLabel(j?.skip_type_id)}`;
+  const actionLabel = isCollection ? `Collect: ${skipLabel(j?.skip_type_id)}` : `Deliver: ${skipLabel(j?.skip_type_id)}`;
 
   return (
     <div
@@ -1403,16 +1408,9 @@ const timingGrid = {
   gap: 10,
 };
 
-const timingCell = {
-  display: "grid",
-  gap: 6,
-};
+const timingCell = { display: "grid", gap: 6 };
 
-const timingLabel = {
-  fontSize: 12,
-  color: "#666",
-  fontWeight: 700,
-};
+const timingLabel = { fontSize: 12, color: "#666", fontWeight: 700 };
 
 const grid = {
   display: "grid",
@@ -1477,12 +1475,7 @@ const metaRow = {
   justifyContent: "space-between",
 };
 
-const addrRow = {
-  marginTop: 6,
-  color: "#444",
-  fontSize: 13,
-  lineHeight: 1.3,
-};
+const addrRow = { marginTop: 6, color: "#444", fontSize: 13, lineHeight: 1.3 };
 
 const footRow = {
   display: "flex",
@@ -1532,6 +1525,16 @@ const btnPrimary = {
   borderRadius: 10,
   border: "1px solid #111",
   background: "#111",
+  color: "#fff",
+  cursor: "pointer",
+  fontWeight: 900,
+};
+
+const btnPrimaryAlt = {
+  padding: "10px 12px",
+  borderRadius: 10,
+  border: "1px solid #0b57d0",
+  background: "#0b57d0",
   color: "#fff",
   cursor: "pointer",
   fontWeight: 900,
