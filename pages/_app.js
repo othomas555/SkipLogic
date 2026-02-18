@@ -7,14 +7,12 @@ export default function MyApp({ Component, pageProps }) {
   const router = useRouter();
   const isAppRoute = router.pathname.startsWith("/app");
 
-  // Only call auth hook inside /app routes (keeps public pages simple)
   if (!isAppRoute) {
     return <Component {...pageProps} />;
   }
 
   const { checking, user, profile, errorMsg } = useAuthProfile();
 
-  // Basic guard for app routes
   if (checking) {
     return (
       <main style={center}>
@@ -38,12 +36,7 @@ export default function MyApp({ Component, pageProps }) {
   }
 
   return (
-    <AppShell
-      profile={profile}
-      title={pageProps?.title}
-      subtitle={pageProps?.subtitle}
-      right={pageProps?.right}
-    >
+    <AppShell profile={profile} title={pageProps?.title} subtitle={pageProps?.subtitle} right={pageProps?.right}>
       {errorMsg ? (
         <div style={errorBox}>
           <b>Auth warning:</b> {errorMsg}
