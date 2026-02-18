@@ -91,7 +91,7 @@ async function findSubscriberIdFromStripe(supabase, sub, stripeCustomerId) {
   const mapped = await findSubscriberIdByCustomerId(supabase, stripeCustomerId);
   if (mapped) return mapped;
 
-  // 3) customer metadata (what you set in Stripe)
+  // 3) customer metadata
   if (stripeCustomerId) {
     const customer = await stripe.customers.retrieve(stripeCustomerId);
     const custMetaSubId = customer?.metadata?.subscriber_id || null;
@@ -118,6 +118,11 @@ async function updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId,
     subscription_status: status,
     trial_ends_at: trialEndsAt,
   };
+
+  // Sync selected plan variant if Stripe subscription carries it
+  // (we set this in create-checkout-session)
+  const pv = sub?.metadata?.plan_variant_id || null;
+  if (pv) patch.plan_variant_id = pv;
 
   const now = isoNow();
 
