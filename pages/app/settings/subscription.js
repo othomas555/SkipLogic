@@ -1,5 +1,6 @@
 // pages/app/settings/subscription.js
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/router";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
@@ -22,7 +23,17 @@ function Badge({ children }) {
   );
 }
 
+function Section({ title, children }) {
+  return (
+    <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
+      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 10 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
 export default function SubscriptionSettingsPage() {
+  const router = useRouter();
   const { profile, loading: profileLoading } = useAuthProfile();
 
   const [subscriber, setSubscriber] = useState(null);
@@ -33,50 +44,78 @@ export default function SubscriptionSettingsPage() {
 
   const subscriberId = profile?.subscriber_id || null;
 
-  useEffect(() => {
+  async function loadAll() {
     if (!subscriberId) return;
 
-    let cancelled = false;
-    async function load() {
-      setErr(null);
+    setErr(null);
 
-      const [{ data: subData, error: subErr }, { data: planData, error: planErr }, { data: varData, error: varErr }] =
-        await Promise.all([
-          supabase
-            .from("subscribers")
-            .select("id, plan_variant_id, subscription_status, trial_ends_at, grace_ends_at, locked_at")
-            .eq("id", subscriberId)
-            .single(),
-          supabase.from("plans").select("id, name, slug, is_active").eq("is_active", true).order("name"),
-          supabase
-            .from("plan_variants")
-            .select("id, plan_id, name, slug, stripe_price_id, monthly_price_display, is_active")
-            .eq("is_active", true)
-            .order("name"),
-        ]);
+    const [
+      { data: subData, error: subErr },
+      { data: planData, error: planErr },
+      { data: varData, error: varErr },
+    ] = await Promise.all([
+      supabase
+        .from("subscribers")
+        .select("id, plan_variant_id, subscription_status, trial_ends_at, grace_ends_at, locked_at")
+        .eq("id", subscriberId)
+        .single(),
+      supabase.from("plans").select("id, name, slug, is_active").eq("is_active", true).order("name"),
+      supabase
+        .from("plan_variants")
+        .select("id, plan_id, name, slug, stripe_price_id, monthly_price_display, is_active")
+        .eq("is_active", true)
+        .order("name"),
+    ]);
 
-      if (cancelled) return;
+    if (subErr) return setErr(subErr.message);
+    if (planErr) return setErr(planErr.message);
+    if (varErr) return setErr(varErr.message);
 
-      if (subErr) return setErr(subErr.message);
-      if (planErr) return setErr(planErr.message);
-      if (varErr) return setErr(varErr.message);
+    setSubscriber(subData);
+    setPlans(planData || []);
+    setVariants(varData || []);
+  }
 
-      setSubscriber(subData);
-      setPlans(planData || []);
-      setVariants(varData || []);
-    }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
+  useEffect(() => {
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscriberId]);
+
+  // After Checkout returns (?checkout=success), refresh from DB
+  useEffect(() => {
+    if (!router.isReady) return;
+    if (router.query.checkout === "success") {
+      // Give Stripe/webhook a moment, then refresh
+      const t1 = setTimeout(() => loadAll(), 1200);
+      const t2 = setTimeout(() => loadAll(), 3000);
+
+      // Clean URL (remove query params) so it doesn't keep reloading
+      const t3 = setTimeout(() => {
+        router.replace("/app/settings/subscription", undefined, { shallow: true });
+      }, 3500);
+
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
+    }
+  }, [router.isReady, router.query.checkout]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const planById = useMemo(() => {
     const m = new Map();
     (plans || []).forEach((p) => m.set(p.id, p));
     return m;
   }, [plans]);
+
+  const variantById = useMemo(() => {
+    const m = new Map();
+    (variants || []).forEach((v) => m.set(v.id, v));
+    return m;
+  }, [variants]);
+
+  const currentVariant = subscriber?.plan_variant_id ? variantById.get(subscriber.plan_variant_id) : null;
+  const currentPlan = currentVariant?.plan_id ? planById.get(currentVariant.plan_id) : null;
 
   const variantsGrouped = useMemo(() => {
     const g = new Map(); // plan_id -> variants[]
@@ -155,12 +194,20 @@ export default function SubscriptionSettingsPage() {
       </div>
 
       {err ? (
-        <div style={{ background: "#fff1f0", border: "1px solid #ffccc7", padding: 12, borderRadius: 8, marginBottom: 16 }}>
+        <div
+          style={{
+            background: "#fff1f0",
+            border: "1px solid #ffccc7",
+            padding: 12,
+            borderRadius: 8,
+            marginBottom: 16,
+          }}
+        >
           <b>Error:</b> {err}
         </div>
       ) : null}
 
-      <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
         <button
           onClick={openPortal}
           disabled={busy}
@@ -174,7 +221,40 @@ export default function SubscriptionSettingsPage() {
         >
           Manage billing (Stripe portal)
         </button>
+
+        <button
+          onClick={loadAll}
+          disabled={busy}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: "white",
+            cursor: busy ? "not-allowed" : "pointer",
+          }}
+        >
+          Refresh
+        </button>
       </div>
+
+      <Section title="Current plan">
+        {currentVariant ? (
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>
+              {currentPlan?.name || "—"} <Badge>{currentVariant.name}</Badge>
+            </div>
+            <div style={{ marginTop: 6, color: "#666", fontSize: 13 }}>
+              Plan slug: <code>{currentPlan?.slug}</code> · Variant slug: <code>{currentVariant.slug}</code>
+            </div>
+          </div>
+        ) : (
+          <div style={{ color: "#666" }}>
+            No plan selected yet. Choose a plan below to start your trial / subscription.
+          </div>
+        )}
+      </Section>
+
+      <div style={{ height: 14 }} />
 
       <div style={{ display: "grid", gap: 14 }}>
         {(plans || []).map((p) => {
@@ -195,7 +275,7 @@ export default function SubscriptionSettingsPage() {
                     <div
                       key={v.id}
                       style={{
-                        border: "1px solid " + (isCurrent ? "#c7d2fe" : "#eee"),
+                        border: "1px solid " + (isCurrent ? "#4f46e5" : "#eee"),
                         background: isCurrent ? "#eef2ff" : "white",
                         borderRadius: 12,
                         padding: 12,
@@ -210,7 +290,7 @@ export default function SubscriptionSettingsPage() {
                           {v.name} {isCurrent ? <Badge>Current</Badge> : null}
                         </div>
                         <div style={{ fontSize: 12, color: "#666" }}>
-                          {v.slug}
+                          <code>{v.slug}</code>
                           {!v.stripe_price_id ? <Badge>Needs stripe_price_id</Badge> : null}
                         </div>
                       </div>
@@ -227,7 +307,7 @@ export default function SubscriptionSettingsPage() {
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {subscriber?.subscription_status ? "Switch to this" : "Start trial"}
+                        {isCurrent ? "Current" : "Switch to this"}
                       </button>
                     </div>
                   );
