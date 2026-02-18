@@ -1,5 +1,5 @@
 // pages/app/jobs/scheduler.js
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
@@ -37,9 +37,31 @@ function buildAddress(job) {
   return [job.site_address_line1, job.site_address_line2, job.site_town, job.site_postcode].filter(Boolean).join(", ");
 }
 
+function clampInt(n, min, max) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.max(min, Math.min(max, Math.trunc(x)));
+}
+
+function parseHmToMinutes(hm) {
+  const s = String(hm || "").trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return 0;
+  const hh = clampInt(m[1], 0, 23);
+  const mm = clampInt(m[2], 0, 59);
+  return hh * 60 + mm;
+}
+
+function minutesToHm(totalMins) {
+  const m = ((totalMins % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const hh = String(Math.floor(m / 60)).padStart(2, "0");
+  const mm = String(m % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
 /**
  * Decide whether a job should appear on the schedule as "work to do".
- * Adjust this if your statuses differ.
+ * Adjust if your statuses differ.
  */
 function isWorkToDo(job, selectedDate) {
   if (!job) return false;
@@ -69,28 +91,6 @@ function cardKey(card) {
   if (card.type === "job") return `job:${card.job?.id}`;
   if (card.type === "block") return `block:${card.block_id}`;
   return "card:unknown";
-}
-
-function clampInt(n, min, max) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return min;
-  return Math.max(min, Math.min(max, Math.trunc(x)));
-}
-
-function parseHmToMinutes(hm) {
-  const s = String(hm || "").trim();
-  const m = s.match(/^(\d{1,2}):(\d{2})$/);
-  if (!m) return 0;
-  const hh = clampInt(m[1], 0, 23);
-  const mm = clampInt(m[2], 0, 59);
-  return hh * 60 + mm;
-}
-
-function minutesToHm(totalMins) {
-  const m = ((totalMins % (24 * 60)) + (24 * 60)) % (24 * 60);
-  const hh = String(Math.floor(m / 60)).padStart(2, "0");
-  const mm = String(m % 60).padStart(2, "0");
-  return `${hh}:${mm}`;
 }
 
 function groupIntoCards(jobs, selectedDate) {
@@ -152,17 +152,6 @@ function groupIntoCards(jobs, selectedDate) {
   return cards;
 }
 
-function getJobPhoneFromCustomer(customer) {
-  if (!customer) return "";
-  return (
-    customer.phone ||
-    customer.mobile ||
-    customer.telephone ||
-    customer.tel ||
-    ""
-  );
-}
-
 export default function SchedulerPage() {
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
   const router = useRouter();
@@ -174,13 +163,11 @@ export default function SchedulerPage() {
   const [err, setErr] = useState("");
 
   const [drivers, setDrivers] = useState([]);
-  const [customers, setCustomers] = useState([]);
+  const [customers, setCustomers] = useState([]); // optional (may fail due to RLS)
   const [skipTypes, setSkipTypes] = useState([]);
   const [jobs, setJobs] = useState([]);
 
   // Roll-forward UI
-  const [rollForwardEnabled, setRollForwardEnabled] = useState(true);
-  const [rollForwardIncludeAssigned, setRollForwardIncludeAssigned] = useState(false);
   const [rolling, setRolling] = useState(false);
 
   // “Blocks” toolbox + simple timings
@@ -193,7 +180,6 @@ export default function SchedulerPage() {
   const [minsBreak, setMinsBreak] = useState(30);
 
   // Local-only blocks placed on runs (not saved to DB)
-  // extrasByDriverId: { [driverId]: Array<{block_id, block_type, label, driver_run_group}> }
   const [extrasByDriverId, setExtrasByDriverId] = useState({});
 
   const customerById = useMemo(() => {
@@ -225,14 +211,20 @@ export default function SchedulerPage() {
       if (dErr) throw new Error("Failed to load drivers");
       setDrivers(dRows || []);
 
-      // Customers (labels + phone)
-      const { data: cRows, error: cErr } = await supabase
-        .from("customers")
-        .select("id, first_name, last_name, company_name, phone, mobile, telephone")
-        .eq("subscriber_id", subscriberId);
+      // Customers (OPTIONAL - if this fails, do NOT break scheduler)
+      // This is only used for customer label + phone.
+      try {
+        const { data: cRows, error: cErr } = await supabase
+          .from("customers")
+          .select("id, first_name, last_name, company_name, phone, mobile, telephone")
+          .eq("subscriber_id", subscriberId);
 
-      if (cErr) throw new Error("Failed to load customers");
-      setCustomers(cRows || []);
+        if (cErr) throw cErr;
+        setCustomers(cRows || []);
+      } catch (e) {
+        console.warn("Scheduler: customers not readable (ignored):", e?.message || e);
+        setCustomers([]);
+      }
 
       // Skip types (labels only)
       const { data: sRows, error: sErr } = await supabase
@@ -294,15 +286,13 @@ export default function SchedulerPage() {
 
   const cards = useMemo(() => groupIntoCards(jobs, date), [jobs, date]);
 
-  // Build map of cards by driver, then merge in local-only blocks
   const cardsByDriverId = useMemo(() => {
     const m = {};
     for (const d of drivers || []) m[String(d.id)] = [];
 
     for (const c of cards) {
-      const driverId = c.type === "swap"
-        ? (c.assigned_driver_id || "")
-        : (c.job?.assigned_driver_id || "");
+      const driverId =
+        c.type === "swap" ? (c.assigned_driver_id || "") : (c.job?.assigned_driver_id || "");
       if (!driverId) continue;
       if (!m[String(driverId)]) m[String(driverId)] = [];
       m[String(driverId)].push(c);
@@ -335,9 +325,8 @@ export default function SchedulerPage() {
 
   const unassignedCards = useMemo(() => {
     return cards.filter((c) => {
-      const driverId = c.type === "swap"
-        ? (c.assigned_driver_id || "")
-        : (c.job?.assigned_driver_id || "");
+      const driverId =
+        c.type === "swap" ? (c.assigned_driver_id || "") : (c.job?.assigned_driver_id || "");
       return !driverId;
     });
   }, [cards]);
@@ -356,7 +345,8 @@ export default function SchedulerPage() {
 
   function customerPhone(customerId) {
     const c = customerById[String(customerId)];
-    return getJobPhoneFromCustomer(c);
+    if (!c) return "";
+    return c.phone || c.mobile || c.telephone || "";
   }
 
   function skipLabel(skipTypeId) {
@@ -473,7 +463,9 @@ export default function SchedulerPage() {
 
         setExtrasByDriverId((prev) => {
           const next = { ...(prev || {}) };
-          const arr = [...(next[driverId] || [])].filter((x) => String(x.block_id) !== String(card.block_id));
+          const arr = [...(next[driverId] || [])].filter(
+            (x) => String(x.block_id) !== String(card.block_id)
+          );
           next[driverId] = arr;
           return next;
         });
@@ -487,18 +479,20 @@ export default function SchedulerPage() {
 
   function onDragStart(e, card) {
     try {
-      e.dataTransfer.setData("application/json", JSON.stringify({
-        type: card.type,
-        swap_group_id: card.swap_group_id || null,
-        job_id: card.job?.id || null,
-        collect_id: card.collect?.id || null,
-        deliver_id: card.deliver?.id || null,
-        // blocks
-        block_id: card.block_id || null,
-        block_type: card.block_type || null,
-        label: card.label || null,
-        duration_mins: card.duration_mins || null,
-      }));
+      e.dataTransfer.setData(
+        "application/json",
+        JSON.stringify({
+          type: card.type,
+          swap_group_id: card.swap_group_id || null,
+          job_id: card.job?.id || null,
+          collect_id: card.collect?.id || null,
+          deliver_id: card.deliver?.id || null,
+          block_id: card.block_id || null,
+          block_type: card.block_type || null,
+          label: card.label || null,
+          duration_mins: card.duration_mins || null,
+        })
+      );
       e.dataTransfer.effectAllowed = "move";
     } catch {}
   }
@@ -512,7 +506,9 @@ export default function SchedulerPage() {
       const payload = JSON.parse(raw);
 
       if (payload.type === "swap") {
-        const card = cards.find((c) => c.type === "swap" && String(c.swap_group_id) === String(payload.swap_group_id));
+        const card = cards.find(
+          (c) => c.type === "swap" && String(c.swap_group_id) === String(payload.swap_group_id)
+        );
         if (card) await assignCardToDriver(card, driverId);
         return;
       }
@@ -533,7 +529,6 @@ export default function SchedulerPage() {
           driver_run_group: null,
         };
         await assignCardToDriver(block, driverId);
-        return;
       }
     } catch {}
   }
@@ -547,7 +542,9 @@ export default function SchedulerPage() {
       const payload = JSON.parse(raw);
 
       if (payload.type === "swap") {
-        const card = cards.find((c) => c.type === "swap" && String(c.swap_group_id) === String(payload.swap_group_id));
+        const card = cards.find(
+          (c) => c.type === "swap" && String(c.swap_group_id) === String(payload.swap_group_id)
+        );
         if (card) await unassignCard(card);
         return;
       }
@@ -555,11 +552,7 @@ export default function SchedulerPage() {
       if (payload.type === "job") {
         const card = cards.find((c) => c.type === "job" && String(c.job?.id) === String(payload.job_id));
         if (card) await unassignCard(card);
-        return;
       }
-
-      // blocks: need the driverId hint; we can’t infer reliably from payload alone,
-      // so we’ll ignore unassigned drop for blocks.
     } catch {}
   }
 
@@ -647,7 +640,6 @@ export default function SchedulerPage() {
       if (card.type === "block") {
         // local-only blocks: remove it
         const driverId = String(card._driverId || "");
-        // we set _driverId when rendering (below)
         if (driverId) await unassignCard(card, driverId);
       }
     } catch (e) {
@@ -656,15 +648,14 @@ export default function SchedulerPage() {
     }
   }
 
-  async function rollForwardFromPreviousDay() {
+  // Simplified: one-button roll forward (assigned + unassigned, any incomplete)
+  async function rollForwardFromYesterday() {
     if (!subscriberId) return;
-    if (!rollForwardEnabled) return;
 
     setErr("");
     setRolling(true);
 
     try {
-      // Load ALL jobs due on prev date (delivery or collection) then filter
       const { data: prevJobs, error: prevErr } = await supabase
         .from("jobs")
         .select(
@@ -674,35 +665,21 @@ export default function SchedulerPage() {
             "collection_date",
             "delivery_actual_date",
             "collection_actual_date",
-            "assigned_driver_id",
             "job_status",
-            "swap_group_id",
             "swap_role",
           ].join(",")
         )
         .eq("subscriber_id", subscriberId)
         .or(`scheduled_date.eq.${prevDate},collection_date.eq.${prevDate}`);
 
-      if (prevErr) throw new Error("Failed to load previous day jobs");
+      if (prevErr) throw new Error("Failed to load yesterday's jobs");
 
-      const candidates = (prevJobs || []).filter((j) => {
-        // must be work-to-do on prevDate
-        if (!isWorkToDo(j, prevDate)) return false;
-
-        const assigned = !!j.assigned_driver_id;
-        if (!rollForwardIncludeAssigned && assigned) return false;
-
-        return true;
-      });
-
+      const candidates = (prevJobs || []).filter((j) => isWorkToDo(j, prevDate));
       if (!candidates.length) {
         setRolling(false);
         return;
       }
 
-      // Update each row’s relevant date field to the selected date
-      // Delivery legs: scheduled_date
-      // Collection legs: collection_date
       const deliveryIds = candidates
         .filter((j) => j.swap_role !== "collect" && String(j.scheduled_date || "") === String(prevDate))
         .map((j) => j.id);
@@ -718,7 +695,7 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .in("id", deliveryIds);
 
-        if (error) throw new Error("Failed to roll delivery jobs forward");
+        if (error) throw new Error("Failed to roll deliveries forward");
       }
 
       if (collectionIds.length) {
@@ -728,7 +705,7 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .in("id", collectionIds);
 
-        if (error) throw new Error("Failed to roll collection jobs forward");
+        if (error) throw new Error("Failed to roll collections forward");
       }
 
       await loadAll();
@@ -740,7 +717,6 @@ export default function SchedulerPage() {
     }
   }
 
-  // Toolbox blocks
   const toolboxBlocks = useMemo(() => {
     return [
       {
@@ -769,25 +745,20 @@ export default function SchedulerPage() {
 
   function durationForCard(card) {
     if (!card) return 0;
-
     if (card.type === "block") return clampInt(card.duration_mins, 0, 600);
-
     if (card.type === "swap") return clampInt(minsSwap, 0, 600);
-
     if (card.type === "job") {
       const j = card.job;
       if (j?.swap_role === "collect") return clampInt(minsCollection, 0, 600);
       return clampInt(minsDelivery, 0, 600);
     }
-
     return 0;
   }
 
-  function laneTimeline(driverId, list) {
+  function laneTimeline(list) {
     const base = parseHmToMinutes(startTime);
     let t = base;
     const out = [];
-
     for (const item of list || []) {
       const dur = durationForCard(item);
       const start = t;
@@ -795,7 +766,6 @@ export default function SchedulerPage() {
       out.push({ key: cardKey(item), start, end });
       t = end;
     }
-
     const map = {};
     for (const row of out) map[row.key] = row;
     return map;
@@ -805,11 +775,10 @@ export default function SchedulerPage() {
     const m = {};
     for (const d of drivers || []) {
       const list = (cardsByDriverId[String(d.id)] || []).map((c) => {
-        // tag driver on blocks so “complete” can remove them
         if (c?.type === "block") return { ...c, _driverId: String(d.id) };
         return c;
       });
-      m[String(d.id)] = laneTimeline(d.id, list);
+      m[String(d.id)] = laneTimeline(list);
     }
     return m;
   }, [drivers, cardsByDriverId, startTime, minsVehicleChecks, minsDelivery, minsCollection, minsSwap, minsReturn, minsBreak]);
@@ -875,49 +844,26 @@ export default function SchedulerPage() {
         </div>
       </header>
 
-      {(authError || err) ? (
-        <div style={alertError}>{authError || err}</div>
-      ) : null}
+      {(authError || err) ? <div style={alertError}>{authError || err}</div> : null}
 
-      {/* Top controls: roll forward + toolbox */}
+      {/* Top controls: ONE roll-forward button + toolbox */}
       <section style={topControls}>
         <div style={topControlsLeft}>
           <div style={{ fontWeight: 900, marginBottom: 6 }}>Day controls</div>
 
-          <label style={checkRow}>
-            <input
-              type="checkbox"
-              checked={rollForwardEnabled}
-              onChange={(e) => setRollForwardEnabled(!!e.target.checked)}
-            />
-            <span>
-              Roll forward from <b>{prevDate}</b> → <b>{date}</b>
-            </span>
-          </label>
-
-          <label style={checkRow}>
-            <input
-              type="checkbox"
-              checked={rollForwardIncludeAssigned}
-              onChange={(e) => setRollForwardIncludeAssigned(!!e.target.checked)}
-              disabled={!rollForwardEnabled}
-            />
-            <span>Include assigned-but-incomplete jobs (otherwise unassigned only)</span>
-          </label>
-
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <button
               type="button"
-              style={{ ...btnPrimary, opacity: (rollForwardEnabled ? 1 : 0.5) }}
-              onClick={rollForwardFromPreviousDay}
-              disabled={!rollForwardEnabled || rolling}
-              title="Move previous day's uncompleted jobs onto the selected day"
+              style={btnPrimary}
+              onClick={rollForwardFromYesterday}
+              disabled={rolling}
+              title="Move yesterday's unfinished deliveries/collections onto today's date"
             >
-              {rolling ? "Rolling…" : "Roll forward"}
+              {rolling ? "Rolling…" : `Roll forward unfinished jobs from ${prevDate} → ${date}`}
             </button>
 
             <div style={{ color: "#666", fontSize: 12 }}>
-              Tip: this moves the <b>scheduled_date</b> / <b>collection_date</b> to today.
+              Rolls forward <b>all incomplete</b> jobs (assigned or unassigned).
             </div>
           </div>
         </div>
@@ -1090,27 +1036,15 @@ function SchedulerCard({
 }) {
   if (!card) return null;
 
-  // Timeline label (optional)
-  const timeLabel = timelineRow
-    ? `${minutesToHm(timelineRow.start)}–${minutesToHm(timelineRow.end)}`
-    : null;
+  const timeLabel = timelineRow ? `${minutesToHm(timelineRow.start)}–${minutesToHm(timelineRow.end)}` : null;
 
-  // BLOCKS (vehicle checks / break / return yard)
+  // BLOCKS
   if (card.type === "block") {
     const blockType = card.block_type || "block";
-    const style = {
-      ...jobCardBase,
-      ...shadeForBlock(blockType),
-      cursor: "grab",
-    };
+    const style = { ...jobCardBase, ...shadeForBlock(blockType), cursor: "grab" };
 
     return (
-      <div
-        draggable
-        onDragStart={(e) => onDragStart(e, card)}
-        style={style}
-        title="Drag to move (local only)"
-      >
+      <div draggable onDragStart={(e) => onDragStart(e, card)} style={style} title="Drag to move (local only)">
         <div style={topRow}>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <span style={pillDark}>{(blockType || "BLOCK").toUpperCase().replace("_", " ")}</span>
@@ -1163,20 +1097,10 @@ function SchedulerCard({
           </div>
 
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              type="button"
-              style={btnTiny}
-              onClick={(e) => { e.stopPropagation(); onUnassign(); }}
-              title="Unassign"
-            >
+            <button type="button" style={btnTiny} onClick={(e) => { e.stopPropagation(); onUnassign(); }}>
               Unassign
             </button>
-            <button
-              type="button"
-              style={btnTinyPrimary}
-              onClick={(e) => { e.stopPropagation(); onComplete(card); }}
-              title={`Mark swap complete (${date})`}
-            >
+            <button type="button" style={btnTinyPrimary} onClick={(e) => { e.stopPropagation(); onComplete(card); }}>
               Complete
             </button>
           </div>
@@ -1195,11 +1119,7 @@ function SchedulerCard({
         </div>
 
         <div style={footRow}>
-          <button
-            type="button"
-            style={btnLink}
-            onClick={(e) => { e.stopPropagation(); clickId && onOpenJob(clickId); }}
-          >
+          <button type="button" style={btnLink} onClick={(e) => { e.stopPropagation(); clickId && onOpenJob(clickId); }}>
             Open job
           </button>
           <div style={smallMuted}>group {String(card.driver_run_group ?? "—")}</div>
@@ -1208,7 +1128,7 @@ function SchedulerCard({
     );
   }
 
-  // SINGLE JOB (delivery or collection)
+  // SINGLE JOB
   const j = card.job;
   const addr = buildAddress(j);
   const customerId = j?.customer_id;
@@ -1236,20 +1156,10 @@ function SchedulerCard({
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button
-            type="button"
-            style={btnTiny}
-            onClick={(e) => { e.stopPropagation(); onUnassign(); }}
-            title="Unassign"
-          >
+          <button type="button" style={btnTiny} onClick={(e) => { e.stopPropagation(); onUnassign(); }}>
             Unassign
           </button>
-          <button
-            type="button"
-            style={btnTinyPrimary}
-            onClick={(e) => { e.stopPropagation(); onComplete(card); }}
-            title={`Mark ${typeLabel.toLowerCase()} complete (${date})`}
-          >
+          <button type="button" style={btnTinyPrimary} onClick={(e) => { e.stopPropagation(); onComplete(card); }}>
             Complete
           </button>
         </div>
@@ -1268,11 +1178,7 @@ function SchedulerCard({
       </div>
 
       <div style={footRow}>
-        <button
-          type="button"
-          style={btnLink}
-          onClick={(e) => { e.stopPropagation(); j?.id && onOpenJob(j.id); }}
-        >
+        <button type="button" style={btnLink} onClick={(e) => { e.stopPropagation(); j?.id && onOpenJob(j.id); }}>
           Open job
         </button>
         <div style={smallMuted}>group {String(j?.driver_run_group ?? "—")}</div>
@@ -1328,15 +1234,6 @@ const topControlsRight = {
   borderRadius: 12,
   padding: 12,
   boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
-};
-
-const checkRow = {
-  display: "flex",
-  gap: 10,
-  alignItems: "center",
-  fontSize: 13,
-  color: "#222",
-  marginTop: 6,
 };
 
 const timingGrid = {
@@ -1445,31 +1342,11 @@ const pillBase = {
   fontWeight: 900,
 };
 
-const pillDelivery = {
-  ...pillBase,
-  background: "rgba(0, 120, 255, 0.10)",
-};
-
-const pillCollection = {
-  ...pillBase,
-  background: "rgba(0, 180, 120, 0.12)",
-};
-
-const pillSwap = {
-  ...pillBase,
-  background: "rgba(255, 170, 0, 0.16)",
-};
-
-const pillDark = {
-  ...pillBase,
-  background: "rgba(0,0,0,0.06)",
-};
-
-const timePill = {
-  ...pillBase,
-  background: "rgba(0,0,0,0.05)",
-  color: "#333",
-};
+const pillDelivery = { ...pillBase, background: "rgba(0, 120, 255, 0.10)" };
+const pillCollection = { ...pillBase, background: "rgba(0, 180, 120, 0.12)" };
+const pillSwap = { ...pillBase, background: "rgba(255, 170, 0, 0.16)" };
+const pillDark = { ...pillBase, background: "rgba(0,0,0,0.06)" };
+const timePill = { ...pillBase, background: "rgba(0,0,0,0.05)", color: "#333" };
 
 const input = {
   padding: "10px 12px",
@@ -1540,53 +1417,17 @@ const alertError = {
 };
 
 function shadeForType(type) {
-  if (type === "delivery") {
-    return {
-      borderLeft: "6px solid rgba(0, 120, 255, 0.80)",
-      background: "rgba(0, 120, 255, 0.06)",
-    };
-  }
-  if (type === "collection") {
-    return {
-      borderLeft: "6px solid rgba(0, 180, 120, 0.85)",
-      background: "rgba(0, 180, 120, 0.07)",
-    };
-  }
-  if (type === "swap") {
-    return {
-      borderLeft: "6px solid rgba(255, 170, 0, 0.90)",
-      background: "rgba(255, 170, 0, 0.10)",
-    };
-  }
-  return {
-    borderLeft: "6px solid rgba(0,0,0,0.35)",
-    background: "#fff",
-  };
+  if (type === "delivery") return { borderLeft: "6px solid rgba(0, 120, 255, 0.80)", background: "rgba(0, 120, 255, 0.06)" };
+  if (type === "collection") return { borderLeft: "6px solid rgba(0, 180, 120, 0.85)", background: "rgba(0, 180, 120, 0.07)" };
+  if (type === "swap") return { borderLeft: "6px solid rgba(255, 170, 0, 0.90)", background: "rgba(255, 170, 0, 0.10)" };
+  return { borderLeft: "6px solid rgba(0,0,0,0.35)", background: "#fff" };
 }
 
 function shadeForBlock(blockType) {
-  if (blockType === "vehicle_checks") {
-    return {
-      borderLeft: "6px solid rgba(120, 0, 255, 0.75)",
-      background: "rgba(120, 0, 255, 0.06)",
-    };
-  }
-  if (blockType === "break") {
-    return {
-      borderLeft: "6px solid rgba(255, 0, 120, 0.75)",
-      background: "rgba(255, 0, 120, 0.06)",
-    };
-  }
-  if (blockType === "return_yard") {
-    return {
-      borderLeft: "6px solid rgba(0, 0, 0, 0.65)",
-      background: "rgba(0, 0, 0, 0.04)",
-    };
-  }
-  return {
-    borderLeft: "6px solid rgba(0,0,0,0.35)",
-    background: "rgba(0,0,0,0.03)",
-  };
+  if (blockType === "vehicle_checks") return { borderLeft: "6px solid rgba(120, 0, 255, 0.75)", background: "rgba(120, 0, 255, 0.06)" };
+  if (blockType === "break") return { borderLeft: "6px solid rgba(255, 0, 120, 0.75)", background: "rgba(255, 0, 120, 0.06)" };
+  if (blockType === "return_yard") return { borderLeft: "6px solid rgba(0, 0, 0, 0.65)", background: "rgba(0, 0, 0, 0.04)" };
+  return { borderLeft: "6px solid rgba(0,0,0,0.35)", background: "rgba(0,0,0,0.03)" };
 }
 
 function toolBlockStyle(blockType) {
