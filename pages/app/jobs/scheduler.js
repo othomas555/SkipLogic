@@ -59,9 +59,12 @@ function minutesToHm(totalMins) {
   return `${hh}:${mm}`;
 }
 
+function normalisePostcode(pc) {
+  return String(pc || "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+
 /**
  * Decide whether a job should appear on the schedule as "work to do".
- * Adjust if your statuses differ.
  */
 function isWorkToDo(job, selectedDate) {
   if (!job) return false;
@@ -170,17 +173,23 @@ export default function SchedulerPage() {
   // Roll-forward UI
   const [rolling, setRolling] = useState(false);
 
-  // “Blocks” toolbox + simple timings
-  const [startTime, setStartTime] = useState("07:00");
+  // Base start location
+  const [yardPostcode, setYardPostcode] = useState("CF33 6BN");
+
+  // “Blocks” toolbox + timings
+  const [startTime, setStartTime] = useState("08:00");
   const [minsVehicleChecks, setMinsVehicleChecks] = useState(15);
-  const [minsDelivery, setMinsDelivery] = useState(12);
-  const [minsCollection, setMinsCollection] = useState(10);
-  const [minsSwap, setMinsSwap] = useState(18);
-  const [minsReturn, setMinsReturn] = useState(15);
+  const [minsDelivery, setMinsDelivery] = useState(12);     // ON-SITE TIME
+  const [minsCollection, setMinsCollection] = useState(10); // ON-SITE TIME
+  const [minsSwap, setMinsSwap] = useState(18);             // ON-SITE TIME for swap at stop
+  const [minsReturn, setMinsReturn] = useState(15);         // Yard admin time once back
   const [minsBreak, setMinsBreak] = useState(30);
 
   // Local-only blocks placed on runs (not saved to DB)
   const [extrasByDriverId, setExtrasByDriverId] = useState({});
+
+  // Travel minutes keyed by "from->to" string
+  const [travelMinutesByKey, setTravelMinutesByKey] = useState({});
 
   const customerById = useMemo(() => {
     const m = {};
@@ -211,8 +220,7 @@ export default function SchedulerPage() {
       if (dErr) throw new Error("Failed to load drivers");
       setDrivers(dRows || []);
 
-      // Customers (OPTIONAL - if this fails, do NOT break scheduler)
-      // This is only used for customer label + phone.
+      // Customers (OPTIONAL)
       try {
         const { data: cRows, error: cErr } = await supabase
           .from("customers")
@@ -399,7 +407,6 @@ export default function SchedulerPage() {
 
         if (error) throw new Error("Failed to assign job");
       } else if (card.type === "block") {
-        // local-only blocks
         setExtrasByDriverId((prev) => {
           const next = { ...(prev || {}) };
           const arr = [...(next[String(driverId)] || [])];
@@ -638,7 +645,6 @@ export default function SchedulerPage() {
       }
 
       if (card.type === "block") {
-        // local-only blocks: remove it
         const driverId = String(card._driverId || "");
         if (driverId) await unassignCard(card, driverId);
       }
@@ -648,7 +654,7 @@ export default function SchedulerPage() {
     }
   }
 
-  // Simplified: one-button roll forward (assigned + unassigned, any incomplete)
+  // One-button roll forward (assigned + unassigned, any incomplete)
   async function rollForwardFromYesterday() {
     if (!subscriberId) return;
 
@@ -743,9 +749,12 @@ export default function SchedulerPage() {
     ];
   }, [minsVehicleChecks, minsBreak, minsReturn]);
 
-  function durationForCard(card) {
+  function durationOnSiteForCard(card) {
     if (!card) return 0;
-    if (card.type === "block") return clampInt(card.duration_mins, 0, 600);
+    if (card.type === "block") {
+      // For return_yard, this is the "yard admin" time once back (travel is separate)
+      return clampInt(card.duration_mins, 0, 600);
+    }
     if (card.type === "swap") return clampInt(minsSwap, 0, 600);
     if (card.type === "job") {
       const j = card.job;
@@ -755,19 +764,150 @@ export default function SchedulerPage() {
     return 0;
   }
 
+  function postcodeForCard(card) {
+    if (!card) return "";
+    if (card.type === "swap") {
+      // Both legs should be same site; pick deliver first
+      return normalisePostcode(card.deliver?.site_postcode || card.collect?.site_postcode || "");
+    }
+    if (card.type === "job") {
+      return normalisePostcode(card.job?.site_postcode || "");
+    }
+    return "";
+  }
+
+  // Build all travel pairs we need and fetch from your /api/distance-matrix
+  useEffect(() => {
+    const yard = normalisePostcode(yardPostcode);
+    if (!yard) return;
+
+    // Build pairs from all driver lanes
+    const pairs = [];
+    const seen = new Set();
+
+    const addPair = (from, to) => {
+      const f = normalisePostcode(from);
+      const t = normalisePostcode(to);
+      if (!f || !t) return;
+      const key = `${f}→${t}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      pairs.push({ key, from: f, to: t });
+    };
+
+    for (const d of drivers || []) {
+      const list = (cardsByDriverId[String(d.id)] || []).map((c) => (c?.type === "block" ? { ...c, _driverId: String(d.id) } : c));
+
+      // Sort already stable, just walk the lane
+      let lastStopPc = yard;
+      let hasStopYet = false;
+
+      for (const item of list) {
+        if (item.type === "block") {
+          // Return-to-yard: add travel from last stop to yard (if we have a stop)
+          if (item.block_type === "return_yard" && hasStopYet) {
+            addPair(lastStopPc, yard);
+          }
+          // other blocks don't affect locations
+          continue;
+        }
+
+        const pc = postcodeForCard(item);
+        if (!pc) continue;
+
+        addPair(hasStopYet ? lastStopPc : yard, pc);
+        lastStopPc = pc;
+        hasStopYet = true;
+      }
+    }
+
+    if (!pairs.length) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/distance-matrix", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pairs }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Distance matrix failed");
+
+        const tm = data?.travelMinutes || {};
+        if (cancelled) return;
+
+        setTravelMinutesByKey((prev) => ({ ...(prev || {}), ...(tm || {}) }));
+      } catch (e) {
+        console.warn("Distance matrix fetch failed (scheduler will fall back to 0 travel):", e?.message || e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [drivers, cardsByDriverId, yardPostcode]);
+
+  // Timeline per driver: uses travel time + on-site time
   function laneTimeline(list) {
+    const yard = normalisePostcode(yardPostcode);
     const base = parseHmToMinutes(startTime);
     let t = base;
-    const out = [];
-    for (const item of list || []) {
-      const dur = durationForCard(item);
-      const start = t;
-      const end = t + dur;
-      out.push({ key: cardKey(item), start, end });
-      t = end;
-    }
+
+    let lastStopPc = yard;
+    let hasStopYet = false;
+
     const map = {};
-    for (const row of out) map[row.key] = row;
+    for (const item of list || []) {
+      const k = cardKey(item);
+
+      if (item.type === "block") {
+        const blockType = item.block_type || "block";
+
+        if (blockType === "return_yard" && hasStopYet) {
+          const travelKey = `${normalisePostcode(lastStopPc)}→${yard}`;
+          const travel = Number(travelMinutesByKey[travelKey] || 0);
+          const travelMins = Number.isFinite(travel) ? travel : 0;
+
+          const start = t + travelMins;
+          const end = start + durationOnSiteForCard(item);
+
+          map[k] = { start, end, travelMins, travelKey, note: "Return to yard" };
+          t = end;
+          // now at yard
+          lastStopPc = yard;
+          hasStopYet = false;
+          continue;
+        }
+
+        // other blocks: no travel component
+        const start = t;
+        const end = t + durationOnSiteForCard(item);
+        map[k] = { start, end, travelMins: 0, travelKey: null, note: null };
+        t = end;
+        continue;
+      }
+
+      // job / swap = travel in + on-site time
+      const pc = postcodeForCard(item);
+      const fromPc = hasStopYet ? lastStopPc : yard;
+      const travelKey = `${normalisePostcode(fromPc)}→${normalisePostcode(pc)}`;
+      const travel = Number(travelMinutesByKey[travelKey] || 0);
+      const travelMins = Number.isFinite(travel) ? travel : 0;
+
+      const start = t + travelMins; // arrival
+      const end = start + durationOnSiteForCard(item); // depart
+      map[k] = { start, end, travelMins, travelKey, note: null };
+      t = end;
+
+      if (pc) {
+        lastStopPc = pc;
+        hasStopYet = true;
+      }
+    }
+
     return map;
   }
 
@@ -781,7 +921,19 @@ export default function SchedulerPage() {
       m[String(d.id)] = laneTimeline(list);
     }
     return m;
-  }, [drivers, cardsByDriverId, startTime, minsVehicleChecks, minsDelivery, minsCollection, minsSwap, minsReturn, minsBreak]);
+  }, [
+    drivers,
+    cardsByDriverId,
+    startTime,
+    minsVehicleChecks,
+    minsDelivery,
+    minsCollection,
+    minsSwap,
+    minsReturn,
+    minsBreak,
+    yardPostcode,
+    travelMinutesByKey,
+  ]);
 
   if (checking) {
     return (
@@ -846,7 +998,6 @@ export default function SchedulerPage() {
 
       {(authError || err) ? <div style={alertError}>{authError || err}</div> : null}
 
-      {/* Top controls: ONE roll-forward button + toolbox */}
       <section style={topControls}>
         <div style={topControlsLeft}>
           <div style={{ fontWeight: 900, marginBottom: 6 }}>Day controls</div>
@@ -873,20 +1024,30 @@ export default function SchedulerPage() {
 
           <div style={timingGrid}>
             <div style={timingCell}>
+              <div style={timingLabel}>Yard postcode</div>
+              <input
+                value={yardPostcode}
+                onChange={(e) => setYardPostcode(e.target.value)}
+                placeholder="e.g. CF33 6BN"
+                style={input}
+              />
+            </div>
+
+            <div style={timingCell}>
               <div style={timingLabel}>Start time</div>
               <input
                 type="time"
                 value={startTime}
-                onChange={(e) => setStartTime(e.target.value || "07:00")}
+                onChange={(e) => setStartTime(e.target.value || "08:00")}
                 style={input}
               />
             </div>
 
             <TimingInput label="Vehicle checks (mins)" value={minsVehicleChecks} onChange={setMinsVehicleChecks} />
-            <TimingInput label="Delivery (mins)" value={minsDelivery} onChange={setMinsDelivery} />
-            <TimingInput label="Collection (mins)" value={minsCollection} onChange={setMinsCollection} />
-            <TimingInput label="Swap (mins)" value={minsSwap} onChange={setMinsSwap} />
-            <TimingInput label="Return yard (mins)" value={minsReturn} onChange={setMinsReturn} />
+            <TimingInput label="Delivery on-site (mins)" value={minsDelivery} onChange={setMinsDelivery} />
+            <TimingInput label="Collection on-site (mins)" value={minsCollection} onChange={setMinsCollection} />
+            <TimingInput label="Swap on-site (mins)" value={minsSwap} onChange={setMinsSwap} />
+            <TimingInput label="Return yard admin (mins)" value={minsReturn} onChange={setMinsReturn} />
             <TimingInput label="Break (mins)" value={minsBreak} onChange={setMinsBreak} />
           </div>
 
@@ -917,12 +1078,7 @@ export default function SchedulerPage() {
         <div style={cardStyle}>Loading…</div>
       ) : (
         <div style={grid}>
-          {/* Unassigned */}
-          <section
-            style={lane}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={onDropToUnassigned}
-          >
+          <section style={lane} onDragOver={(e) => e.preventDefault()} onDrop={onDropToUnassigned}>
             <div style={laneHeader}>
               <div style={{ fontWeight: 900 }}>Unassigned</div>
               <div style={{ color: "#666", fontSize: 12 }}>{unassignedCards.length} item(s)</div>
@@ -950,7 +1106,6 @@ export default function SchedulerPage() {
             </div>
           </section>
 
-          {/* Drivers */}
           <section style={driversWrap}>
             {(drivers || []).map((d) => {
               const list = (cardsByDriverId[String(d.id)] || []).map((c) => {
@@ -1037,8 +1192,11 @@ function SchedulerCard({
   if (!card) return null;
 
   const timeLabel = timelineRow ? `${minutesToHm(timelineRow.start)}–${minutesToHm(timelineRow.end)}` : null;
+  const travelLabel =
+    timelineRow && timelineRow.travelMins && timelineRow.travelMins > 0
+      ? `Travel: ${Math.round(timelineRow.travelMins)} mins`
+      : null;
 
-  // BLOCKS
   if (card.type === "block") {
     const blockType = card.block_type || "block";
     const style = { ...jobCardBase, ...shadeForBlock(blockType), cursor: "grab" };
@@ -1058,6 +1216,7 @@ function SchedulerCard({
           </div>
         </div>
 
+        {travelLabel ? <div style={{ marginTop: 6, fontSize: 12, color: "#444" }}>{travelLabel}</div> : null}
         <div style={{ marginTop: 6, color: "#333", fontSize: 13 }}>
           Duration: <b>{card.duration_mins || 0} mins</b>
         </div>
@@ -1065,7 +1224,6 @@ function SchedulerCard({
     );
   }
 
-  // SWAPS
   if (card.type === "swap") {
     const c = card.collect;
     const d = card.deliver;
@@ -1106,6 +1264,8 @@ function SchedulerCard({
           </div>
         </div>
 
+        {travelLabel ? <div style={{ marginTop: 6, fontSize: 12, color: "#444" }}>{travelLabel}</div> : null}
+
         <div style={metaRow}>
           <div><b>Customer:</b> {customerLabel(customerId)}</div>
           {phone ? <div><b>Tel:</b> {phone}</div> : <div style={{ color: "#888" }}><b>Tel:</b> —</div>}
@@ -1128,7 +1288,6 @@ function SchedulerCard({
     );
   }
 
-  // SINGLE JOB
   const j = card.job;
   const addr = buildAddress(j);
   const customerId = j?.customer_id;
@@ -1164,6 +1323,8 @@ function SchedulerCard({
           </button>
         </div>
       </div>
+
+      {travelLabel ? <div style={{ marginTop: 6, fontSize: 12, color: "#444" }}>{travelLabel}</div> : null}
 
       <div style={metaRow}>
         <div><b>Customer:</b> {customerLabel(customerId)}</div>
