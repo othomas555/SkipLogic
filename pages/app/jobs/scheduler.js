@@ -1,5 +1,6 @@
 // pages/app/jobs/scheduler.js
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/router";
 import { supabase } from "../../../lib/supabaseClient";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
@@ -9,6 +10,20 @@ function ymdTodayLocal() {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function ymdAddDays(ymd, deltaDays) {
+  try {
+    const [y, m, d] = (ymd || "").split("-").map((x) => Number(x));
+    const dt = new Date(y, (m || 1) - 1, d || 1);
+    dt.setDate(dt.getDate() + deltaDays);
+    const yy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, "0");
+    const dd = String(dt.getDate()).padStart(2, "0");
+    return `${yy}-${mm}-${dd}`;
+  } catch {
+    return ymd;
+  }
 }
 
 function fmtGBP(n) {
@@ -28,29 +43,54 @@ function buildAddress(job) {
  */
 function isWorkToDo(job, selectedDate) {
   if (!job) return false;
-
-  // If job is already completed for its leg, exclude.
-  // Delivery leg is complete if delivery_actual_date exists OR status delivered/completed.
-  // Collection leg is complete if collection_actual_date exists OR status collected/completed.
   const status = String(job.job_status || "");
 
+  // Collection leg
   if (job.swap_role === "collect") {
     if (job.collection_actual_date) return false;
     if (status === "collected" || status === "completed") return false;
-    // it must be due today (collection_date)
     return String(job.collection_date || "") === String(selectedDate);
   }
 
-  // default treat as delivery leg
+  // Delivery leg (incl swap deliver)
   if (job.delivery_actual_date) return false;
   if (status === "delivered" || status === "completed") return false;
-  // it must be due today (scheduled_date)
   return String(job.scheduled_date || "") === String(selectedDate);
 }
 
 function jobRunDate(job) {
   if (!job) return "";
   return job.swap_role === "collect" ? (job.collection_date || "") : (job.scheduled_date || "");
+}
+
+function cardKey(card) {
+  if (!card) return "card:unknown";
+  if (card.type === "swap") return `swap:${card.swap_group_id}`;
+  if (card.type === "job") return `job:${card.job?.id}`;
+  if (card.type === "block") return `block:${card.block_id}`;
+  return "card:unknown";
+}
+
+function clampInt(n, min, max) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.max(min, Math.min(max, Math.trunc(x)));
+}
+
+function parseHmToMinutes(hm) {
+  const s = String(hm || "").trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return 0;
+  const hh = clampInt(m[1], 0, 23);
+  const mm = clampInt(m[2], 0, 59);
+  return hh * 60 + mm;
+}
+
+function minutesToHm(totalMins) {
+  const m = ((totalMins % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const hh = String(Math.floor(m / 60)).padStart(2, "0");
+  const mm = String(m % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 function groupIntoCards(jobs, selectedDate) {
@@ -112,10 +152,23 @@ function groupIntoCards(jobs, selectedDate) {
   return cards;
 }
 
+function getJobPhoneFromCustomer(customer) {
+  if (!customer) return "";
+  return (
+    customer.phone ||
+    customer.mobile ||
+    customer.telephone ||
+    customer.tel ||
+    ""
+  );
+}
+
 export default function SchedulerPage() {
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
+  const router = useRouter();
 
   const [date, setDate] = useState(() => ymdTodayLocal());
+  const prevDate = useMemo(() => ymdAddDays(date, -1), [date]);
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -123,8 +176,25 @@ export default function SchedulerPage() {
   const [drivers, setDrivers] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [skipTypes, setSkipTypes] = useState([]);
-
   const [jobs, setJobs] = useState([]);
+
+  // Roll-forward UI
+  const [rollForwardEnabled, setRollForwardEnabled] = useState(true);
+  const [rollForwardIncludeAssigned, setRollForwardIncludeAssigned] = useState(false);
+  const [rolling, setRolling] = useState(false);
+
+  // “Blocks” toolbox + simple timings
+  const [startTime, setStartTime] = useState("07:00");
+  const [minsVehicleChecks, setMinsVehicleChecks] = useState(15);
+  const [minsDelivery, setMinsDelivery] = useState(12);
+  const [minsCollection, setMinsCollection] = useState(10);
+  const [minsSwap, setMinsSwap] = useState(18);
+  const [minsReturn, setMinsReturn] = useState(15);
+  const [minsBreak, setMinsBreak] = useState(30);
+
+  // Local-only blocks placed on runs (not saved to DB)
+  // extrasByDriverId: { [driverId]: Array<{block_id, block_type, label, driver_run_group}> }
+  const [extrasByDriverId, setExtrasByDriverId] = useState({});
 
   const customerById = useMemo(() => {
     const m = {};
@@ -155,10 +225,10 @@ export default function SchedulerPage() {
       if (dErr) throw new Error("Failed to load drivers");
       setDrivers(dRows || []);
 
-      // Customers (labels only)
+      // Customers (labels + phone)
       const { data: cRows, error: cErr } = await supabase
         .from("customers")
-        .select("id, first_name, last_name, company_name")
+        .select("id, first_name, last_name, company_name, phone, mobile, telephone")
         .eq("subscriber_id", subscriberId);
 
       if (cErr) throw new Error("Failed to load customers");
@@ -224,15 +294,7 @@ export default function SchedulerPage() {
 
   const cards = useMemo(() => groupIntoCards(jobs, date), [jobs, date]);
 
-  const unassignedCards = useMemo(() => {
-    return cards.filter((c) => {
-      const driverId = c.type === "swap"
-        ? (c.assigned_driver_id || "")
-        : (c.job?.assigned_driver_id || "");
-      return !driverId;
-    });
-  }, [cards]);
-
+  // Build map of cards by driver, then merge in local-only blocks
   const cardsByDriverId = useMemo(() => {
     const m = {};
     for (const d of drivers || []) m[String(d.id)] = [];
@@ -246,21 +308,39 @@ export default function SchedulerPage() {
       m[String(driverId)].push(c);
     }
 
-    // sort within each driver column
+    // Merge blocks
+    for (const driverId of Object.keys(m)) {
+      const blocks = (extrasByDriverId[String(driverId)] || []).map((b) => ({
+        type: "block",
+        ...b,
+      }));
+      m[String(driverId)] = [...m[String(driverId)], ...blocks];
+    }
+
+    // sort within each driver column by driver_run_group
     for (const k of Object.keys(m)) {
       m[k].sort((a, b) => {
         const ag = Number(a.driver_run_group ?? a.job?.driver_run_group ?? 999999);
         const bg = Number(b.driver_run_group ?? b.job?.driver_run_group ?? 999999);
         if (ag !== bg) return ag - bg;
 
-        const an = String(a.job?.job_number ?? a.collect?.job_number ?? "");
-        const bn = String(b.job?.job_number ?? b.collect?.job_number ?? "");
+        const an = String(a.job?.job_number ?? a.collect?.job_number ?? a.label ?? "");
+        const bn = String(b.job?.job_number ?? b.collect?.job_number ?? b.label ?? "");
         return an.localeCompare(bn);
       });
     }
 
     return m;
-  }, [cards, drivers]);
+  }, [cards, drivers, extrasByDriverId]);
+
+  const unassignedCards = useMemo(() => {
+    return cards.filter((c) => {
+      const driverId = c.type === "swap"
+        ? (c.assigned_driver_id || "")
+        : (c.job?.assigned_driver_id || "");
+      return !driverId;
+    });
+  }, [cards]);
 
   function driverLabel(d) {
     return d?.name || d?.email || "Driver";
@@ -272,6 +352,11 @@ export default function SchedulerPage() {
     const base = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
     if (c.company_name) return `${c.company_name}${base ? ` – ${base}` : ""}`;
     return base || "—";
+  }
+
+  function customerPhone(customerId) {
+    const c = customerById[String(customerId)];
+    return getJobPhoneFromCustomer(c);
   }
 
   function skipLabel(skipTypeId) {
@@ -309,7 +394,7 @@ export default function SchedulerPage() {
           .in("id", ids);
 
         if (error) throw new Error("Failed to assign swap");
-      } else {
+      } else if (card.type === "job") {
         const id = String(card.job?.id || "");
         if (!id) return;
 
@@ -323,6 +408,16 @@ export default function SchedulerPage() {
           .eq("id", id);
 
         if (error) throw new Error("Failed to assign job");
+      } else if (card.type === "block") {
+        // local-only blocks
+        setExtrasByDriverId((prev) => {
+          const next = { ...(prev || {}) };
+          const arr = [...(next[String(driverId)] || [])];
+          arr.push({ ...card, driver_run_group: group });
+          next[String(driverId)] = arr;
+          return next;
+        });
+        return;
       }
 
       await loadAll();
@@ -332,7 +427,7 @@ export default function SchedulerPage() {
     }
   }
 
-  async function unassignCard(card) {
+  async function unassignCard(card, driverIdHint = null) {
     if (!subscriberId) return;
     setErr("");
 
@@ -350,7 +445,11 @@ export default function SchedulerPage() {
           .in("id", ids);
 
         if (error) throw new Error("Failed to unassign swap");
-      } else {
+        await loadAll();
+        return;
+      }
+
+      if (card.type === "job") {
         const id = String(card.job?.id || "");
         if (!id) return;
 
@@ -364,9 +463,22 @@ export default function SchedulerPage() {
           .eq("id", id);
 
         if (error) throw new Error("Failed to unassign job");
+        await loadAll();
+        return;
       }
 
-      await loadAll();
+      if (card.type === "block") {
+        const driverId = String(driverIdHint || "");
+        if (!driverId) return;
+
+        setExtrasByDriverId((prev) => {
+          const next = { ...(prev || {}) };
+          const arr = [...(next[driverId] || [])].filter((x) => String(x.block_id) !== String(card.block_id));
+          next[driverId] = arr;
+          return next;
+        });
+        return;
+      }
     } catch (e) {
       console.error(e);
       setErr(e?.message || "Failed to unassign");
@@ -381,6 +493,11 @@ export default function SchedulerPage() {
         job_id: card.job?.id || null,
         collect_id: card.collect?.id || null,
         deliver_id: card.deliver?.id || null,
+        // blocks
+        block_id: card.block_id || null,
+        block_type: card.block_type || null,
+        label: card.label || null,
+        duration_mins: card.duration_mins || null,
       }));
       e.dataTransfer.effectAllowed = "move";
     } catch {}
@@ -393,14 +510,29 @@ export default function SchedulerPage() {
 
     try {
       const payload = JSON.parse(raw);
+
       if (payload.type === "swap") {
         const card = cards.find((c) => c.type === "swap" && String(c.swap_group_id) === String(payload.swap_group_id));
         if (card) await assignCardToDriver(card, driverId);
         return;
       }
+
       if (payload.type === "job") {
         const card = cards.find((c) => c.type === "job" && String(c.job?.id) === String(payload.job_id));
         if (card) await assignCardToDriver(card, driverId);
+        return;
+      }
+
+      if (payload.type === "block") {
+        const block = {
+          type: "block",
+          block_id: payload.block_id || `blk_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          block_type: payload.block_type || "block",
+          label: payload.label || "Block",
+          duration_mins: clampInt(payload.duration_mins, 0, 600),
+          driver_run_group: null,
+        };
+        await assignCardToDriver(block, driverId);
         return;
       }
     } catch {}
@@ -413,18 +545,274 @@ export default function SchedulerPage() {
 
     try {
       const payload = JSON.parse(raw);
+
       if (payload.type === "swap") {
         const card = cards.find((c) => c.type === "swap" && String(c.swap_group_id) === String(payload.swap_group_id));
         if (card) await unassignCard(card);
         return;
       }
+
       if (payload.type === "job") {
         const card = cards.find((c) => c.type === "job" && String(c.job?.id) === String(payload.job_id));
         if (card) await unassignCard(card);
         return;
       }
+
+      // blocks: need the driverId hint; we can’t infer reliably from payload alone,
+      // so we’ll ignore unassigned drop for blocks.
     } catch {}
   }
+
+  function openJob(jobId) {
+    if (!jobId) return;
+    router.push(`/app/jobs/${jobId}`);
+  }
+
+  async function markComplete(card) {
+    if (!subscriberId) return;
+    setErr("");
+
+    try {
+      if (card.type === "swap") {
+        const collectId = card.collect?.id;
+        const deliverId = card.deliver?.id;
+
+        const updates = [];
+        if (collectId) {
+          updates.push(
+            supabase
+              .from("jobs")
+              .update({
+                collection_actual_date: date,
+                job_status: "collected",
+              })
+              .eq("subscriber_id", subscriberId)
+              .eq("id", collectId)
+          );
+        }
+        if (deliverId) {
+          updates.push(
+            supabase
+              .from("jobs")
+              .update({
+                delivery_actual_date: date,
+                job_status: "delivered",
+              })
+              .eq("subscriber_id", subscriberId)
+              .eq("id", deliverId)
+          );
+        }
+
+        const results = await Promise.all(updates);
+        for (const r of results) {
+          if (r?.error) throw new Error("Failed to mark swap complete");
+        }
+
+        await loadAll();
+        return;
+      }
+
+      if (card.type === "job") {
+        const j = card.job;
+        if (!j?.id) return;
+
+        if (j.swap_role === "collect") {
+          const { error } = await supabase
+            .from("jobs")
+            .update({
+              collection_actual_date: date,
+              job_status: "collected",
+            })
+            .eq("subscriber_id", subscriberId)
+            .eq("id", j.id);
+
+          if (error) throw new Error("Failed to mark collection complete");
+        } else {
+          const { error } = await supabase
+            .from("jobs")
+            .update({
+              delivery_actual_date: date,
+              job_status: "delivered",
+            })
+            .eq("subscriber_id", subscriberId)
+            .eq("id", j.id);
+
+          if (error) throw new Error("Failed to mark delivery complete");
+        }
+
+        await loadAll();
+        return;
+      }
+
+      if (card.type === "block") {
+        // local-only blocks: remove it
+        const driverId = String(card._driverId || "");
+        // we set _driverId when rendering (below)
+        if (driverId) await unassignCard(card, driverId);
+      }
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to mark complete");
+    }
+  }
+
+  async function rollForwardFromPreviousDay() {
+    if (!subscriberId) return;
+    if (!rollForwardEnabled) return;
+
+    setErr("");
+    setRolling(true);
+
+    try {
+      // Load ALL jobs due on prev date (delivery or collection) then filter
+      const { data: prevJobs, error: prevErr } = await supabase
+        .from("jobs")
+        .select(
+          [
+            "id",
+            "scheduled_date",
+            "collection_date",
+            "delivery_actual_date",
+            "collection_actual_date",
+            "assigned_driver_id",
+            "job_status",
+            "swap_group_id",
+            "swap_role",
+          ].join(",")
+        )
+        .eq("subscriber_id", subscriberId)
+        .or(`scheduled_date.eq.${prevDate},collection_date.eq.${prevDate}`);
+
+      if (prevErr) throw new Error("Failed to load previous day jobs");
+
+      const candidates = (prevJobs || []).filter((j) => {
+        // must be work-to-do on prevDate
+        if (!isWorkToDo(j, prevDate)) return false;
+
+        const assigned = !!j.assigned_driver_id;
+        if (!rollForwardIncludeAssigned && assigned) return false;
+
+        return true;
+      });
+
+      if (!candidates.length) {
+        setRolling(false);
+        return;
+      }
+
+      // Update each row’s relevant date field to the selected date
+      // Delivery legs: scheduled_date
+      // Collection legs: collection_date
+      const deliveryIds = candidates
+        .filter((j) => j.swap_role !== "collect" && String(j.scheduled_date || "") === String(prevDate))
+        .map((j) => j.id);
+
+      const collectionIds = candidates
+        .filter((j) => j.swap_role === "collect" && String(j.collection_date || "") === String(prevDate))
+        .map((j) => j.id);
+
+      if (deliveryIds.length) {
+        const { error } = await supabase
+          .from("jobs")
+          .update({ scheduled_date: date })
+          .eq("subscriber_id", subscriberId)
+          .in("id", deliveryIds);
+
+        if (error) throw new Error("Failed to roll delivery jobs forward");
+      }
+
+      if (collectionIds.length) {
+        const { error } = await supabase
+          .from("jobs")
+          .update({ collection_date: date })
+          .eq("subscriber_id", subscriberId)
+          .in("id", collectionIds);
+
+        if (error) throw new Error("Failed to roll collection jobs forward");
+      }
+
+      await loadAll();
+      setRolling(false);
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to roll jobs forward");
+      setRolling(false);
+    }
+  }
+
+  // Toolbox blocks
+  const toolboxBlocks = useMemo(() => {
+    return [
+      {
+        type: "block",
+        block_id: "tool_vehicle_checks",
+        block_type: "vehicle_checks",
+        label: "Vehicle checks",
+        duration_mins: clampInt(minsVehicleChecks, 0, 600),
+      },
+      {
+        type: "block",
+        block_id: "tool_break",
+        block_type: "break",
+        label: "Break",
+        duration_mins: clampInt(minsBreak, 0, 600),
+      },
+      {
+        type: "block",
+        block_id: "tool_return",
+        block_type: "return_yard",
+        label: "Return to yard",
+        duration_mins: clampInt(minsReturn, 0, 600),
+      },
+    ];
+  }, [minsVehicleChecks, minsBreak, minsReturn]);
+
+  function durationForCard(card) {
+    if (!card) return 0;
+
+    if (card.type === "block") return clampInt(card.duration_mins, 0, 600);
+
+    if (card.type === "swap") return clampInt(minsSwap, 0, 600);
+
+    if (card.type === "job") {
+      const j = card.job;
+      if (j?.swap_role === "collect") return clampInt(minsCollection, 0, 600);
+      return clampInt(minsDelivery, 0, 600);
+    }
+
+    return 0;
+  }
+
+  function laneTimeline(driverId, list) {
+    const base = parseHmToMinutes(startTime);
+    let t = base;
+    const out = [];
+
+    for (const item of list || []) {
+      const dur = durationForCard(item);
+      const start = t;
+      const end = t + dur;
+      out.push({ key: cardKey(item), start, end });
+      t = end;
+    }
+
+    const map = {};
+    for (const row of out) map[row.key] = row;
+    return map;
+  }
+
+  const timelineByDriverId = useMemo(() => {
+    const m = {};
+    for (const d of drivers || []) {
+      const list = (cardsByDriverId[String(d.id)] || []).map((c) => {
+        // tag driver on blocks so “complete” can remove them
+        if (c?.type === "block") return { ...c, _driverId: String(d.id) };
+        return c;
+      });
+      m[String(d.id)] = laneTimeline(d.id, list);
+    }
+    return m;
+  }, [drivers, cardsByDriverId, startTime, minsVehicleChecks, minsDelivery, minsCollection, minsSwap, minsReturn, minsBreak]);
 
   if (checking) {
     return (
@@ -458,12 +846,31 @@ export default function SchedulerPage() {
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value || ymdTodayLocal())}
-            style={input}
-          />
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              type="button"
+              style={btnSecondary}
+              onClick={() => setDate((d) => ymdAddDays(d, -1))}
+              title="Previous day"
+            >
+              ◀
+            </button>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value || ymdTodayLocal())}
+              style={input}
+            />
+            <button
+              type="button"
+              style={btnSecondary}
+              onClick={() => setDate((d) => ymdAddDays(d, 1))}
+              title="Next day"
+            >
+              ▶
+            </button>
+          </div>
+
           <button type="button" onClick={loadAll} style={btnSecondary}>Refresh</button>
         </div>
       </header>
@@ -471,6 +878,94 @@ export default function SchedulerPage() {
       {(authError || err) ? (
         <div style={alertError}>{authError || err}</div>
       ) : null}
+
+      {/* Top controls: roll forward + toolbox */}
+      <section style={topControls}>
+        <div style={topControlsLeft}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>Day controls</div>
+
+          <label style={checkRow}>
+            <input
+              type="checkbox"
+              checked={rollForwardEnabled}
+              onChange={(e) => setRollForwardEnabled(!!e.target.checked)}
+            />
+            <span>
+              Roll forward from <b>{prevDate}</b> → <b>{date}</b>
+            </span>
+          </label>
+
+          <label style={checkRow}>
+            <input
+              type="checkbox"
+              checked={rollForwardIncludeAssigned}
+              onChange={(e) => setRollForwardIncludeAssigned(!!e.target.checked)}
+              disabled={!rollForwardEnabled}
+            />
+            <span>Include assigned-but-incomplete jobs (otherwise unassigned only)</span>
+          </label>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+            <button
+              type="button"
+              style={{ ...btnPrimary, opacity: (rollForwardEnabled ? 1 : 0.5) }}
+              onClick={rollForwardFromPreviousDay}
+              disabled={!rollForwardEnabled || rolling}
+              title="Move previous day's uncompleted jobs onto the selected day"
+            >
+              {rolling ? "Rolling…" : "Roll forward"}
+            </button>
+
+            <div style={{ color: "#666", fontSize: 12 }}>
+              Tip: this moves the <b>scheduled_date</b> / <b>collection_date</b> to today.
+            </div>
+          </div>
+        </div>
+
+        <div style={topControlsRight}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>Run timings / blocks</div>
+
+          <div style={timingGrid}>
+            <div style={timingCell}>
+              <div style={timingLabel}>Start time</div>
+              <input
+                type="time"
+                value={startTime}
+                onChange={(e) => setStartTime(e.target.value || "07:00")}
+                style={input}
+              />
+            </div>
+
+            <TimingInput label="Vehicle checks (mins)" value={minsVehicleChecks} onChange={setMinsVehicleChecks} />
+            <TimingInput label="Delivery (mins)" value={minsDelivery} onChange={setMinsDelivery} />
+            <TimingInput label="Collection (mins)" value={minsCollection} onChange={setMinsCollection} />
+            <TimingInput label="Swap (mins)" value={minsSwap} onChange={setMinsSwap} />
+            <TimingInput label="Return yard (mins)" value={minsReturn} onChange={setMinsReturn} />
+            <TimingInput label="Break (mins)" value={minsBreak} onChange={setMinsBreak} />
+          </div>
+
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>
+              Drag blocks into a driver lane:
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {toolboxBlocks.map((b) => (
+                <div
+                  key={b.block_id}
+                  draggable
+                  onDragStart={(e) => onDragStart(e, b)}
+                  style={toolBlockStyle(b.block_type)}
+                  title="Drag into a driver lane"
+                >
+                  <div style={{ fontWeight: 900 }}>{b.label}</div>
+                  <div style={{ fontSize: 12, color: "#555" }}>{b.duration_mins} mins</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
 
       {loading ? (
         <div style={cardStyle}>Loading…</div>
@@ -490,12 +985,18 @@ export default function SchedulerPage() {
             <div style={{ display: "grid", gap: 10 }}>
               {unassignedCards.length ? unassignedCards.map((c) => (
                 <SchedulerCard
-                  key={c.type === "swap" ? `swap:${c.swap_group_id}` : `job:${c.job.id}`}
+                  key={cardKey(c)}
                   card={c}
-                  onDragStart={onDragStart}
+                  date={date}
                   customerLabel={customerLabel}
+                  customerPhone={customerPhone}
                   skipLabel={skipLabel}
                   fmtGBP={fmtGBP}
+                  onDragStart={onDragStart}
+                  onOpenJob={openJob}
+                  onComplete={markComplete}
+                  timelineRow={null}
+                  onUnassign={() => unassignCard(c)}
                 />
               )) : (
                 <div style={{ color: "#666", padding: 10 }}>None</div>
@@ -506,7 +1007,13 @@ export default function SchedulerPage() {
           {/* Drivers */}
           <section style={driversWrap}>
             {(drivers || []).map((d) => {
-              const list = cardsByDriverId[String(d.id)] || [];
+              const list = (cardsByDriverId[String(d.id)] || []).map((c) => {
+                if (c?.type === "block") return { ...c, _driverId: String(d.id) };
+                return c;
+              });
+
+              const tl = timelineByDriverId[String(d.id)] || {};
+
               return (
                 <div
                   key={d.id}
@@ -522,12 +1029,21 @@ export default function SchedulerPage() {
                   <div style={{ display: "grid", gap: 10 }}>
                     {list.length ? list.map((c) => (
                       <SchedulerCard
-                        key={c.type === "swap" ? `swap:${c.swap_group_id}` : `job:${c.job.id}`}
+                        key={cardKey(c)}
                         card={c}
-                        onDragStart={onDragStart}
+                        date={date}
                         customerLabel={customerLabel}
+                        customerPhone={customerPhone}
                         skipLabel={skipLabel}
                         fmtGBP={fmtGBP}
+                        onDragStart={onDragStart}
+                        onOpenJob={openJob}
+                        onComplete={markComplete}
+                        timelineRow={tl[cardKey(c)] || null}
+                        onUnassign={() => {
+                          if (c.type === "block") return unassignCard(c, d.id);
+                          return unassignCard(c);
+                        }}
                       />
                     )) : (
                       <div style={{ color: "#666", padding: 10 }}>Drop jobs here</div>
@@ -543,100 +1059,229 @@ export default function SchedulerPage() {
   );
 }
 
-function SchedulerCard({ card, onDragStart, customerLabel, skipLabel, fmtGBP }) {
+function TimingInput({ label, value, onChange }) {
+  return (
+    <div style={timingCell}>
+      <div style={timingLabel}>{label}</div>
+      <input
+        type="number"
+        min={0}
+        max={600}
+        value={String(value)}
+        onChange={(e) => onChange(clampInt(e.target.value, 0, 600))}
+        style={input}
+      />
+    </div>
+  );
+}
+
+function SchedulerCard({
+  card,
+  date,
+  customerLabel,
+  customerPhone,
+  skipLabel,
+  fmtGBP,
+  onDragStart,
+  onOpenJob,
+  onComplete,
+  timelineRow,
+  onUnassign,
+}) {
   if (!card) return null;
 
-  if (card.type === "swap") {
-    const c = card.collect;
-    const d = card.deliver;
+  // Timeline label (optional)
+  const timeLabel = timelineRow
+    ? `${minutesToHm(timelineRow.start)}–${minutesToHm(timelineRow.end)}`
+    : null;
 
-    const customerId = d?.customer_id || c?.customer_id;
-    const addr = buildAddress(d || c);
+  // BLOCKS (vehicle checks / break / return yard)
+  if (card.type === "block") {
+    const blockType = card.block_type || "block";
+    const style = {
+      ...jobCardBase,
+      ...shadeForBlock(blockType),
+      cursor: "grab",
+    };
 
     return (
       <div
         draggable
         onDragStart={(e) => onDragStart(e, card)}
-        style={{ ...jobCard, borderLeft: "6px solid #111" }}
-        title="Swap (drag to assign)"
+        style={style}
+        title="Drag to move (local only)"
       >
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-          <div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={pill}>SWAP</span>
-              <div style={{ fontWeight: 900 }}>
-                Collect: {c?.job_number || "—"} → Deliver: {d?.job_number || "—"}
-              </div>
-            </div>
-
-            <div style={{ marginTop: 6, fontSize: 13, color: "#222" }}>
-              <b>Customer:</b> {customerLabel(customerId)}
-            </div>
-
-            <div style={{ marginTop: 4, color: "#555", fontSize: 13, lineHeight: 1.3 }}>
-              {addr || "—"}
-            </div>
-
-            <div style={{ marginTop: 8, fontSize: 13, color: "#222", display: "flex", gap: 14, flexWrap: "wrap" }}>
-              <div><b>Deliver skip:</b> {skipLabel(d?.skip_type_id)}</div>
-              <div><b>Payment:</b> {d?.payment_type || c?.payment_type || "—"}</div>
-            </div>
+        <div style={topRow}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={pillDark}>{(blockType || "BLOCK").toUpperCase().replace("_", " ")}</span>
+            <div style={{ fontWeight: 900 }}>{card.label || "Block"}</div>
+            {timeLabel ? <span style={timePill}>{timeLabel}</span> : null}
           </div>
 
-          <div style={{ textAlign: "right", minWidth: 90 }}>
-            <div style={{ fontWeight: 900 }}>{fmtGBP(d?.price_inc_vat)}</div>
-            <div style={{ marginTop: 6, color: "#777", fontSize: 12 }}>
-              group {String(card.driver_run_group ?? "—")}
-            </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button type="button" style={btnTiny} onClick={onUnassign} title="Remove block">✕</button>
+            <button type="button" style={btnTinyPrimary} onClick={() => onComplete(card)} title="Mark done (removes block)">Done</button>
           </div>
+        </div>
+
+        <div style={{ marginTop: 6, color: "#333", fontSize: 13 }}>
+          Duration: <b>{card.duration_mins || 0} mins</b>
         </div>
       </div>
     );
   }
 
+  // SWAPS
+  if (card.type === "swap") {
+    const c = card.collect;
+    const d = card.deliver;
+
+    const customerId = d?.customer_id || c?.customer_id;
+    const phone = customerPhone(customerId);
+    const addr = buildAddress(d || c);
+
+    const fromSkip = skipLabel(c?.skip_type_id);
+    const toSkip = skipLabel(d?.skip_type_id);
+
+    const clickId = d?.id || c?.id || null;
+
+    return (
+      <div
+        draggable
+        onDragStart={(e) => onDragStart(e, card)}
+        style={{ ...jobCardBase, ...shadeForType("swap") }}
+        title="Swap (drag to assign)"
+        onDoubleClick={() => clickId && onOpenJob(clickId)}
+      >
+        <div style={topRow}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={pillSwap}>SWAP</span>
+            <div style={{ fontWeight: 900 }}>
+              {c?.job_number || "—"} ↔ {d?.job_number || "—"}
+            </div>
+            {timeLabel ? <span style={timePill}>{timeLabel}</span> : null}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              type="button"
+              style={btnTiny}
+              onClick={(e) => { e.stopPropagation(); onUnassign(); }}
+              title="Unassign"
+            >
+              Unassign
+            </button>
+            <button
+              type="button"
+              style={btnTinyPrimary}
+              onClick={(e) => { e.stopPropagation(); onComplete(card); }}
+              title={`Mark swap complete (${date})`}
+            >
+              Complete
+            </button>
+          </div>
+        </div>
+
+        <div style={metaRow}>
+          <div><b>Customer:</b> {customerLabel(customerId)}</div>
+          {phone ? <div><b>Tel:</b> {phone}</div> : <div style={{ color: "#888" }}><b>Tel:</b> —</div>}
+        </div>
+
+        <div style={addrRow}>{addr || "—"}</div>
+
+        <div style={metaRow}>
+          <div><b>Action:</b> Swap {fromSkip} → {toSkip}</div>
+          <div style={{ textAlign: "right" }}><b>{fmtGBP(d?.price_inc_vat)}</b></div>
+        </div>
+
+        <div style={footRow}>
+          <button
+            type="button"
+            style={btnLink}
+            onClick={(e) => { e.stopPropagation(); clickId && onOpenJob(clickId); }}
+          >
+            Open job
+          </button>
+          <div style={smallMuted}>group {String(card.driver_run_group ?? "—")}</div>
+        </div>
+      </div>
+    );
+  }
+
+  // SINGLE JOB (delivery or collection)
   const j = card.job;
   const addr = buildAddress(j);
+  const customerId = j?.customer_id;
+  const phone = customerPhone(customerId);
 
-  const typeLabel = j?.swap_role === "collect" ? "COLLECTION" : "DELIVERY";
+  const isCollection = j?.swap_role === "collect";
+  const typeLabel = isCollection ? "COLLECTION" : "DELIVERY";
+  const actionLabel = isCollection
+    ? `Collect: ${skipLabel(j?.skip_type_id)}`
+    : `Deliver: ${skipLabel(j?.skip_type_id)}`;
 
   return (
     <div
       draggable
       onDragStart={(e) => onDragStart(e, card)}
-      style={jobCard}
+      style={{ ...jobCardBase, ...shadeForType(isCollection ? "collection" : "delivery") }}
       title="Drag to assign"
+      onDoubleClick={() => j?.id && onOpenJob(j.id)}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-        <div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={pill}>{typeLabel}</span>
-            <div style={{ fontWeight: 900 }}>{j?.job_number || "Job"}</div>
-          </div>
-
-          <div style={{ marginTop: 6, fontSize: 13, color: "#222" }}>
-            <b>Customer:</b> {customerLabel(j?.customer_id)}
-          </div>
-
-          <div style={{ marginTop: 4, color: "#555", fontSize: 13, lineHeight: 1.3 }}>
-            {addr || "—"}
-          </div>
-
-          <div style={{ marginTop: 8, fontSize: 13, color: "#222", display: "flex", gap: 14, flexWrap: "wrap" }}>
-            <div><b>Skip:</b> {skipLabel(j?.skip_type_id)}</div>
-            <div><b>Payment:</b> {j?.payment_type || "—"}</div>
-          </div>
+      <div style={topRow}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={isCollection ? pillCollection : pillDelivery}>{typeLabel}</span>
+          <div style={{ fontWeight: 900 }}>{j?.job_number || "Job"}</div>
+          {timeLabel ? <span style={timePill}>{timeLabel}</span> : null}
         </div>
 
-        <div style={{ textAlign: "right", minWidth: 90 }}>
-          <div style={{ fontWeight: 900 }}>{fmtGBP(j?.price_inc_vat)}</div>
-          <div style={{ marginTop: 6, color: "#777", fontSize: 12 }}>
-            group {String(j?.driver_run_group ?? "—")}
-          </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            type="button"
+            style={btnTiny}
+            onClick={(e) => { e.stopPropagation(); onUnassign(); }}
+            title="Unassign"
+          >
+            Unassign
+          </button>
+          <button
+            type="button"
+            style={btnTinyPrimary}
+            onClick={(e) => { e.stopPropagation(); onComplete(card); }}
+            title={`Mark ${typeLabel.toLowerCase()} complete (${date})`}
+          >
+            Complete
+          </button>
         </div>
+      </div>
+
+      <div style={metaRow}>
+        <div><b>Customer:</b> {customerLabel(customerId)}</div>
+        {phone ? <div><b>Tel:</b> {phone}</div> : <div style={{ color: "#888" }}><b>Tel:</b> —</div>}
+      </div>
+
+      <div style={addrRow}>{addr || "—"}</div>
+
+      <div style={metaRow}>
+        <div><b>Action:</b> {actionLabel}</div>
+        <div style={{ textAlign: "right" }}><b>{fmtGBP(j?.price_inc_vat)}</b></div>
+      </div>
+
+      <div style={footRow}>
+        <button
+          type="button"
+          style={btnLink}
+          onClick={(e) => { e.stopPropagation(); j?.id && onOpenJob(j.id); }}
+        >
+          Open job
+        </button>
+        <div style={smallMuted}>group {String(j?.driver_run_group ?? "—")}</div>
       </div>
     </div>
   );
 }
+
+/* ------------------ styles ------------------ */
 
 const pageStyle = {
   minHeight: "100vh",
@@ -660,6 +1305,55 @@ const headerStyle = {
   gap: 12,
   flexWrap: "wrap",
   marginBottom: 12,
+};
+
+const topControls = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: 12,
+  marginBottom: 12,
+};
+
+const topControlsLeft = {
+  background: "#fff",
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 12,
+  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+};
+
+const topControlsRight = {
+  background: "#fff",
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 12,
+  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+};
+
+const checkRow = {
+  display: "flex",
+  gap: 10,
+  alignItems: "center",
+  fontSize: 13,
+  color: "#222",
+  marginTop: 6,
+};
+
+const timingGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(160px, 1fr))",
+  gap: 10,
+};
+
+const timingCell = {
+  display: "grid",
+  gap: 6,
+};
+
+const timingLabel = {
+  fontSize: 12,
+  color: "#666",
+  fontWeight: 700,
 };
 
 const grid = {
@@ -699,23 +1393,82 @@ const cardStyle = {
   border: "1px solid #eee",
 };
 
-const jobCard = {
-  border: "1px solid #eee",
+const jobCardBase = {
+  border: "1px solid #e8e8e8",
   borderRadius: 12,
   padding: 12,
   background: "#fff",
   cursor: "grab",
+  userSelect: "none",
 };
 
-const pill = {
+const topRow = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 10,
+  alignItems: "flex-start",
+};
+
+const metaRow = {
+  marginTop: 8,
+  fontSize: 13,
+  color: "#222",
+  display: "flex",
+  gap: 14,
+  flexWrap: "wrap",
+  justifyContent: "space-between",
+};
+
+const addrRow = {
+  marginTop: 6,
+  color: "#444",
+  fontSize: 13,
+  lineHeight: 1.3,
+};
+
+const footRow = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 10,
+  alignItems: "center",
+  marginTop: 10,
+};
+
+const smallMuted = { color: "#777", fontSize: 12 };
+
+const pillBase = {
   display: "inline-block",
   fontSize: 11,
   padding: "3px 8px",
   borderRadius: 999,
-  border: "1px solid #e0e0e0",
-  background: "#fafafa",
-  color: "#333",
+  border: "1px solid rgba(0,0,0,0.10)",
   fontWeight: 900,
+};
+
+const pillDelivery = {
+  ...pillBase,
+  background: "rgba(0, 120, 255, 0.10)",
+};
+
+const pillCollection = {
+  ...pillBase,
+  background: "rgba(0, 180, 120, 0.12)",
+};
+
+const pillSwap = {
+  ...pillBase,
+  background: "rgba(255, 170, 0, 0.16)",
+};
+
+const pillDark = {
+  ...pillBase,
+  background: "rgba(0,0,0,0.06)",
+};
+
+const timePill = {
+  ...pillBase,
+  background: "rgba(0,0,0,0.05)",
+  color: "#333",
 };
 
 const input = {
@@ -724,6 +1477,7 @@ const input = {
   border: "1px solid #ccc",
   fontSize: 14,
   background: "#fff",
+  width: "100%",
 };
 
 const btnSecondary = {
@@ -731,6 +1485,46 @@ const btnSecondary = {
   borderRadius: 10,
   border: "1px solid #ddd",
   background: "#fff",
+  cursor: "pointer",
+  fontWeight: 900,
+};
+
+const btnPrimary = {
+  padding: "10px 12px",
+  borderRadius: 10,
+  border: "1px solid #111",
+  background: "#111",
+  color: "#fff",
+  cursor: "pointer",
+  fontWeight: 900,
+};
+
+const btnTiny = {
+  padding: "6px 10px",
+  borderRadius: 10,
+  border: "1px solid #ddd",
+  background: "#fff",
+  cursor: "pointer",
+  fontWeight: 900,
+  fontSize: 12,
+};
+
+const btnTinyPrimary = {
+  padding: "6px 10px",
+  borderRadius: 10,
+  border: "1px solid #111",
+  background: "#111",
+  color: "#fff",
+  cursor: "pointer",
+  fontWeight: 900,
+  fontSize: 12,
+};
+
+const btnLink = {
+  padding: 0,
+  border: "none",
+  background: "transparent",
+  color: "#0b57d0",
   cursor: "pointer",
   fontWeight: 900,
 };
@@ -744,3 +1538,65 @@ const alertError = {
   whiteSpace: "pre-wrap",
   marginBottom: 12,
 };
+
+function shadeForType(type) {
+  if (type === "delivery") {
+    return {
+      borderLeft: "6px solid rgba(0, 120, 255, 0.80)",
+      background: "rgba(0, 120, 255, 0.06)",
+    };
+  }
+  if (type === "collection") {
+    return {
+      borderLeft: "6px solid rgba(0, 180, 120, 0.85)",
+      background: "rgba(0, 180, 120, 0.07)",
+    };
+  }
+  if (type === "swap") {
+    return {
+      borderLeft: "6px solid rgba(255, 170, 0, 0.90)",
+      background: "rgba(255, 170, 0, 0.10)",
+    };
+  }
+  return {
+    borderLeft: "6px solid rgba(0,0,0,0.35)",
+    background: "#fff",
+  };
+}
+
+function shadeForBlock(blockType) {
+  if (blockType === "vehicle_checks") {
+    return {
+      borderLeft: "6px solid rgba(120, 0, 255, 0.75)",
+      background: "rgba(120, 0, 255, 0.06)",
+    };
+  }
+  if (blockType === "break") {
+    return {
+      borderLeft: "6px solid rgba(255, 0, 120, 0.75)",
+      background: "rgba(255, 0, 120, 0.06)",
+    };
+  }
+  if (blockType === "return_yard") {
+    return {
+      borderLeft: "6px solid rgba(0, 0, 0, 0.65)",
+      background: "rgba(0, 0, 0, 0.04)",
+    };
+  }
+  return {
+    borderLeft: "6px solid rgba(0,0,0,0.35)",
+    background: "rgba(0,0,0,0.03)",
+  };
+}
+
+function toolBlockStyle(blockType) {
+  const base = {
+    borderRadius: 12,
+    border: "1px solid #e8e8e8",
+    padding: "10px 12px",
+    minWidth: 170,
+    cursor: "grab",
+    background: "#fff",
+  };
+  return { ...base, ...shadeForBlock(blockType) };
+}
