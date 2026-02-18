@@ -3,7 +3,7 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 export const config = {
-  api: { bodyParser: false }, // required for Stripe signature verification
+  api: { bodyParser: false },
 };
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -58,12 +58,18 @@ async function readRawBody(req) {
   return Buffer.concat(chunks);
 }
 
-async function getSubscriberIdFromStripe(sub, stripeCustomerId, supabase) {
-  // Preferred: metadata.subscriber_id (we’ll set this later when creating checkout/subscription)
-  const meta = sub?.metadata?.subscriber_id;
-  if (meta) return meta;
+async function logEventBestEffort(supabase, subscriberId, event) {
+  try {
+    await supabase.from("subscription_events").insert({
+      subscriber_id: subscriberId || null,
+      stripe_event_id: event.id,
+      event_type: event.type,
+      payload: event,
+    });
+  } catch (_) {}
+}
 
-  // Fallback: lookup by stripe_customer_id on subscribers
+async function findSubscriberIdByCustomerId(supabase, stripeCustomerId) {
   if (!stripeCustomerId) return null;
 
   const { data, error } = await supabase
@@ -76,17 +82,23 @@ async function getSubscriberIdFromStripe(sub, stripeCustomerId, supabase) {
   return data?.id || null;
 }
 
-async function logEventBestEffort(supabase, subscriberId, event) {
-  try {
-    await supabase.from("subscription_events").insert({
-      subscriber_id: subscriberId || null,
-      stripe_event_id: event.id,
-      event_type: event.type,
-      payload: event,
-    });
-  } catch (_) {
-    // ignore
+async function findSubscriberIdFromStripe(supabase, sub, stripeCustomerId) {
+  // 1) subscription metadata
+  const metaSubId = sub?.metadata?.subscriber_id;
+  if (metaSubId) return metaSubId;
+
+  // 2) already-mapped customer_id in our DB
+  const mapped = await findSubscriberIdByCustomerId(supabase, stripeCustomerId);
+  if (mapped) return mapped;
+
+  // 3) customer metadata (what you set in Stripe)
+  if (stripeCustomerId) {
+    const customer = await stripe.customers.retrieve(stripeCustomerId);
+    const custMetaSubId = customer?.metadata?.subscriber_id || null;
+    if (custMetaSubId) return custMetaSubId;
   }
+
+  return null;
 }
 
 async function updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId, sub) {
@@ -109,10 +121,7 @@ async function updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId,
 
   const now = isoNow();
 
-  // Rules:
-  // - past_due => start grace (7 days) if not already set
-  // - active/trialing => clear grace + unlock
-  // - canceled/unpaid => lock immediately
+  // Grace / lock rules
   if (status === "past_due") {
     if (!current.grace_ends_at) patch.grace_ends_at = addDays(now, 7);
   } else if (status === "active" || status === "trialing") {
@@ -126,7 +135,7 @@ async function updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId,
   const { error } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
   if (error) throw error;
 
-  // If grace expired and still past_due, lock + mark status locked
+  // If grace expired and still past_due -> lock
   const { data: after, error: afterErr } = await supabase
     .from("subscribers")
     .select("subscription_status, grace_ends_at, locked_at")
@@ -173,14 +182,14 @@ export default async function handler(req, res) {
       const sub = event.data.object;
       const stripeCustomerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
 
-      const subscriberId = await getSubscriberIdFromStripe(sub, stripeCustomerId, supabase);
+      const subscriberId = await findSubscriberIdFromStripe(supabase, sub, stripeCustomerId);
       await logEventBestEffort(supabase, subscriberId, event);
 
       if (subscriberId) {
         await updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId, sub);
       }
 
-      return res.status(200).json({ ok: true });
+      return res.status(200).json({ ok: true, mapped: !!subscriberId });
     }
 
     if (type === "invoice.payment_failed" || type === "invoice.payment_succeeded") {
@@ -190,7 +199,7 @@ export default async function handler(req, res) {
 
       if (stripeSubId) {
         const sub = await stripe.subscriptions.retrieve(stripeSubId);
-        const subscriberId = await getSubscriberIdFromStripe(sub, stripeCustomerId, supabase);
+        const subscriberId = await findSubscriberIdFromStripe(supabase, sub, stripeCustomerId);
         await logEventBestEffort(supabase, subscriberId, event);
 
         if (subscriberId) {
