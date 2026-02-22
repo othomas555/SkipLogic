@@ -513,7 +513,12 @@ export default function BookJobPage() {
       if (error) {
         console.error("Error creating customer from modal:", error);
         setNewCustomerError(error.message || "Error creating customer");
-        pushToast({ type: "error", title: "Customer not saved", message: String(error.message || "Error creating customer"), durationMs: 9000 });
+        pushToast({
+          type: "error",
+          title: "Customer not saved",
+          message: String(error.message || "Error creating customer"),
+          durationMs: 9000,
+        });
         setCreatingCustomer(false);
         return;
       }
@@ -842,6 +847,22 @@ export default function BookJobPage() {
         weekend_override: !!weekendOverride,
       };
 
+      // STEP 4: Allocate job number per-subscriber (atomic, no collisions)
+      const { data: allocatedJobNumber, error: allocErr } = await supabase.rpc("alloc_job_number", {
+        p_subscriber_id: subscriberId,
+      });
+
+      if (allocErr || !allocatedJobNumber) {
+        console.error("alloc_job_number failed:", allocErr);
+        const msg = "Could not allocate a job number. Please try again.";
+        setErrorMsg(msg);
+        pushToast({ type: "error", title: "Booking failed", message: msg, durationMs: 10000 });
+        setSaving(false);
+        return;
+      }
+
+      insertPayload.job_number = allocatedJobNumber;
+
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([insertPayload])
@@ -927,6 +948,20 @@ export default function BookJobPage() {
         return;
       }
 
+      // STEP 4 (override path): Allocate job number per-subscriber
+      const { data: allocatedJobNumber, error: allocErr } = await supabase.rpc("alloc_job_number", {
+        p_subscriber_id: subscriberId,
+      });
+
+      if (allocErr || !allocatedJobNumber) {
+        console.error("alloc_job_number failed (override):", allocErr);
+        const msg = "Could not allocate a job number for override booking. Please try again.";
+        setErrorMsg(msg);
+        pushToast({ type: "error", title: "Override failed", message: msg, durationMs: 10000 });
+        setCreditOverrideWorking(false);
+        return;
+      }
+
       // Only include columns we KNOW exist (from your schema check):
       // - credit_override_token (uuid)
       // - credit_override_reason (text)
@@ -934,6 +969,7 @@ export default function BookJobPage() {
 
       const overridePayload = {
         ...pendingInsertPayload,
+        job_number: allocatedJobNumber,
         credit_override_token: overrideToken,
         credit_override_reason: overrideReason,
       };
