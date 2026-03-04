@@ -8,18 +8,11 @@ async function getAccessToken() {
   return data?.session?.access_token || null;
 }
 
-function moneyGBPFromNameOrFallback(name, fallback = "") {
-  // Optional helper: if your plan names include prices, you can parse them later.
-  // For now we just return fallback.
-  return fallback;
-}
-
 export default function SubscribePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [workingId, setWorkingId] = useState(null);
   const [error, setError] = useState("");
-
   const [plans, setPlans] = useState([]);
 
   useEffect(() => {
@@ -33,15 +26,16 @@ export default function SubscribePage() {
         return;
       }
 
-      // Load active plan variants
+      // Only show plans that are active AND have a Stripe price ID
       const { data: pv, error: pvErr } = await supabase
         .from("plan_variants")
-        .select("id, name, description, is_active")
+        .select("id, name, description, is_active, stripe_price_id")
         .eq("is_active", true)
+        .not("stripe_price_id", "is", null)
         .order("name", { ascending: true });
 
       if (pvErr) {
-        setError("Could not load plans. Please try again.");
+        setError(`Could not load plans: ${pvErr.message || String(pvErr)}`);
         setPlans([]);
         setLoading(false);
         return;
@@ -122,7 +116,7 @@ export default function SubscribePage() {
             </div>
           ) : plans.length === 0 ? (
             <div style={{ padding: 14, borderRadius: 12, border: "1px solid #e6e6e6", background: "#fff" }}>
-              No plans are available yet. (Set <code>plan_variants.is_active</code> = true.)
+              No plans are available yet. (Plans must be active and have a Stripe Price ID.)
             </div>
           ) : (
             plans.map((p) => (
@@ -138,10 +132,6 @@ export default function SubscribePage() {
               >
                 <div style={{ fontSize: 18, fontWeight: 950 }}>{p.name}</div>
                 {p.description ? <div style={{ marginTop: 8, color: "#555", lineHeight: 1.5 }}>{p.description}</div> : null}
-
-                <div style={{ marginTop: 10, fontSize: 13, color: "#666" }}>
-                  {moneyGBPFromNameOrFallback(p.name)}
-                </div>
 
                 <button
                   type="button"
