@@ -3,9 +3,7 @@ import Stripe from "stripe";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
 export const config = {
-  api: {
-    bodyParser: false, // IMPORTANT: we need the raw body for Stripe signature verification
-  },
+  api: { bodyParser: false }, // raw body for Stripe signature verification
 };
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
@@ -22,13 +20,19 @@ async function readRawBody(req) {
   return Buffer.concat(chunks);
 }
 
+function toIsoFromUnixSeconds(sec) {
+  if (!sec) return null;
+  const ms = Number(sec) * 1000;
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
 async function findSubscriberByStripeCustomerId(supabase, stripeCustomerId) {
   const { data, error } = await supabase
     .from("subscribers")
     .select("id")
     .eq("stripe_customer_id", stripeCustomerId)
     .maybeSingle();
-
   if (error) throw error;
   return data?.id || null;
 }
@@ -40,16 +44,8 @@ async function findPlanVariantByPriceId(supabase, priceId) {
     .select("id")
     .eq("stripe_price_id", priceId)
     .maybeSingle();
-
   if (error) throw error;
   return data?.id || null;
-}
-
-function toIsoFromUnixSeconds(sec) {
-  if (!sec) return null;
-  const ms = Number(sec) * 1000;
-  if (!Number.isFinite(ms)) return null;
-  return new Date(ms).toISOString();
 }
 
 export default async function handler(req, res) {
@@ -59,7 +55,6 @@ export default async function handler(req, res) {
     const webhookSecret = mustEnv("STRIPE_WEBHOOK_SECRET");
     const rawBody = await readRawBody(req);
     const sig = req.headers["stripe-signature"];
-
     if (!sig) return res.status(400).send("Missing stripe-signature header");
 
     let event;
@@ -71,14 +66,13 @@ export default async function handler(req, res) {
 
     const supabase = getSupabaseAdmin();
 
-    // Handle subscription updates from multiple event types
+    // ---- Subscription lifecycle events ----
     if (
       event.type === "checkout.session.completed" ||
       event.type === "customer.subscription.created" ||
       event.type === "customer.subscription.updated" ||
       event.type === "customer.subscription.deleted"
     ) {
-      // Extract a Stripe Subscription object where possible
       let subscription = null;
       let stripeCustomerId = null;
 
@@ -94,23 +88,17 @@ export default async function handler(req, res) {
         stripeCustomerId = subscription.customer || null;
       }
 
-      if (!stripeCustomerId) {
-        return res.status(200).json({ ok: true, ignored: true, reason: "No customer id" });
-      }
+      if (!stripeCustomerId) return res.status(200).json({ ok: true, ignored: true, reason: "No customer id" });
 
       const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
-      if (!subscriberId) {
-        return res.status(200).json({ ok: true, ignored: true, reason: "No matching subscriber for customer" });
-      }
+      if (!subscriberId) return res.status(200).json({ ok: true, ignored: true, reason: "No matching subscriber" });
 
-      // Determine plan_variant_id from the first subscription item price
+      // Map Stripe price -> plan_variants.id
       let planVariantId = null;
-      try {
-        const priceId = subscription?.items?.data?.[0]?.price?.id || null;
-        planVariantId = await findPlanVariantByPriceId(supabase, priceId);
-      } catch (_) {}
+      const priceId = subscription?.items?.data?.[0]?.price?.id || null;
+      planVariantId = await findPlanVariantByPriceId(supabase, priceId);
 
-      const status = subscription?.status || (event.type === "checkout.session.completed" ? "unknown" : "unknown");
+      const status = subscription?.status || "unknown";
       const trialEndsAt = toIsoFromUnixSeconds(subscription?.trial_end || null);
 
       const patch = {
@@ -118,7 +106,6 @@ export default async function handler(req, res) {
         trial_ends_at: trialEndsAt,
         plan_variant_id: planVariantId || null,
         locked_at: null, // if they re-subscribe, unlock
-        updated_at: new Date().toISOString(),
       };
 
       const { error: upErr } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
@@ -127,26 +114,26 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // Payment events to manage grace/locking (optional but helpful)
+    // ---- Payment events (grace period logic) ----
     if (event.type === "invoice.payment_failed") {
       const inv = event.data.object;
       const stripeCustomerId = inv.customer || null;
       if (!stripeCustomerId) return res.status(200).json({ ok: true });
 
-      const subscriberId = await findSubscriberByStripeCustomerId(getSupabaseAdmin(), stripeCustomerId);
+      const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
       if (!subscriberId) return res.status(200).json({ ok: true });
 
-      // Set 7-day grace from now (matches your rules)
       const grace = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-      await getSupabaseAdmin()
+      const { error: upErr } = await supabase
         .from("subscribers")
         .update({
           subscription_status: "past_due",
           grace_ends_at: grace,
-          updated_at: new Date().toISOString(),
         })
         .eq("id", subscriberId);
+
+      if (upErr) throw upErr;
 
       return res.status(200).json({ ok: true });
     }
@@ -156,18 +143,19 @@ export default async function handler(req, res) {
       const stripeCustomerId = inv.customer || null;
       if (!stripeCustomerId) return res.status(200).json({ ok: true });
 
-      const subscriberId = await findSubscriberByStripeCustomerId(getSupabaseAdmin(), stripeCustomerId);
+      const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
       if (!subscriberId) return res.status(200).json({ ok: true });
 
-      await getSupabaseAdmin()
+      const { error: upErr } = await supabase
         .from("subscribers")
         .update({
           subscription_status: "active",
           grace_ends_at: null,
           locked_at: null,
-          updated_at: new Date().toISOString(),
         })
         .eq("id", subscriberId);
+
+      if (upErr) throw upErr;
 
       return res.status(200).json({ ok: true });
     }
