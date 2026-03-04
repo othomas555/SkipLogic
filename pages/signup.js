@@ -26,7 +26,7 @@ function Toast({ open, kind = "info", title, message, actions = null, onClose })
         right: 16,
         top: 16,
         zIndex: 2000,
-        width: "min(620px, calc(100vw - 32px))",
+        width: "min(640px, calc(100vw - 32px))",
         background: bg,
         border: `1px solid ${border}`,
         borderRadius: 12,
@@ -66,45 +66,12 @@ async function getAccessToken() {
   return data?.session?.access_token || null;
 }
 
-function classifySupabaseAuthError(err) {
-  const msg = String(err?.message || "");
-  const status = err?.status;
-  const code = err?.code;
-
-  // Common cases (best-effort)
-  if (msg.toLowerCase().includes("user already registered") || msg.toLowerCase().includes("already registered")) {
-    return {
-      title: "Email already in use",
-      hint: "Try signing in instead. If you forgot the password, use ‘Forgot password’ on the sign-in page.",
-    };
-  }
-
-  if (msg.toLowerCase().includes("password") && msg.toLowerCase().includes("weak")) {
-    return { title: "Weak password", hint: "Use a longer password (12+ chars) with a mix of letters/numbers." };
-  }
-
-  if (msg.toLowerCase().includes("rate limit") || status === 429) {
-    return { title: "Too many attempts", hint: "Wait a minute and try again." };
-  }
-
-  if (msg.toLowerCase().includes("database error saving new user")) {
-    return {
-      title: "Sign up failed (database)",
-      hint:
-        "This is usually a failing database trigger on auth.users (e.g. profiles insert blocked by RLS / permissions). " +
-        "Open Supabase → Logs → Postgres and search for ‘handle_new_user_profile’ to see the exact SQL error.",
-    };
-  }
-
-  return { title: "Sign up failed", hint: "" };
-}
-
 export default function SignUpPage() {
   const router = useRouter();
 
   const [companyName, setCompanyName] = useState("");
   const [fullName, setFullName] = useState("");
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState(""); // optional for now
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -154,7 +121,7 @@ export default function SignUpPage() {
         showToast("error", "Could not resend email", error.message || "Resend failed.");
         return;
       }
-      showToast("success", "Confirmation email sent", "Check spam/junk. If you still don’t receive it, SMTP may not be configured yet.");
+      showToast("success", "Confirmation email sent", "Check spam/junk. Once confirmed, come back and sign in.");
     } catch {
       showToast("error", "Could not resend email", "Resend failed unexpectedly.");
     }
@@ -164,14 +131,13 @@ export default function SignUpPage() {
     e.preventDefault();
     closeToast();
 
-    const cn = (companyName || "").trim();
-    const fn = (fullName || "").trim();
-    const ph = (phone || "").trim();
-    const em = (email || "").trim();
+    const cn = String(companyName || "").trim();
+    const fn = String(fullName || "").trim();
+    const ph = String(phone || "").trim();
+    const em = String(email || "").trim();
 
     if (!cn) return showToast("error", "Missing company name", "Enter your company name.");
     if (!fn) return showToast("error", "Missing name", "Enter your full name.");
-    if (!ph) return showToast("error", "Missing phone", "Enter your phone number.");
     if (!em) return showToast("error", "Missing email", "Enter your email address.");
     if (!password || password.length < 8) return showToast("error", "Weak password", "Use at least 8 characters (12+ recommended).");
 
@@ -186,15 +152,60 @@ export default function SignUpPage() {
           data: {
             company_name: cn,
             full_name: fn,
-            phone: ph,
+            phone: ph, // stored in auth metadata only for now
           },
         },
       });
 
       if (signUpError) {
         console.error("SIGNUP ERROR:", signUpError);
-        const cls = classifySupabaseAuthError(signUpError);
 
+        // Better UX for user_already_exists
+        if (signUpError.code === "user_already_exists") {
+          showToast(
+            "error",
+            "Account already exists",
+            "That email address already has an account.\n\nUse Sign in. If you didn’t receive a confirmation email, click Resend.",
+            (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <a
+                  href={`/signin?email=${encodeURIComponent(em)}`}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #1677ff",
+                    background: "#1677ff",
+                    color: "#fff",
+                    textDecoration: "none",
+                    fontWeight: 950,
+                  }}
+                >
+                  Go to sign in
+                </a>
+                <button
+                  type="button"
+                  onClick={() => resendConfirmationEmail(em)}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #ddd",
+                    background: "#fff",
+                    color: "#111",
+                    cursor: "pointer",
+                    fontWeight: 950,
+                  }}
+                >
+                  Resend confirmation email
+                </button>
+              </div>
+            )
+          );
+
+          setWorking(false);
+          return;
+        }
+
+        // Copy debug button for everything else
         const debug = {
           ...debugContext,
           step: "supabase.auth.signUp",
@@ -206,52 +217,19 @@ export default function SignUpPage() {
           error: signUpError,
         };
 
-        const copyBtn = (
-          <button
-            type="button"
-            onClick={async () => {
-              await navigator.clipboard.writeText(safeJson(debug));
-              showToast("success", "Copied debug info", "Paste it back here so I can pinpoint the exact failure.");
-            }}
-            style={{
-              padding: "8px 10px",
-              borderRadius: 10,
-              border: "1px solid #1677ff",
-              background: "#1677ff",
-              color: "#fff",
-              cursor: "pointer",
-              fontWeight: 950,
-            }}
-          >
-            Copy debug
-          </button>
-        );
-
-        const msg =
-          `Supabase said:\n` +
-          `message: ${String(signUpError.message || "")}\n` +
-          `status: ${signUpError.status ?? "n/a"}\n` +
-          `code: ${signUpError.code ?? "n/a"}\n\n` +
-          (cls.hint ? `Hint: ${cls.hint}` : "");
-
-        showToast("error", cls.title, msg, copyBtn);
-        setWorking(false);
-        return;
-      }
-
-      // 2) Try sign-in immediately (works when confirmations are OFF)
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email: em,
-        password,
-      });
-
-      // If confirmations are ON, sign-in will fail until they confirm.
-      if (signInError || !signInData?.session?.user) {
-        const actions = (
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        showToast(
+          "error",
+          "Sign up failed",
+          `Supabase said:\nmessage: ${String(signUpError.message || "")}\nstatus: ${signUpError.status ?? "n/a"}\ncode: ${
+            signUpError.code ?? "n/a"
+          }\n`,
+          (
             <button
               type="button"
-              onClick={() => resendConfirmationEmail(em)}
+              onClick={async () => {
+                await navigator.clipboard.writeText(safeJson(debug));
+                showToast("success", "Copied debug info", "Paste it back here and I’ll fix it.");
+              }}
               style={{
                 padding: "8px 10px",
                 borderRadius: 10,
@@ -262,30 +240,61 @@ export default function SignUpPage() {
                 fontWeight: 950,
               }}
             >
-              Resend confirmation email
+              Copy debug
             </button>
-            <a
-              href="/signin"
-              style={{
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                background: "#fff",
-                color: "#111",
-                textDecoration: "none",
-                fontWeight: 950,
-              }}
-            >
-              Go to sign in
-            </a>
-          </div>
+          )
         );
 
+        setWorking(false);
+        return;
+      }
+
+      // At this point: account created.
+      // 2) Try sign-in immediately (works when confirmations are OFF)
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: em,
+        password,
+      });
+
+      // If confirmations are ON, sign-in will fail until they confirm.
+      if (signInError || !signInData?.session?.user) {
         showToast(
-          "info",
+          "success",
           "Account created",
-          "Your account was created successfully.\n\nNext step: confirm your email address (check spam/junk). Once confirmed, you can sign in.",
-          actions
+          "Your account has been created.\n\nNext step: confirm your email address (check spam/junk). Once confirmed, sign in to continue to plan selection.",
+          (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => resendConfirmationEmail(em)}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #1677ff",
+                  background: "#1677ff",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontWeight: 950,
+                }}
+              >
+                Resend confirmation email
+              </button>
+              <a
+                href={`/signin?email=${encodeURIComponent(em)}`}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #ddd",
+                  background: "#fff",
+                  color: "#111",
+                  textDecoration: "none",
+                  fontWeight: 950,
+                }}
+              >
+                Go to sign in
+              </a>
+            </div>
+          )
         );
 
         setWorking(false);
@@ -309,53 +318,46 @@ export default function SignUpPage() {
         body: JSON.stringify({
           company_name: cn,
           full_name: fn,
-          phone: ph,
+          phone: ph, // accepted but not stored in profiles
         }),
       });
 
       const json = await resp.json().catch(() => ({}));
 
       if (!resp.ok || !json.ok) {
-        const debug = {
-          ...debugContext,
-          step: "/api/auth/bootstrap",
-          status: resp.status,
-          body: json,
-        };
-
-        const copyBtn = (
-          <button
-            type="button"
-            onClick={async () => {
-              await navigator.clipboard.writeText(safeJson(debug));
-              showToast("success", "Copied debug info", "Paste it back here and I’ll fix it.");
-            }}
-            style={{
-              padding: "8px 10px",
-              borderRadius: 10,
-              border: "1px solid #1677ff",
-              background: "#1677ff",
-              color: "#fff",
-              cursor: "pointer",
-              fontWeight: 950,
-            }}
-          >
-            Copy debug
-          </button>
-        );
+        const debug = { ...debugContext, step: "/api/auth/bootstrap", status: resp.status, body: json };
 
         showToast(
           "error",
           "Setup failed",
-          `Bootstrap endpoint returned:\nstatus: ${resp.status}\nerror: ${json?.error || "n/a"}\ndetail: ${json?.detail || json?.details || "n/a"}`,
-          copyBtn
+          `Bootstrap endpoint returned:\nstatus: ${resp.status}\nerror: ${json?.error || "n/a"}\ndetail: ${json?.detail || "n/a"}`,
+          (
+            <button
+              type="button"
+              onClick={async () => {
+                await navigator.clipboard.writeText(safeJson(debug));
+                showToast("success", "Copied debug info", "Paste it back here and I’ll fix it.");
+              }}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #1677ff",
+                background: "#1677ff",
+                color: "#fff",
+                cursor: "pointer",
+                fontWeight: 950,
+              }}
+            >
+              Copy debug
+            </button>
+          )
         );
 
         setWorking(false);
         return;
       }
 
-      showToast("success", "Account created", "Next: choose your plan and add a card to start the 30-day trial…");
+      showToast("success", "Account ready", "Next: choose your plan and add a card to start the 30-day trial…");
       setTimeout(() => router.replace("/subscribe"), 450);
     } catch (err) {
       console.error("UNEXPECTED SIGNUP ERROR:", err);
@@ -372,7 +374,7 @@ export default function SignUpPage() {
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 28, fontWeight: 950, letterSpacing: -0.2 }}>SkipLogic</div>
           <div style={{ color: "#555", marginTop: 6 }}>
-            Create your account — <b>30-day free trial</b> (card setup comes next)
+            Create your account — <b>30-day free trial</b> (plan + card setup comes next)
           </div>
         </div>
 
@@ -409,7 +411,9 @@ export default function SignUpPage() {
                 </div>
 
                 <div>
-                  <label style={{ display: "block", marginBottom: 6, fontWeight: 950 }}>Phone</label>
+                  <label style={{ display: "block", marginBottom: 6, fontWeight: 950 }}>
+                    Phone <span style={{ fontWeight: 700, color: "#666" }}>(optional)</span>
+                  </label>
                   <input
                     type="tel"
                     value={phone}
