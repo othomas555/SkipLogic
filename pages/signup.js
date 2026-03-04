@@ -1,7 +1,15 @@
 // pages/signup.js
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
+
+function safeJson(x) {
+  try {
+    return JSON.stringify(x, null, 2);
+  } catch {
+    return String(x);
+  }
+}
 
 function Toast({ open, kind = "info", title, message, actions = null, onClose }) {
   if (!open) return null;
@@ -18,7 +26,7 @@ function Toast({ open, kind = "info", title, message, actions = null, onClose })
         right: 16,
         top: 16,
         zIndex: 2000,
-        width: "min(560px, calc(100vw - 32px))",
+        width: "min(620px, calc(100vw - 32px))",
         background: bg,
         border: `1px solid ${border}`,
         borderRadius: 12,
@@ -28,9 +36,8 @@ function Toast({ open, kind = "info", title, message, actions = null, onClose })
     >
       <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 900, color, marginBottom: 4 }}>{title}</div>
+          <div style={{ fontWeight: 950, color, marginBottom: 6 }}>{title}</div>
           <div style={{ fontSize: 13, color: "#333", whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{message}</div>
-
           {actions ? <div style={{ marginTop: 10 }}>{actions}</div> : null}
         </div>
 
@@ -43,7 +50,7 @@ function Toast({ open, kind = "info", title, message, actions = null, onClose })
             borderRadius: 10,
             padding: "6px 10px",
             cursor: "pointer",
-            fontWeight: 800,
+            fontWeight: 900,
           }}
         >
           OK
@@ -57,6 +64,39 @@ async function getAccessToken() {
   const { data, error } = await supabase.auth.getSession();
   if (error) return null;
   return data?.session?.access_token || null;
+}
+
+function classifySupabaseAuthError(err) {
+  const msg = String(err?.message || "");
+  const status = err?.status;
+  const code = err?.code;
+
+  // Common cases (best-effort)
+  if (msg.toLowerCase().includes("user already registered") || msg.toLowerCase().includes("already registered")) {
+    return {
+      title: "Email already in use",
+      hint: "Try signing in instead. If you forgot the password, use ‘Forgot password’ on the sign-in page.",
+    };
+  }
+
+  if (msg.toLowerCase().includes("password") && msg.toLowerCase().includes("weak")) {
+    return { title: "Weak password", hint: "Use a longer password (12+ chars) with a mix of letters/numbers." };
+  }
+
+  if (msg.toLowerCase().includes("rate limit") || status === 429) {
+    return { title: "Too many attempts", hint: "Wait a minute and try again." };
+  }
+
+  if (msg.toLowerCase().includes("database error saving new user")) {
+    return {
+      title: "Sign up failed (database)",
+      hint:
+        "This is usually a failing database trigger on auth.users (e.g. profiles insert blocked by RLS / permissions). " +
+        "Open Supabase → Logs → Postgres and search for ‘handle_new_user_profile’ to see the exact SQL error.",
+    };
+  }
+
+  return { title: "Sign up failed", hint: "" };
 }
 
 export default function SignUpPage() {
@@ -87,8 +127,16 @@ export default function SignUpPage() {
     setToast((t) => ({ ...t, open: false, actions: null }));
   }
 
+  const debugContext = useMemo(() => {
+    return {
+      where: "pages/signup.js",
+      at: new Date().toISOString(),
+      host: typeof window !== "undefined" ? window.location.host : null,
+    };
+  }, []);
+
   useEffect(() => {
-    // If already signed in, go straight to /app (useAuthProfile will bounce to /subscribe if not paid/trialing)
+    // If already signed in, go to app (auth guard will redirect to subscribe if needed)
     (async () => {
       const { data } = await supabase.auth.getSession();
       if (data?.session?.user) router.replace("/app");
@@ -101,22 +149,13 @@ export default function SignUpPage() {
     if (!em) return;
 
     try {
-      const { error } = await supabase.auth.resend({
-        type: "signup",
-        email: em,
-      });
-
+      const { error } = await supabase.auth.resend({ type: "signup", email: em });
       if (error) {
-        showToast("error", "Could not resend email", error.message || "Resend failed. Check Supabase email settings / SMTP.");
+        showToast("error", "Could not resend email", error.message || "Resend failed.");
         return;
       }
-
-      showToast(
-        "success",
-        "Confirmation email sent",
-        "If you don’t see it, check spam/junk. If you still don’t receive it, Supabase email delivery may not be configured yet (SMTP)."
-      );
-    } catch (e) {
+      showToast("success", "Confirmation email sent", "Check spam/junk. If you still don’t receive it, SMTP may not be configured yet.");
+    } catch {
       showToast("error", "Could not resend email", "Resend failed unexpectedly.");
     }
   }
@@ -134,13 +173,13 @@ export default function SignUpPage() {
     if (!fn) return showToast("error", "Missing name", "Enter your full name.");
     if (!ph) return showToast("error", "Missing phone", "Enter your phone number.");
     if (!em) return showToast("error", "Missing email", "Enter your email address.");
-    if (!password || password.length < 8) return showToast("error", "Weak password", "Use at least 8 characters.");
+    if (!password || password.length < 8) return showToast("error", "Weak password", "Use at least 8 characters (12+ recommended).");
 
     setWorking(true);
 
     try {
       // 1) Create auth user
-      const { error: signUpError } = await supabase.auth.signUp({
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: em,
         password,
         options: {
@@ -153,64 +192,107 @@ export default function SignUpPage() {
       });
 
       if (signUpError) {
-        showToast("error", "Sign up failed", signUpError.message || "Could not create account.");
+        console.error("SIGNUP ERROR:", signUpError);
+        const cls = classifySupabaseAuthError(signUpError);
+
+        const debug = {
+          ...debugContext,
+          step: "supabase.auth.signUp",
+          email: em,
+          signUpDataSummary: {
+            user: signUpData?.user ? { id: signUpData.user.id, email: signUpData.user.email } : null,
+            session: !!signUpData?.session,
+          },
+          error: signUpError,
+        };
+
+        const copyBtn = (
+          <button
+            type="button"
+            onClick={async () => {
+              await navigator.clipboard.writeText(safeJson(debug));
+              showToast("success", "Copied debug info", "Paste it back here so I can pinpoint the exact failure.");
+            }}
+            style={{
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: "1px solid #1677ff",
+              background: "#1677ff",
+              color: "#fff",
+              cursor: "pointer",
+              fontWeight: 950,
+            }}
+          >
+            Copy debug
+          </button>
+        );
+
+        const msg =
+          `Supabase said:\n` +
+          `message: ${String(signUpError.message || "")}\n` +
+          `status: ${signUpError.status ?? "n/a"}\n` +
+          `code: ${signUpError.code ?? "n/a"}\n\n` +
+          (cls.hint ? `Hint: ${cls.hint}` : "");
+
+        showToast("error", cls.title, msg, copyBtn);
         setWorking(false);
         return;
       }
 
-      // 2) Try sign in immediately (works when email confirmations are OFF)
+      // 2) Try sign-in immediately (works when confirmations are OFF)
       const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
         email: em,
         password,
       });
 
-      // If confirmations are ON, sign in will fail until they confirm — that's NOT an error state for the user.
+      // If confirmations are ON, sign-in will fail until they confirm.
       if (signInError || !signInData?.session?.user) {
+        const actions = (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => resendConfirmationEmail(em)}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #1677ff",
+                background: "#1677ff",
+                color: "#fff",
+                cursor: "pointer",
+                fontWeight: 950,
+              }}
+            >
+              Resend confirmation email
+            </button>
+            <a
+              href="/signin"
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: "#fff",
+                color: "#111",
+                textDecoration: "none",
+                fontWeight: 950,
+              }}
+            >
+              Go to sign in
+            </a>
+          </div>
+        );
+
         showToast(
           "info",
           "Account created",
-          "Your account was created successfully.\n\nNext step: confirm your email address (check spam/junk too). Once confirmed, you can sign in.",
-          (
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button
-                type="button"
-                onClick={() => resendConfirmationEmail(em)}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
-                  border: "1px solid #1677ff",
-                  background: "#1677ff",
-                  color: "#fff",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
-              >
-                Resend confirmation email
-              </button>
-
-              <a
-                href="/signin"
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
-                  border: "1px solid #ddd",
-                  background: "#fff",
-                  color: "#111",
-                  textDecoration: "none",
-                  fontWeight: 900,
-                }}
-              >
-                Go to sign in
-              </a>
-            </div>
-          )
+          "Your account was created successfully.\n\nNext step: confirm your email address (check spam/junk). Once confirmed, you can sign in.",
+          actions
         );
 
         setWorking(false);
         return;
       }
 
-      // 3) Bootstrap tenant (subscriber + profile)
+      // 3) Bootstrap tenant (subscriber + profile updates)
       const token = await getAccessToken();
       if (!token) {
         showToast("error", "Setup failed", "Signed in but no access token. Refresh and try again.");
@@ -234,8 +316,41 @@ export default function SignUpPage() {
       const json = await resp.json().catch(() => ({}));
 
       if (!resp.ok || !json.ok) {
-        const msg = json?.error || json?.details || "Tenant bootstrap failed.";
-        showToast("error", "Setup failed", String(msg));
+        const debug = {
+          ...debugContext,
+          step: "/api/auth/bootstrap",
+          status: resp.status,
+          body: json,
+        };
+
+        const copyBtn = (
+          <button
+            type="button"
+            onClick={async () => {
+              await navigator.clipboard.writeText(safeJson(debug));
+              showToast("success", "Copied debug info", "Paste it back here and I’ll fix it.");
+            }}
+            style={{
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: "1px solid #1677ff",
+              background: "#1677ff",
+              color: "#fff",
+              cursor: "pointer",
+              fontWeight: 950,
+            }}
+          >
+            Copy debug
+          </button>
+        );
+
+        showToast(
+          "error",
+          "Setup failed",
+          `Bootstrap endpoint returned:\nstatus: ${resp.status}\nerror: ${json?.error || "n/a"}\ndetail: ${json?.detail || json?.details || "n/a"}`,
+          copyBtn
+        );
+
         setWorking(false);
         return;
       }
@@ -243,21 +358,15 @@ export default function SignUpPage() {
       showToast("success", "Account created", "Next: choose your plan and add a card to start the 30-day trial…");
       setTimeout(() => router.replace("/subscribe"), 450);
     } catch (err) {
-      showToast("error", "Sign up failed", "Unexpected error creating your account.");
+      console.error("UNEXPECTED SIGNUP ERROR:", err);
+      showToast("error", "Sign up failed", "Unexpected error creating your account. Check console for details.");
       setWorking(false);
     }
   }
 
   return (
     <main style={{ minHeight: "100vh", padding: 24, fontFamily: "system-ui, sans-serif", background: "#fafafa" }}>
-      <Toast
-        open={toast.open}
-        kind={toast.kind}
-        title={toast.title}
-        message={toast.message}
-        actions={toast.actions}
-        onClose={closeToast}
-      />
+      <Toast open={toast.open} kind={toast.kind} title={toast.title} message={toast.message} actions={toast.actions} onClose={closeToast} />
 
       <div style={{ maxWidth: 560, margin: "0 auto", paddingTop: 30 }}>
         <div style={{ marginBottom: 14 }}>
@@ -279,59 +388,54 @@ export default function SignUpPage() {
           <form onSubmit={handleSignUp}>
             <div style={{ display: "grid", gap: 12 }}>
               <div>
-                <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Company name</label>
+                <label style={{ display: "block", marginBottom: 6, fontWeight: 950 }}>Company name</label>
                 <input
                   type="text"
                   value={companyName}
                   onChange={(e) => setCompanyName(e.target.value)}
-                  placeholder="e.g. Cox Skips & Waste Management Ltd"
                   style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
                 />
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                 <div>
-                  <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Full name</label>
+                  <label style={{ display: "block", marginBottom: 6, fontWeight: 950 }}>Full name</label>
                   <input
                     type="text"
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
-                    placeholder="Your name"
                     style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
                   />
                 </div>
 
                 <div>
-                  <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Phone</label>
+                  <label style={{ display: "block", marginBottom: 6, fontWeight: 950 }}>Phone</label>
                   <input
                     type="tel"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    placeholder="07…"
                     style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
                   />
                 </div>
               </div>
 
               <div>
-                <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Email</label>
+                <label style={{ display: "block", marginBottom: 6, fontWeight: 950 }}>Email</label>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@company.com"
                   autoComplete="email"
                   style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
                 />
               </div>
 
               <div>
-                <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>Password</label>
+                <label style={{ display: "block", marginBottom: 6, fontWeight: 950 }}>Password</label>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="At least 8 characters"
                   autoComplete="new-password"
                   style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
                 />
@@ -357,7 +461,7 @@ export default function SignUpPage() {
 
               <div style={{ fontSize: 13, color: "#444" }}>
                 Already have an account?{" "}
-                <a href="/signin" style={{ fontWeight: 900 }}>
+                <a href="/signin" style={{ fontWeight: 950 }}>
                   Sign in
                 </a>
               </div>
