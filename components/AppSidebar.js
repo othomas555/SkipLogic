@@ -61,10 +61,6 @@ function Icon({ name }) {
       return (
         <svg {...common}>
           <path {...stroke} d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" />
-          <path
-            {...stroke}
-            d="M19.4 15a7.9 7.9 0 0 0 .1-1 7.9 7.9 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a8 8 0 0 0-1.7-1l-.4-2.6h-4l-.4 2.6a8 8 0 0 0-1.7 1l-2.4-1-2 3.5 2 1.5a7.9 7.9 0 0 0-.1 1 7.9 7.9 0 0 0 .1 1l-2 1.5 2 3.5 2.4-1a8 8 0 0 0 1.7 1l.4 2.6h4l.4-2.6a8 8 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5z"
-          />
         </svg>
       );
     case "import":
@@ -72,14 +68,12 @@ function Icon({ name }) {
         <svg {...common}>
           <path {...stroke} d="M12 3v12" />
           <path {...stroke} d="M7 8l5-5 5 5" />
-          <path {...stroke} d="M5 21h14a2 2 0 0 0 2-2v-4H3v4a2 2 0 0 0 2 2z" />
         </svg>
       );
     case "admin":
       return (
         <svg {...common}>
           <path {...stroke} d="M12 2l7 4v6c0 5-3 9-7 10-4-1-7-5-7-10V6l7-4z" />
-          <path {...stroke} d="M9 12l2 2 4-4" />
         </svg>
       );
     case "finance":
@@ -90,34 +84,39 @@ function Icon({ name }) {
         </svg>
       );
     default:
-      return (
-        <svg {...common}>
-          <path {...stroke} d="M12 2l10 10-10 10L2 12 12 2z" />
-        </svg>
-      );
+      return null;
   }
 }
 
 function NavGroup({ title, items, router }) {
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div style={{ marginBottom: 16 }}>
       <div style={styles.groupTitle}>{title}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {items.map((it) => {
-          const active =
-            router.pathname === it.href ||
-            (it.activeStartsWith ? router.pathname.startsWith(it.activeStartsWith) : false);
-          return (
-            <Link key={it.href} href={it.href} style={{ ...styles.navItem, ...(active ? styles.navItemActive : null) }}>
-              <span style={styles.iconWrap}>
-                <Icon name={it.icon} />
-              </span>
-              <span style={{ fontWeight: 700, fontSize: 13 }}>{it.label}</span>
-              {it.badge ? <span style={styles.badge}>{it.badge}</span> : null}
-            </Link>
-          );
-        })}
-      </div>
+
+      {items.map((it) => {
+        const active =
+          router.pathname === it.href ||
+          (it.activeStartsWith && router.pathname.startsWith(it.activeStartsWith));
+
+        return (
+          <Link
+            key={it.href}
+            href={it.href}
+            style={{
+              ...styles.navItem,
+              ...(active ? styles.navItemActive : null),
+            }}
+          >
+            <span style={styles.iconWrap}>
+              <Icon name={it.icon} />
+            </span>
+
+            <span style={styles.label}>{it.label}</span>
+
+            {it.badge && <span style={styles.badge}>{it.badge}</span>}
+          </Link>
+        );
+      })}
     </div>
   );
 }
@@ -181,8 +180,8 @@ export default function AppSidebar({ profile }) {
       <div style={styles.brand}>
         <div style={styles.brandMark}>SL</div>
         <div>
-          <div style={{ fontWeight: 900, lineHeight: 1.1 }}>SkipLogic</div>
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>Ops console</div>
+          <div style={styles.brandName}>SkipLogic</div>
+          <div style={styles.brandSub}>Ops console</div>
         </div>
       </div>
 
@@ -190,13 +189,12 @@ export default function AppSidebar({ profile }) {
         {groups.map((g) => (
           <NavGroup key={g.title} title={g.title} items={g.items} router={router} />
         ))}
-        {isPlatformAdmin ? <NavGroup title={adminGroup.title} items={adminGroup.items} router={router} /> : null}
+
+        {isPlatformAdmin && <NavGroup title={adminGroup.title} items={adminGroup.items} router={router} />}
       </div>
 
       <div style={styles.footer}>
-        <div style={{ fontSize: 12, color: "#6b7280" }}>
-          Signed in as <b style={{ color: "#111827" }}>{profile?.email || "—"}</b>
-        </div>
+        Signed in as <b>{profile?.email || "—"}</b>
       </div>
     </aside>
   );
@@ -209,44 +207,62 @@ const styles = {
     left: 0,
     bottom: 0,
     width: 270,
-    background: "#ffffff",
-    borderRight: "1px solid #e5e7eb",
+    background: "#0c1222",
+    borderRight: "1px solid rgba(255,255,255,0.08)",
     padding: 14,
     display: "flex",
     flexDirection: "column",
-    zIndex: 20,
   },
+
   brand: {
     display: "flex",
     alignItems: "center",
     gap: 10,
     padding: "10px 10px",
     borderRadius: 12,
-    background: "#f9fafb",
-    border: "1px solid #eef2f7",
+    background: "rgba(255,255,255,0.03)",
+    border: "1px solid rgba(255,255,255,0.06)",
     marginBottom: 12,
   },
+
   brandMark: {
     width: 36,
     height: 36,
     borderRadius: 12,
-    background: "#111827",
-    color: "#fff",
+    background: "linear-gradient(135deg,#37f59b,#3ab5ff)",
+    color: "#071013",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     fontWeight: 900,
     fontSize: 13,
   },
-  nav: { flex: 1, overflowY: "auto", paddingRight: 4 },
+
+  brandName: {
+    fontWeight: 900,
+    color: "#eaf0ff",
+  },
+
+  brandSub: {
+    fontSize: 12,
+    color: "rgba(234,240,255,0.65)",
+  },
+
+  nav: {
+    flex: 1,
+    overflowY: "auto",
+    paddingRight: 4,
+  },
+
   groupTitle: {
     fontSize: 11,
     fontWeight: 900,
-    color: "#6b7280",
+    color: "rgba(234,240,255,0.55)",
     textTransform: "uppercase",
     letterSpacing: 0.7,
     padding: "6px 8px",
   },
+
   navItem: {
     display: "flex",
     alignItems: "center",
@@ -254,32 +270,45 @@ const styles = {
     padding: "10px 10px",
     borderRadius: 12,
     textDecoration: "none",
-    color: "#111827",
+    color: "rgba(234,240,255,0.85)",
     border: "1px solid transparent",
-    background: "transparent",
   },
-  navItemActive: { background: "#eef2ff", border: "1px solid #c7d2fe" },
+
+  navItemActive: {
+    background: "rgba(58,181,255,0.15)",
+    border: "1px solid rgba(58,181,255,0.30)",
+  },
+
   iconWrap: {
     width: 30,
     height: 30,
     borderRadius: 10,
-    background: "#f3f4f6",
+    background: "rgba(255,255,255,0.05)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    color: "#111827",
-    flexShrink: 0,
   },
+
+  label: {
+    fontWeight: 700,
+    fontSize: 13,
+  },
+
   badge: {
     marginLeft: "auto",
     fontSize: 11,
     fontWeight: 900,
     padding: "3px 8px",
     borderRadius: 999,
-    background: "#ecfeff",
-    border: "1px solid #a5f3fc",
-    color: "#155e75",
-    whiteSpace: "nowrap",
+    background: "rgba(55,245,155,0.20)",
+    border: "1px solid rgba(55,245,155,0.30)",
+    color: "#37f59b",
   },
-  footer: { paddingTop: 10, borderTop: "1px solid #e5e7eb" },
+
+  footer: {
+    paddingTop: 10,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+    fontSize: 12,
+    color: "rgba(234,240,255,0.65)",
+  },
 };
