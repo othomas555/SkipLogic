@@ -1,7 +1,5 @@
 /* styles/theme.css
    SkipLogic Hybrid Theme v1
-   - Light for marketing/auth
-   - Dark for app
 */
 
 :root {
@@ -9,28 +7,28 @@
     "Segoe UI Emoji";
 
   /* Brand */
-  --brand-ink: #0b1220;       /* yard slate */
-  --brand-mint: #37f59b;      /* hi-vis mint */
-  --brand-sky: #3ab5ff;       /* signal blue */
-  --brand-amber: #ffb24a;     /* warning accent */
+  --brand-ink: #0b1220;
+  --brand-mint: #37f59b;
+  --brand-sky: #3ab5ff;
+  --brand-amber: #ffb24a;
 
-  /* Radii (slightly squarer than trendy SaaS) */
+  /* Radii */
   --r-sm: 10px;
   --r-md: 14px;
   --r-lg: 18px;
 
-  /* Shadows (subtle, not “glow”) */
+  /* Shadows */
   --shadow-1: 0 10px 30px rgba(11, 18, 32, 0.12);
   --shadow-2: 0 18px 60px rgba(11, 18, 32, 0.18);
 
-  /* Light surface */
+  /* Light */
   --l-bg: #f6f8fc;
   --l-surface: #ffffff;
   --l-ink: #0b1220;
   --l-muted: rgba(11, 18, 32, 0.68);
   --l-border: rgba(11, 18, 32, 0.12);
 
-  /* Dark surface */
+  /* Dark */
   --d-bg: #070b14;
   --d-surface: #0c1222;
   --d-panel: #101a2e;
@@ -42,13 +40,14 @@
   --focus: 0 0 0 4px rgba(58, 181, 255, 0.18);
 }
 
-html, body {
+html,
+body {
   padding: 0;
   margin: 0;
   font-family: var(--font-sans);
 }
 
-/* Utilities */
+/* Reusable UI bits */
 .sl-chip {
   display: inline-flex;
   align-items: center;
@@ -83,8 +82,14 @@ html, body {
   background: linear-gradient(135deg, var(--brand-mint), rgba(58, 181, 255, 0.9));
 }
 
-.sl-btnPrimary:hover { filter: brightness(1.02); }
-.sl-btnPrimary:disabled { opacity: 0.55; cursor: not-allowed; }
+.sl-btnPrimary:hover {
+  filter: brightness(1.02);
+}
+
+.sl-btnPrimary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 .sl-input {
   width: 100%;
@@ -108,12 +113,17 @@ html, body {
   text-underline-offset: 3px;
 }
 
-/* Dark mode variants (for /app) */
+/* Dark variants (for /app) */
 .sl-dark .sl-input {
   border: 1px solid var(--d-border);
   background: rgba(255, 255, 255, 0.06);
   color: var(--d-ink);
 }
 
-.sl-dark .sl-input::placeholder { color: rgba(234, 240, 255, 0.55); }
-.sl-dark .sl-link { color: rgba(234, 240, 255, 0.9); }
+.sl-dark .sl-input::placeholder {
+  color: rgba(234, 240, 255, 0.55);
+}
+
+.sl-dark .sl-link {
+  color: rgba(234, 240, 255, 0.9);
+}
