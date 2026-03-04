@@ -27,9 +27,10 @@ export default function SubscribePage() {
       }
 
       // Only show plans that are active AND have a Stripe price ID
+      // IMPORTANT: your plan_variants table does NOT have a "description" column
       const { data: pv, error: pvErr } = await supabase
         .from("plan_variants")
-        .select("id, name, description, is_active, stripe_price_id")
+        .select("id, name, is_active, stripe_price_id")
         .eq("is_active", true)
         .not("stripe_price_id", "is", null)
         .order("name", { ascending: true });
@@ -131,7 +132,6 @@ export default function SubscribePage() {
                 }}
               >
                 <div style={{ fontSize: 18, fontWeight: 950 }}>{p.name}</div>
-                {p.description ? <div style={{ marginTop: 8, color: "#555", lineHeight: 1.5 }}>{p.description}</div> : null}
 
                 <button
                   type="button"
