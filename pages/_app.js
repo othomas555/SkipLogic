@@ -1,4 +1,7 @@
 // pages/_app.js
+import "../styles/globals.css";
+import "../styles/theme.css";
+
 import { useRouter } from "next/router";
 import { useAuthProfile } from "../lib/useAuthProfile";
 import AppShell from "../components/AppShell";
@@ -7,6 +10,7 @@ export default function MyApp({ Component, pageProps }) {
   const router = useRouter();
   const isAppRoute = router.pathname.startsWith("/app");
 
+  // Non-app routes (marketing/auth) render without AppShell
   if (!isAppRoute) {
     return <Component {...pageProps} />;
   }
@@ -16,7 +20,21 @@ export default function MyApp({ Component, pageProps }) {
   if (checking) {
     return (
       <main style={center}>
-        <p>Loading…</p>
+        <div style={authPanel}>
+          <div style={brandRow}>
+            <div style={brandMark} aria-hidden="true" />
+            <div>
+              <div style={brandName}>SkipLogic</div>
+              <div style={brandTag}>Preparing your workspace…</div>
+            </div>
+          </div>
+
+          <div style={loadingBarWrap} aria-hidden="true">
+            <div style={loadingBar} />
+          </div>
+
+          <p style={muted}>Loading…</p>
+        </div>
       </main>
     );
   }
@@ -24,66 +42,171 @@ export default function MyApp({ Component, pageProps }) {
   if (!user) {
     return (
       <main style={center}>
-        <div style={card}>
-          <h1 style={{ margin: 0 }}>SkipLogic</h1>
-          <p style={{ marginTop: 8, color: "#6b7280" }}>You must be signed in.</p>
-          <button style={btn} onClick={() => router.push("/login")}>
+        <div style={authPanel}>
+          <div style={brandRow}>
+            <div style={brandMark} aria-hidden="true" />
+            <div>
+              <div style={brandName}>SkipLogic</div>
+              <div style={brandTag}>You’re not signed in.</div>
+            </div>
+          </div>
+
+          <p style={muted}>
+            Please sign in to access your workspace.
+          </p>
+
+          <button style={btnPrimary} onClick={() => router.push("/login")}>
             Go to login
           </button>
+
+          <div style={tinyRow}>
+            <span style={tinyMuted}>New here?</span>
+            <button style={linkBtn} onClick={() => router.push("/signup")}>
+              Create an account
+            </button>
+          </div>
         </div>
       </main>
     );
   }
 
+  // App routes render inside dark wrapper (hybrid theme)
   return (
-    <AppShell profile={profile} title={pageProps?.title} subtitle={pageProps?.subtitle} right={pageProps?.right}>
-      {errorMsg ? (
-        <div style={errorBox}>
-          <b>Auth warning:</b> {errorMsg}
-        </div>
-      ) : null}
-      <Component {...pageProps} />
-    </AppShell>
+    <div className="sl-dark">
+      <AppShell
+        profile={profile}
+        title={pageProps?.title}
+        subtitle={pageProps?.subtitle}
+        right={pageProps?.right}
+      >
+        {errorMsg ? (
+          <div style={errorBox}>
+            <b>Auth warning:</b> {errorMsg}
+          </div>
+        ) : null}
+        <Component {...pageProps} />
+      </AppShell>
+    </div>
   );
 }
+
+/* ====== Inline styles (kept simple; uses theme variables) ====== */
 
 const center = {
   minHeight: "100vh",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#f7f7f7",
+  fontFamily: "var(--font-sans)",
+  background: "var(--l-bg)",
   padding: 20,
 };
 
-const card = {
+const authPanel = {
   width: "min(520px, 100%)",
-  background: "#fff",
-  border: "1px solid #e5e7eb",
-  borderRadius: 16,
-  padding: 16,
-  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+  background: "rgba(255,255,255,0.92)",
+  border: "1px solid var(--l-border)",
+  borderRadius: "var(--r-lg)",
+  padding: 18,
+  boxShadow: "var(--shadow-2)",
 };
 
-const btn = {
-  marginTop: 12,
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid #111827",
-  background: "#111827",
-  color: "#fff",
+const brandRow = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  marginBottom: 10,
+};
+
+const brandMark = {
+  width: 36,
+  height: 36,
+  borderRadius: "var(--r-md)",
+  background:
+    "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
+  boxShadow: "0 10px 30px rgba(11,18,32,0.10)",
+};
+
+const brandName = {
+  fontWeight: 900,
+  letterSpacing: "-0.02em",
+  color: "var(--l-ink)",
+  lineHeight: 1.1,
+};
+
+const brandTag = {
+  fontSize: 13,
+  color: "var(--l-muted)",
+  marginTop: 2,
+};
+
+const muted = {
+  marginTop: 10,
+  marginBottom: 0,
+  color: "var(--l-muted)",
+  lineHeight: 1.5,
+};
+
+const btnPrimary = {
+  marginTop: 14,
+  padding: "12px 14px",
+  borderRadius: "var(--r-md)",
+  border: 0,
   cursor: "pointer",
   fontSize: 13,
+  fontWeight: 900,
+  letterSpacing: "-0.01em",
+  color: "#071013",
+  background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
+};
+
+const tinyRow = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  marginTop: 12,
+};
+
+const tinyMuted = {
+  fontSize: 13,
+  color: "var(--l-muted)",
+};
+
+const linkBtn = {
+  border: 0,
+  background: "transparent",
+  cursor: "pointer",
+  padding: 0,
+  fontSize: 13,
   fontWeight: 800,
+  color: "rgba(11,18,32,0.92)",
+  textDecoration: "underline",
+  textUnderlineOffset: 3,
 };
 
 const errorBox = {
   marginBottom: 12,
   padding: 12,
   borderRadius: 12,
-  background: "#fff1f2",
-  border: "1px solid #fecdd3",
-  color: "#9f1239",
+  background: "rgba(255, 96, 96, 0.10)",
+  border: "1px solid rgba(255, 96, 96, 0.30)",
+  color: "rgba(180, 20, 40, 0.95)",
   fontSize: 13,
+};
+
+const loadingBarWrap = {
+  height: 10,
+  borderRadius: 999,
+  overflow: "hidden",
+  border: "1px solid rgba(11,18,32,0.10)",
+  background: "rgba(11,18,32,0.04)",
+  marginTop: 12,
+};
+
+const loadingBar = {
+  height: "100%",
+  width: "55%",
+  borderRadius: 999,
+  background:
+    "linear-gradient(90deg, rgba(55,245,155,0.85), rgba(58,181,255,0.85))",
 };
