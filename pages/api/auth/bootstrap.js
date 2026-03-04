@@ -13,6 +13,16 @@ function clean(s, max = 200) {
   return x.length > max ? x.slice(0, max) : x;
 }
 
+function slugify(input) {
+  return String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
@@ -40,26 +50,43 @@ export default async function handler(req, res) {
     if (!fullName) return res.status(400).json({ ok: false, error: "Missing full_name" });
     if (!phone) return res.status(400).json({ ok: false, error: "Missing phone" });
 
-    // Do we already have a profile with subscriber_id?
+    // If profile already bootstrapped, stop.
     const { data: existingProfile, error: profReadErr } = await supabase
       .from("profiles")
       .select("id, subscriber_id")
-      .eq("id", userId) // IMPORTANT: your schema uses id = auth user id
+      .eq("id", userId)
       .maybeSingle();
 
     if (profReadErr) throw profReadErr;
 
-    // If already bootstrapped, nothing to do
     if (existingProfile?.subscriber_id) {
       return res.status(200).json({ ok: true, subscriber_id: existingProfile.subscriber_id, already: true });
     }
 
     // Create subscriber (tenant)
+    // IMPORTANT: your schema uses subscribers.name (NOT NULL)
+    const baseSlug = slugify(companyName) || "subscriber";
+    let slug = baseSlug;
+
+    // Ensure unique slug (best-effort)
+    for (let i = 0; i < 25; i++) {
+      // Check if slug exists
+      const { data: existing, error: sErr } = await supabase
+        .from("subscribers")
+        .select("id")
+        .eq("slug", slug)
+        .maybeSingle();
+      if (sErr) throw sErr;
+
+      if (!existing) break;
+      slug = `${baseSlug}-${String(i + 2).padStart(2, "0")}`;
+    }
+
     const { data: subRow, error: subErr } = await supabase
       .from("subscribers")
       .insert({
-        company_name: companyName,
-        // add other columns you may have later (created_at default etc.)
+        name: companyName,
+        slug,
       })
       .select("id")
       .single();
@@ -68,19 +95,18 @@ export default async function handler(req, res) {
 
     const subscriberId = subRow.id;
 
-    // Upsert profile (id = userId, not user_id)
+    // Upsert profile (id = auth user id)
     const profilePayload = {
       id: userId,
       subscriber_id: subscriberId,
       full_name: fullName,
-      phone: phone,
+      phone,
       email: user.email || null,
-      role: "owner", // adjust if your schema uses a different role value
+      role: "owner",
+      is_active: true,
     };
 
-    // If your profiles table doesn't have some of these columns, remove them.
     const { error: upErr } = await supabase.from("profiles").upsert(profilePayload, { onConflict: "id" });
-
     if (upErr) throw upErr;
 
     return res.status(200).json({ ok: true, subscriber_id: subscriberId });
