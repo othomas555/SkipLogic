@@ -1,14 +1,14 @@
 // pages/api/stripe/webhook.js
 import Stripe from "stripe";
-import { createClient } from "@supabase/supabase-js";
+import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
 export const config = {
-  api: { bodyParser: false },
+  api: {
+    bodyParser: false, // IMPORTANT: we need the raw body for Stripe signature verification
+  },
 };
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
 function mustEnv(name) {
   const v = process.env[name];
@@ -16,62 +16,13 @@ function mustEnv(name) {
   return v;
 }
 
-function isoNow() {
-  return new Date().toISOString();
-}
-
-function addDays(iso, days) {
-  const d = new Date(iso);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString();
-}
-
-function toIsoOrNull(unixSeconds) {
-  if (!unixSeconds) return null;
-  return new Date(unixSeconds * 1000).toISOString();
-}
-
-function isTrialing(sub) {
-  return sub?.status === "trialing" || !!sub?.trial_end;
-}
-
-function normalizeStatus(sub) {
-  if (isTrialing(sub)) return "trialing";
-  const s = sub?.status || "unknown";
-  if (s === "active") return "active";
-  if (s === "past_due") return "past_due";
-  if (s === "canceled") return "canceled";
-  if (s === "unpaid") return "unpaid";
-  if (s === "incomplete" || s === "incomplete_expired") return "incomplete";
-  return s;
-}
-
-function supabaseAdmin() {
-  const url = mustEnv("SUPABASE_URL");
-  const key = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
-  return createClient(url, key, { auth: { persistSession: false } });
-}
-
 async function readRawBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  for await (const chunk of req) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 }
 
-async function logEventBestEffort(supabase, subscriberId, event) {
-  try {
-    await supabase.from("subscription_events").insert({
-      subscriber_id: subscriberId || null,
-      stripe_event_id: event.id,
-      event_type: event.type,
-      payload: event,
-    });
-  } catch (_) {}
-}
-
-async function findSubscriberIdByCustomerId(supabase, stripeCustomerId) {
-  if (!stripeCustomerId) return null;
-
+async function findSubscriberByStripeCustomerId(supabase, stripeCustomerId) {
   const { data, error } = await supabase
     .from("subscribers")
     .select("id")
@@ -82,148 +33,149 @@ async function findSubscriberIdByCustomerId(supabase, stripeCustomerId) {
   return data?.id || null;
 }
 
-async function findSubscriberIdFromStripe(supabase, sub, stripeCustomerId) {
-  // 1) subscription metadata
-  const metaSubId = sub?.metadata?.subscriber_id;
-  if (metaSubId) return metaSubId;
+async function findPlanVariantByPriceId(supabase, priceId) {
+  if (!priceId) return null;
+  const { data, error } = await supabase
+    .from("plan_variants")
+    .select("id")
+    .eq("stripe_price_id", priceId)
+    .maybeSingle();
 
-  // 2) already-mapped customer_id in our DB
-  const mapped = await findSubscriberIdByCustomerId(supabase, stripeCustomerId);
-  if (mapped) return mapped;
-
-  // 3) customer metadata
-  if (stripeCustomerId) {
-    const customer = await stripe.customers.retrieve(stripeCustomerId);
-    const custMetaSubId = customer?.metadata?.subscriber_id || null;
-    if (custMetaSubId) return custMetaSubId;
-  }
-
-  return null;
+  if (error) throw error;
+  return data?.id || null;
 }
 
-async function updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId, sub) {
-  const status = normalizeStatus(sub);
-  const trialEndsAt = toIsoOrNull(sub.trial_end);
-
-  const { data: current, error: curErr } = await supabase
-    .from("subscribers")
-    .select("grace_ends_at, locked_at")
-    .eq("id", subscriberId)
-    .single();
-  if (curErr) throw curErr;
-
-  const patch = {
-    stripe_customer_id: stripeCustomerId || null,
-    stripe_subscription_id: sub.id,
-    subscription_status: status,
-    trial_ends_at: trialEndsAt,
-  };
-
-  // Sync selected plan variant if Stripe subscription carries it
-  // (we set this in create-checkout-session)
-  const pv = sub?.metadata?.plan_variant_id || null;
-  if (pv) patch.plan_variant_id = pv;
-
-  const now = isoNow();
-
-  // Grace / lock rules
-  if (status === "past_due") {
-    if (!current.grace_ends_at) patch.grace_ends_at = addDays(now, 7);
-  } else if (status === "active" || status === "trialing") {
-    patch.grace_ends_at = null;
-    patch.locked_at = null;
-  } else if (status === "canceled" || status === "unpaid") {
-    patch.grace_ends_at = null;
-    patch.locked_at = now;
-  }
-
-  const { error } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
-  if (error) throw error;
-
-  // If grace expired and still past_due -> lock
-  const { data: after, error: afterErr } = await supabase
-    .from("subscribers")
-    .select("subscription_status, grace_ends_at, locked_at")
-    .eq("id", subscriberId)
-    .single();
-  if (afterErr) throw afterErr;
-
-  if (!after.locked_at && after.subscription_status === "past_due" && after.grace_ends_at) {
-    const graceMs = new Date(after.grace_ends_at).getTime();
-    if (Number.isFinite(graceMs) && Date.now() > graceMs) {
-      const { error: lockErr } = await supabase
-        .from("subscribers")
-        .update({ locked_at: isoNow(), subscription_status: "locked" })
-        .eq("id", subscriberId);
-      if (lockErr) throw lockErr;
-    }
-  }
+function toIsoFromUnixSeconds(sec) {
+  if (!sec) return null;
+  const ms = Number(sec) * 1000;
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).send("Method not allowed");
 
-  let event;
   try {
+    const webhookSecret = mustEnv("STRIPE_WEBHOOK_SECRET");
     const rawBody = await readRawBody(req);
     const sig = req.headers["stripe-signature"];
-    event = stripe.webhooks.constructEvent(rawBody, sig, mustEnv("STRIPE_WEBHOOK_SECRET"));
-  } catch (err) {
-    return res.status(400).json({
-      error: "Stripe signature verification failed",
-      detail: String(err?.message || err),
-    });
-  }
 
-  const supabase = supabaseAdmin();
+    if (!sig) return res.status(400).send("Missing stripe-signature header");
 
-  try {
-    const type = event.type;
-
-    if (type.startsWith("customer.subscription.")) {
-      const sub = event.data.object;
-      const stripeCustomerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
-
-      const subscriberId = await findSubscriberIdFromStripe(supabase, sub, stripeCustomerId);
-      await logEventBestEffort(supabase, subscriberId, event);
-
-      if (subscriberId) {
-        await updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId, sub);
-      }
-
-      return res.status(200).json({ ok: true, mapped: !!subscriberId });
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+    } catch (err) {
+      return res.status(400).send(`Webhook signature verification failed: ${err.message}`);
     }
 
-    if (type === "invoice.payment_failed" || type === "invoice.payment_succeeded") {
-      const inv = event.data.object;
-      const stripeCustomerId = typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
-      const stripeSubId = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
+    const supabase = getSupabaseAdmin();
 
-      if (stripeSubId) {
-        const sub = await stripe.subscriptions.retrieve(stripeSubId);
-        const subscriberId = await findSubscriberIdFromStripe(supabase, sub, stripeCustomerId);
-        await logEventBestEffort(supabase, subscriberId, event);
+    // Handle subscription updates from multiple event types
+    if (
+      event.type === "checkout.session.completed" ||
+      event.type === "customer.subscription.created" ||
+      event.type === "customer.subscription.updated" ||
+      event.type === "customer.subscription.deleted"
+    ) {
+      // Extract a Stripe Subscription object where possible
+      let subscription = null;
+      let stripeCustomerId = null;
 
-        if (subscriberId) {
-          await updateSubscriberFromSub(supabase, subscriberId, stripeCustomerId, sub);
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+        stripeCustomerId = session.customer || null;
+
+        if (session.subscription) {
+          subscription = await stripe.subscriptions.retrieve(session.subscription);
         }
       } else {
-        await logEventBestEffort(supabase, null, event);
+        subscription = event.data.object;
+        stripeCustomerId = subscription.customer || null;
       }
+
+      if (!stripeCustomerId) {
+        return res.status(200).json({ ok: true, ignored: true, reason: "No customer id" });
+      }
+
+      const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
+      if (!subscriberId) {
+        return res.status(200).json({ ok: true, ignored: true, reason: "No matching subscriber for customer" });
+      }
+
+      // Determine plan_variant_id from the first subscription item price
+      let planVariantId = null;
+      try {
+        const priceId = subscription?.items?.data?.[0]?.price?.id || null;
+        planVariantId = await findPlanVariantByPriceId(supabase, priceId);
+      } catch (_) {}
+
+      const status = subscription?.status || (event.type === "checkout.session.completed" ? "unknown" : "unknown");
+      const trialEndsAt = toIsoFromUnixSeconds(subscription?.trial_end || null);
+
+      const patch = {
+        subscription_status: status,
+        trial_ends_at: trialEndsAt,
+        plan_variant_id: planVariantId || null,
+        locked_at: null, // if they re-subscribe, unlock
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: upErr } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
+      if (upErr) throw upErr;
 
       return res.status(200).json({ ok: true });
     }
 
-    await logEventBestEffort(supabase, null, event);
-    return res.status(200).json({ ok: true });
+    // Payment events to manage grace/locking (optional but helpful)
+    if (event.type === "invoice.payment_failed") {
+      const inv = event.data.object;
+      const stripeCustomerId = inv.customer || null;
+      if (!stripeCustomerId) return res.status(200).json({ ok: true });
+
+      const subscriberId = await findSubscriberByStripeCustomerId(getSupabaseAdmin(), stripeCustomerId);
+      if (!subscriberId) return res.status(200).json({ ok: true });
+
+      // Set 7-day grace from now (matches your rules)
+      const grace = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      await getSupabaseAdmin()
+        .from("subscribers")
+        .update({
+          subscription_status: "past_due",
+          grace_ends_at: grace,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", subscriberId);
+
+      return res.status(200).json({ ok: true });
+    }
+
+    if (event.type === "invoice.payment_succeeded") {
+      const inv = event.data.object;
+      const stripeCustomerId = inv.customer || null;
+      if (!stripeCustomerId) return res.status(200).json({ ok: true });
+
+      const subscriberId = await findSubscriberByStripeCustomerId(getSupabaseAdmin(), stripeCustomerId);
+      if (!subscriberId) return res.status(200).json({ ok: true });
+
+      await getSupabaseAdmin()
+        .from("subscribers")
+        .update({
+          subscription_status: "active",
+          grace_ends_at: null,
+          locked_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", subscriberId);
+
+      return res.status(200).json({ ok: true });
+    }
+
+    // Ignore all other events
+    return res.status(200).json({ ok: true, ignored: true, type: event.type });
   } catch (err) {
-    return res.status(500).json({
-      error: "Webhook handler failed",
-      event_type: event?.type,
-      detail: String(err?.message || err),
-    });
+    console.error(err);
+    return res.status(500).send(String(err?.message || err));
   }
 }
