@@ -88,7 +88,7 @@ export default function SignUpPage() {
   }
 
   useEffect(() => {
-    // If already signed in, go straight to /app
+    // If already signed in, go straight to /app (useAuthProfile will bounce to /subscribe if not paid/trialing)
     (async () => {
       const { data } = await supabase.auth.getSession();
       if (data?.session?.user) router.replace("/app");
@@ -101,18 +101,13 @@ export default function SignUpPage() {
     if (!em) return;
 
     try {
-      // Supabase v2
       const { error } = await supabase.auth.resend({
         type: "signup",
         email: em,
       });
 
       if (error) {
-        showToast(
-          "error",
-          "Could not resend email",
-          error.message || "Resend failed. Check Supabase email settings / SMTP."
-        );
+        showToast("error", "Could not resend email", error.message || "Resend failed. Check Supabase email settings / SMTP.");
         return;
       }
 
@@ -245,8 +240,8 @@ export default function SignUpPage() {
         return;
       }
 
-      showToast("success", "Account created", "You’re in. Redirecting to the app…");
-      setTimeout(() => router.replace("/app"), 450);
+      showToast("success", "Account created", "Next: choose your plan and add a card to start the 30-day trial…");
+      setTimeout(() => router.replace("/subscribe"), 450);
     } catch (err) {
       showToast("error", "Sign up failed", "Unexpected error creating your account.");
       setWorking(false);
