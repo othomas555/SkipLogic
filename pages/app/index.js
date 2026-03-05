@@ -3,46 +3,45 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { useAuthProfile } from "../../lib/useAuthProfile";
 
+import AppCard from "../../components/ui/AppCard";
+import AppButton from "../../components/ui/AppButton";
+
 function QuickAction({ href, title, desc, badge }) {
   return (
     <Link href={href} style={styles.action}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+      <div style={styles.actionTop}>
         <div>
-          <div style={{ fontWeight: 900, fontSize: 13, color: "#111827" }}>{title}</div>
-          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280", lineHeight: 1.35 }}>{desc}</div>
+          <div style={styles.actionTitle}>{title}</div>
+          <div style={styles.actionDesc}>{desc}</div>
         </div>
+
         {badge ? <span style={styles.badge}>{badge}</span> : null}
       </div>
-      <div style={{ marginTop: 10, fontSize: 12, color: "#2563eb", textDecoration: "underline" }}>Open →</div>
+
+      <div style={styles.openLink}>Open →</div>
     </Link>
   );
 }
 
-function Stat({ label, value, tone = "neutral" }) {
-  const toneStyle =
-    tone === "warn"
-      ? { background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412" }
-      : tone === "good"
-      ? { background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#166534" }
-      : { background: "#f9fafb", border: "1px solid #eef2f7", color: "#374151" };
-
+function Stat({ label, value }) {
   return (
-    <div style={{ ...styles.stat, ...toneStyle }}>
-      <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.9 }}>{label}</div>
-      <div style={{ marginTop: 6, fontSize: 18, fontWeight: 900 }}>{value}</div>
+    <div style={styles.stat}>
+      <div style={styles.statLabel}>{label}</div>
+      <div style={styles.statValue}>{value}</div>
     </div>
   );
 }
 
 function Section({ title, subtitle, children }) {
   return (
-    <section style={{ marginTop: 14 }}>
+    <div style={{ marginTop: 16 }}>
       <div style={{ marginBottom: 10 }}>
-        <h2 style={{ margin: 0, fontSize: 14 }}>{title}</h2>
-        {subtitle ? <div style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>{subtitle}</div> : null}
+        <h2 style={styles.sectionTitle}>{title}</h2>
+        {subtitle && <div style={styles.sectionSub}>{subtitle}</div>}
       </div>
+
       <div style={styles.grid}>{children}</div>
-    </section>
+    </div>
   );
 }
 
@@ -50,183 +49,196 @@ export default function DashboardPage() {
   const router = useRouter();
   const { checking, user, subscriberId, profile, errorMsg } = useAuthProfile();
 
-  // NOTE: auth guarding is now in pages/_app.js for /app routes,
-  // but keeping this safe in case you visit /app directly during dev.
   if (checking) {
-    return (
-      <main style={styles.center}>
-        <p>Loading…</p>
-      </main>
-    );
+    return <p>Loading…</p>;
   }
 
   if (!user) {
     return (
-      <main style={styles.center}>
-        <div style={styles.card}>
-          <h1 style={{ margin: 0 }}>SkipLogic</h1>
-          <p style={{ marginTop: 8, color: "#6b7280" }}>You must be signed in.</p>
-          <button style={styles.btnPrimary} onClick={() => router.push("/login")}>
-            Go to login
-          </button>
-        </div>
-      </main>
+      <AppCard title="Authentication required">
+        <p>You must be signed in.</p>
+        <AppButton onClick={() => router.push("/login")}>
+          Go to login
+        </AppButton>
+      </AppCard>
     );
   }
 
   return (
-    <div>
-      <div style={styles.topCard}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 900, fontSize: 16 }}>Today</div>
-            <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-              Quick access to the pages you’ll use all day.
-            </div>
-            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-              Subscriber: <b style={{ color: "#111827" }}>{subscriberId || "—"}</b> • User:{" "}
-              <b style={{ color: "#111827" }}>{profile?.email || user?.email || "—"}</b>
-            </div>
-            {errorMsg ? <div style={{ marginTop: 10, color: "#b91c1c", fontSize: 12 }}>{errorMsg}</div> : null}
-          </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
-            <button style={styles.btnSecondary} onClick={() => router.push("/app/jobs/book")}>
+      <AppCard
+        title="Today"
+        subtitle="Quick access to the pages you’ll use all day."
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            <AppButton onClick={() => router.push("/app/jobs/book")}>
               + Book job
-            </button>
-            <button style={styles.btnSecondary} onClick={() => router.push("/app/jobs/day-planner")}>
-              Day planner
-            </button>
-            <button style={styles.btnSecondary} onClick={() => router.push("/app/jobs/scheduler")}>
-              Scheduler
-            </button>
-          </div>
-        </div>
+            </AppButton>
 
-        {/* Placeholder stats (wire these up later) */}
+            <AppButton
+              variant="secondary"
+              onClick={() => router.push("/app/jobs/day-planner")}
+            >
+              Day planner
+            </AppButton>
+
+            <AppButton
+              variant="secondary"
+              onClick={() => router.push("/app/jobs/scheduler")}
+            >
+              Scheduler
+            </AppButton>
+          </div>
+        }
+      >
         <div style={styles.statsRow}>
           <Stat label="Jobs today" value="—" />
           <Stat label="Deliveries" value="—" />
           <Stat label="Collections" value="—" />
-          <Stat label="Overdue vehicle items" value="—" tone="warn" />
+          <Stat label="Vehicle alerts" value="—" />
         </div>
-      </div>
 
-      <Section title="Quick actions" subtitle="Most-used pages. Keep this tight.">
-        <QuickAction href="/app/jobs/book" title="Book a job" desc="Create a new delivery booking." badge="Start here" />
-        <QuickAction href="/app/jobs" title="Jobs" desc="All jobs with filters/sorting." />
-        <QuickAction href="/app/jobs/day-planner" title="Day planner" desc="Plan the day by work date." />
-        <QuickAction href="/app/jobs/scheduler" title="Scheduler" desc="Schedule deliveries / collections." />
-        <QuickAction href="/app/routes" title="Route map" desc="Map view for routes / stops." />
-        <QuickAction href="/app/drivers/run" title="Runs (staff)" desc="Group jobs into driver runs." />
+        <div style={styles.accountRow}>
+          Subscriber: <b>{subscriberId || "—"}</b> • User:{" "}
+          <b>{profile?.email || user?.email || "—"}</b>
+        </div>
+
+        {errorMsg && <div style={styles.error}>{errorMsg}</div>}
+      </AppCard>
+
+      <Section title="Quick actions" subtitle="Most-used pages.">
+        <QuickAction href="/app/jobs/book" title="Book a job" desc="Create a new booking." badge="Start" />
+        <QuickAction href="/app/jobs" title="Jobs" desc="All jobs with filters." />
+        <QuickAction href="/app/jobs/day-planner" title="Day planner" desc="Plan jobs by work date." />
+        <QuickAction href="/app/jobs/scheduler" title="Scheduler" desc="Schedule deliveries and collections." />
+        <QuickAction href="/app/routes" title="Route map" desc="Map view for routes." />
+        <QuickAction href="/app/drivers/run" title="Runs (staff)" desc="Driver run management." />
       </Section>
 
-      <Section title="Customers & accounts" subtitle="Customer records, credit and history.">
-        <QuickAction href="/app/customers" title="Customers" desc="Search, create and edit customers." />
-        <QuickAction href="/app/customers/new" title="Add customer" desc="Create a customer record." />
-        <QuickAction href="/app/settings/invoicing" title="Invoicing" desc="Invoice behaviour + Xero wiring." />
-        <QuickAction href="/app/xero-accounts" title="Xero accounts" desc="View Xero accounts/bank accounts." badge="Ref" />
+      <Section title="Customers & accounts">
+        <QuickAction href="/app/customers" title="Customers" desc="Search and manage customers." />
+        <QuickAction href="/app/customers/new" title="Add customer" desc="Create a customer." />
+        <QuickAction href="/app/settings/invoicing" title="Invoicing" desc="Invoice behaviour + Xero." />
+        <QuickAction href="/app/xero-accounts" title="Xero accounts" desc="View Xero accounts." badge="Ref" />
       </Section>
 
-      <Section title="Fleet, drivers & waste" subtitle="Compliance, vehicles, driver setup and reporting.">
-        <QuickAction href="/app/vehicles" title="Vehicles" desc="Fleet list + compliance badges." />
+      <Section title="Fleet & drivers">
+        <QuickAction href="/app/vehicles" title="Vehicles" desc="Fleet and compliance." />
         <QuickAction href="/app/drivers" title="Drivers" desc="Manage drivers." />
-        <QuickAction href="/app/driver" title="Driver portal" desc="Driver work list (deliver / collect / swap)." />
-        <QuickAction href="/app/waste/out" title="Waste out" desc="Waste movements (outbound loads)." />
-        <QuickAction href="/app/waste/returns" title="Waste returns" desc="Returns / quarterly reporting." />
-        <QuickAction href="/app/settings/vehicles" title="Vehicle alerts" desc="Daily compliance alert settings." />
+        <QuickAction href="/app/driver" title="Driver portal" desc="Driver work list." />
+        <QuickAction href="/app/waste/out" title="Waste out" desc="Outbound waste loads." />
+        <QuickAction href="/app/waste/returns" title="Waste returns" desc="Quarterly reporting." />
       </Section>
 
-      <Section title="Setup & tools" subtitle="Lower-frequency tools and configuration.">
-        <QuickAction href="/app/settings" title="Settings home" desc="All settings sections." />
-        <QuickAction href="/app/settings/waste" title="Waste settings" desc="Outlets, EWC codes, waste config." />
-        <QuickAction href="/app/settings/emails" title="Emails" desc="Email templates / sending configuration." />
+      <Section title="Setup & tools">
+        <QuickAction href="/app/settings" title="Settings" desc="All configuration." />
+        <QuickAction href="/app/settings/waste" title="Waste settings" desc="Outlets and EWC codes." />
+        <QuickAction href="/app/settings/emails" title="Emails" desc="Email templates." />
         <QuickAction href="/app/skip-types" title="Skip types" desc="Manage skip types." />
-        <QuickAction href="/app/postcodes-served" title="Postcodes served" desc="Coverage rules by postcode." />
-        <QuickAction href="/app/import/bookings" title="Import bookings" desc="Import historical bookings from CSV." />
+        <QuickAction href="/app/postcodes-served" title="Postcodes served" desc="Coverage rules." />
+        <QuickAction href="/app/import/bookings" title="Import bookings" desc="Import bookings CSV." />
       </Section>
+
     </div>
   );
 }
 
 const styles = {
-  center: {
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-    background: "#f7f7f7",
-    padding: 20,
-  },
-  card: {
-    width: "min(520px, 100%)",
-    background: "#fff",
-    border: "1px solid #e5e7eb",
-    borderRadius: 16,
-    padding: 16,
-    boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
-  },
-  topCard: {
-    background: "#ffffff",
-    border: "1px solid #e5e7eb",
-    borderRadius: 16,
-    padding: 16,
-    boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
-  },
+
   statsRow: {
-    marginTop: 14,
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))",
     gap: 10,
   },
+
   stat: {
-    borderRadius: 14,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid var(--d-border)",
+    borderRadius: "var(--r-md)",
     padding: 12,
   },
+
+  statLabel: {
+    fontSize: 12,
+    color: "var(--d-muted)",
+    fontWeight: 900,
+  },
+
+  statValue: {
+    fontSize: 20,
+    fontWeight: 900,
+    marginTop: 6,
+  },
+
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
     gap: 12,
   },
+
   action: {
-    background: "#fff",
-    border: "1px solid #eee",
-    borderRadius: 14,
+    background: "var(--d-panel)",
+    border: "1px solid var(--d-border)",
+    borderRadius: "var(--r-md)",
     padding: 14,
     textDecoration: "none",
-    color: "inherit",
-    boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+    color: "var(--d-ink)",
   },
+
+  actionTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+
+  actionTitle: {
+    fontWeight: 900,
+    fontSize: 13,
+  },
+
+  actionDesc: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "var(--d-muted)",
+  },
+
+  openLink: {
+    marginTop: 10,
+    fontSize: 12,
+    color: "#3ab5ff",
+  },
+
   badge: {
-    display: "inline-block",
     padding: "3px 8px",
     borderRadius: 999,
     fontSize: 11,
     fontWeight: 900,
-    background: "#eef6ff",
-    color: "#0b3d91",
-    border: "1px solid #b6d7ff",
-    whiteSpace: "nowrap",
+    background: "rgba(55,245,155,0.18)",
+    border: "1px solid rgba(55,245,155,0.35)",
+    color: "#37f59b",
   },
-  btnPrimary: {
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid #111827",
-    background: "#111827",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 13,
-    fontWeight: 800,
+
+  accountRow: {
+    marginTop: 12,
+    fontSize: 12,
+    color: "var(--d-muted)",
   },
-  btnSecondary: {
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    background: "#f9fafb",
-    color: "#111827",
-    cursor: "pointer",
-    fontSize: 13,
-    fontWeight: 800,
+
+  sectionTitle: {
+    margin: 0,
+    fontSize: 15,
+  },
+
+  sectionSub: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "var(--d-muted)",
+  },
+
+  error: {
+    marginTop: 10,
+    color: "#ef4444",
+    fontSize: 12,
   },
 };
