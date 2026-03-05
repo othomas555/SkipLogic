@@ -1,5 +1,5 @@
 /* styles/theme.css
-   SkipLogic Hybrid Theme v1
+   SkipLogic Hybrid Theme v1.1 (Dim Dark app)
 */
 
 :root {
@@ -28,13 +28,14 @@
   --l-muted: rgba(11, 18, 32, 0.68);
   --l-border: rgba(11, 18, 32, 0.12);
 
-  /* Dark */
-  --d-bg: #070b14;
-  --d-surface: #0c1222;
-  --d-panel: #101a2e;
-  --d-ink: #eaf0ff;
-  --d-muted: rgba(234, 240, 255, 0.72);
-  --d-border: rgba(255, 255, 255, 0.12);
+  /* Dark (DIM DARK — easier to read than near-black) */
+  --d-bg: #0f172a;            /* slate/navy */
+  --d-surface: #111c33;       /* page surface */
+  --d-panel: #162341;         /* cards/panels */
+  --d-panel-2: #1a2b4d;       /* hover/raised */
+  --d-ink: #f1f5ff;           /* near-white */
+  --d-muted: rgba(241, 245, 255, 0.74);
+  --d-border: rgba(241, 245, 255, 0.14);
 
   /* Focus */
   --focus: 0 0 0 4px rgba(58, 181, 255, 0.18);
@@ -116,14 +117,14 @@ body {
 /* Dark variants (for /app) */
 .sl-dark .sl-input {
   border: 1px solid var(--d-border);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
   color: var(--d-ink);
 }
 
 .sl-dark .sl-input::placeholder {
-  color: rgba(234, 240, 255, 0.55);
+  color: rgba(241, 245, 255, 0.55);
 }
 
 .sl-dark .sl-link {
-  color: rgba(234, 240, 255, 0.9);
+  color: rgba(241, 245, 255, 0.9);
 }
