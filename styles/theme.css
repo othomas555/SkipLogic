@@ -1,205 +1,212 @@
-/* styles/theme.css
-   SkipLogic Hybrid Theme v1.2
-   - Light auth / marketing
-   - Dim dark app shell
-   - Readable light form controls inside app pages
-*/
+// pages/_app.js
+import "../styles/globals.css";
+import "../styles/theme.css";
 
-:root {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji",
-    "Segoe UI Emoji";
+import { useRouter } from "next/router";
+import { useAuthProfile } from "../lib/useAuthProfile";
+import AppShell from "../components/AppShell";
 
-  /* Brand */
-  --brand-ink: #0b1220;
-  --brand-mint: #37f59b;
-  --brand-sky: #3ab5ff;
-  --brand-amber: #ffb24a;
+export default function MyApp({ Component, pageProps }) {
+  const router = useRouter();
+  const isAppRoute = router.pathname.startsWith("/app");
 
-  /* Radii */
-  --r-sm: 10px;
-  --r-md: 14px;
-  --r-lg: 18px;
+  // Non-app routes (marketing/auth) render without AppShell
+  if (!isAppRoute) {
+    return <Component {...pageProps} />;
+  }
 
-  /* Shadows */
-  --shadow-1: 0 10px 30px rgba(11, 18, 32, 0.12);
-  --shadow-2: 0 18px 60px rgba(11, 18, 32, 0.18);
+  const { checking, user, profile, errorMsg } = useAuthProfile();
 
-  /* Light */
-  --l-bg: #f6f8fc;
-  --l-surface: #ffffff;
-  --l-ink: #0b1220;
-  --l-muted: rgba(11, 18, 32, 0.68);
-  --l-border: rgba(11, 18, 32, 0.12);
+  if (checking) {
+    return (
+      <main style={center}>
+        <div style={authPanel}>
+          <div style={brandRow}>
+            <div style={brandMark} aria-hidden="true" />
+            <div>
+              <div style={brandName}>SkipLogic</div>
+              <div style={brandTag}>Preparing your workspace…</div>
+            </div>
+          </div>
 
-  /* Dark (dim dark app shell) */
-  --d-bg: #0f172a;
-  --d-surface: #111c33;
-  --d-panel: #162341;
-  --d-panel-2: #1a2b4d;
-  --d-ink: #f1f5ff;
-  --d-muted: rgba(241, 245, 255, 0.74);
-  --d-border: rgba(241, 245, 255, 0.14);
+          <div style={loadingBarWrap} aria-hidden="true">
+            <div style={loadingBar} />
+          </div>
 
-  /* Focus */
-  --focus: 0 0 0 4px rgba(58, 181, 255, 0.18);
+          <p style={muted}>Loading…</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main style={center}>
+        <div style={authPanel}>
+          <div style={brandRow}>
+            <div style={brandMark} aria-hidden="true" />
+            <div>
+              <div style={brandName}>SkipLogic</div>
+              <div style={brandTag}>You’re not signed in.</div>
+            </div>
+          </div>
+
+          <p style={muted}>
+            Please sign in to access your workspace.
+          </p>
+
+          <button style={btnPrimary} onClick={() => router.push("/login")}>
+            Go to login
+          </button>
+
+          <div style={tinyRow}>
+            <span style={tinyMuted}>New here?</span>
+            <button style={linkBtn} onClick={() => router.push("/signup")}>
+              Create an account
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // App routes render inside dark wrapper (hybrid theme)
+  return (
+    <div className="sl-dark">
+      <AppShell
+        profile={profile}
+        title={pageProps?.title}
+        subtitle={pageProps?.subtitle}
+        right={pageProps?.right}
+      >
+        {errorMsg ? (
+          <div style={errorBox}>
+            <b>Auth warning:</b> {errorMsg}
+          </div>
+        ) : null}
+        <Component {...pageProps} />
+      </AppShell>
+    </div>
+  );
 }
 
-html,
-body {
-  padding: 0;
-  margin: 0;
-  font-family: var(--font-sans);
-}
+/* ====== Inline styles (kept simple; uses theme variables) ====== */
 
-/* Reusable UI bits */
-.sl-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid rgba(11, 18, 32, 0.12);
-  background: rgba(255, 255, 255, 0.65);
-  color: rgba(11, 18, 32, 0.82);
-}
+const center = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontFamily: "var(--font-sans)",
+  background: "var(--l-bg)",
+  padding: 20,
+};
 
-.sl-chipDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 99px;
-  background: var(--brand-mint);
-  box-shadow: 0 0 0 4px rgba(55, 245, 155, 0.16);
-}
+const authPanel = {
+  width: "min(520px, 100%)",
+  background: "rgba(255,255,255,0.92)",
+  border: "1px solid var(--l-border)",
+  borderRadius: "var(--r-lg)",
+  padding: 18,
+  boxShadow: "var(--shadow-2)",
+};
 
-.sl-btn {
-  border: 0;
-  cursor: pointer;
-  border-radius: var(--r-md);
-  padding: 12px 14px;
-  font-weight: 750;
-  letter-spacing: -0.01em;
-}
+const brandRow = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  marginBottom: 10,
+};
 
-.sl-btnPrimary {
-  color: #071013;
-  background: linear-gradient(135deg, var(--brand-mint), rgba(58, 181, 255, 0.9));
-}
+const brandMark = {
+  width: 36,
+  height: 36,
+  borderRadius: "var(--r-md)",
+  background:
+    "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
+  boxShadow: "0 10px 30px rgba(11,18,32,0.10)",
+};
 
-.sl-btnPrimary:hover {
-  filter: brightness(1.02);
-}
+const brandName = {
+  fontWeight: 900,
+  letterSpacing: "-0.02em",
+  color: "var(--l-ink)",
+  lineHeight: 1.1,
+};
 
-.sl-btnPrimary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
+const brandTag = {
+  fontSize: 13,
+  color: "var(--l-muted)",
+  marginTop: 2,
+};
 
-.sl-input {
-  width: 100%;
-  border-radius: var(--r-md);
-  padding: 12px 12px;
-  font-size: 14px;
-  outline: none;
-  border: 1px solid var(--l-border);
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--l-ink);
-}
+const muted = {
+  marginTop: 10,
+  marginBottom: 0,
+  color: "var(--l-muted)",
+  lineHeight: 1.5,
+};
 
-.sl-input:focus {
-  border-color: rgba(58, 181, 255, 0.55);
-  box-shadow: var(--focus);
-}
+const btnPrimary = {
+  marginTop: 14,
+  padding: "12px 14px",
+  borderRadius: "var(--r-md)",
+  border: 0,
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 900,
+  letterSpacing: "-0.01em",
+  color: "#071013",
+  background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
+};
 
-.sl-link {
-  color: rgba(11, 18, 32, 0.92);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
+const tinyRow = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  marginTop: 12,
+};
 
-/* Dark variants (for /app) */
-.sl-dark .sl-input {
-  border: 1px solid var(--d-border);
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--d-ink);
-}
+const tinyMuted = {
+  fontSize: 13,
+  color: "var(--l-muted)",
+};
 
-.sl-dark .sl-input::placeholder {
-  color: rgba(241, 245, 255, 0.55);
-}
+const linkBtn = {
+  border: 0,
+  background: "transparent",
+  cursor: "pointer",
+  padding: 0,
+  fontSize: 13,
+  fontWeight: 800,
+  color: "rgba(11,18,32,0.92)",
+  textDecoration: "underline",
+  textUnderlineOffset: 3,
+};
 
-.sl-dark .sl-link {
-  color: rgba(241, 245, 255, 0.9);
-}
+const errorBox = {
+  marginBottom: 12,
+  padding: 12,
+  borderRadius: 12,
+  background: "rgba(255, 96, 96, 0.10)",
+  border: "1px solid rgba(255, 96, 96, 0.30)",
+  color: "rgba(180, 20, 40, 0.95)",
+  fontSize: 13,
+};
 
-/* ===== SkipLogic form readability fix ===== */
+const loadingBarWrap = {
+  height: 10,
+  borderRadius: 999,
+  overflow: "hidden",
+  border: "1px solid rgba(11,18,32,0.10)",
+  background: "rgba(11,18,32,0.04)",
+  marginTop: 12,
+};
 
-/* Keep the shell dark, but make actual form work areas readable */
-.sl-dark form,
-.sl-dark .formCard,
-.sl-dark .formPanel,
-.sl-dark .formSection {
-  color: #0f172a;
-}
-
-/* Native form controls inside app pages */
-.sl-dark input:not([type="checkbox"]):not([type="radio"]),
-.sl-dark select,
-.sl-dark textarea {
-  background: #ffffff;
-  color: #0f172a;
-  border: 1px solid #cbd5e1;
-}
-
-.sl-dark input::placeholder,
-.sl-dark textarea::placeholder {
-  color: #64748b;
-}
-
-.sl-dark input:focus,
-.sl-dark select:focus,
-.sl-dark textarea:focus {
-  outline: none;
-  border-color: #3ab5ff;
-  box-shadow: 0 0 0 4px rgba(58, 181, 255, 0.18);
-}
-
-/* Labels/help text on dark pages need more contrast */
-.sl-dark label {
-  color: #f1f5ff;
-}
-
-.sl-dark small,
-.sl-dark .hint,
-.sl-dark .muted,
-.sl-dark p {
-  color: rgba(241, 245, 255, 0.78);
-}
-
-/* White panels used for form sections */
-.sl-dark .sl-form-surface {
-  background: #ffffff;
-  color: #0f172a;
-  border: 1px solid #dbe3f0;
-  border-radius: var(--r-lg);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
-}
-
-.sl-dark .sl-form-surface label,
-.sl-dark .sl-form-surface h1,
-.sl-dark .sl-form-surface h2,
-.sl-dark .sl-form-surface h3,
-.sl-dark .sl-form-surface h4,
-.sl-dark .sl-form-surface h5,
-.sl-dark .sl-form-surface h6,
-.sl-dark .sl-form-surface p,
-.sl-dark .sl-form-surface div,
-.sl-dark .sl-form-surface span {
-  color: #0f172a;
-}
-
-.sl-dark .sl-form-surface .muted,
-.sl-dark .sl-form-surface small,
-.sl-dark .sl-form-surface .hint {
-  color: #64748b;
-}
+const loadingBar = {
+  height: "100%",
+  width: "55%",
+  borderRadius: 999,
+  background:
+    "linear-gradient(90deg, rgba(55,245,155,0.85), rgba(58,181,255,0.85))",
+};
