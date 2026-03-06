@@ -47,7 +47,7 @@ function Section({ title, subtitle, children }) {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { checking, user, subscriberId, profile, errorMsg } = useAuthProfile();
+  const { checking, user, profile, errorMsg } = useAuthProfile();
 
   if (checking) {
     return <p style={styles.loading}>Loading…</p>;
@@ -62,11 +62,17 @@ export default function DashboardPage() {
     );
   }
 
+  const displayName =
+    profile?.company_name ||
+    profile?.full_name ||
+    user?.email ||
+    "your workspace";
+
   return (
     <div style={styles.page}>
       <AppCard
         title="Today"
-        subtitle="Quick access to the pages you’ll use all day."
+        subtitle={`Quick access to the pages you’ll use all day for ${displayName}.`}
         right={
           <div style={styles.buttonRow}>
             <AppButton onClick={() => router.push("/app/jobs/book")}>+ Book job</AppButton>
@@ -92,11 +98,6 @@ export default function DashboardPage() {
           <Stat label="Deliveries" value="—" />
           <Stat label="Collections" value="—" />
           <Stat label="Vehicle alerts" value="—" />
-        </div>
-
-        <div style={styles.accountRow}>
-          Subscriber: <b>{subscriberId || "—"}</b> • User:{" "}
-          <b>{profile?.email || user?.email || "—"}</b>
         </div>
 
         {errorMsg ? <div style={styles.error}>{errorMsg}</div> : null}
@@ -153,7 +154,7 @@ const styles = {
   cardText: {
     marginTop: 0,
     marginBottom: 12,
-    color: "var(--text)",
+    color: "var(--l-ink)",
   },
 
   buttonRow: {
@@ -169,15 +170,16 @@ const styles = {
   },
 
   stat: {
-    background: "var(--surface-2)",
-    border: "1px solid var(--border)",
+    background: "var(--l-surface-2)",
+    border: "1px solid var(--l-border)",
     borderRadius: "var(--r-md)",
     padding: 14,
+    color: "var(--l-ink)",
   },
 
   statLabel: {
     fontSize: 12,
-    color: "var(--text-muted)",
+    color: "var(--l-muted)",
     fontWeight: 800,
   },
 
@@ -185,18 +187,12 @@ const styles = {
     fontSize: 22,
     fontWeight: 900,
     marginTop: 8,
-    color: "var(--text)",
+    color: "var(--l-ink)",
     lineHeight: 1,
   },
 
-  accountRow: {
-    marginTop: 14,
-    fontSize: 12,
-    color: "var(--text-muted)",
-  },
-
   error: {
-    marginTop: 10,
+    marginTop: 12,
     fontSize: 12,
     color: "#b91c1c",
   },
