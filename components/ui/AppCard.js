@@ -6,7 +6,7 @@ export default function AppCard({
   style,
 }) {
   return (
-    <div style={{ ...styles.card, ...style }}>
+    <div className="sl-page-surface" style={{ ...styles.card, ...style }}>
       {(title || subtitle || right) && (
         <div style={styles.header}>
           <div>
@@ -26,15 +26,12 @@ export default function AppCard({
 const styles = {
   card: {
     borderRadius: "var(--r-lg)",
-    background: "var(--d-panel)",
-    border: "1px solid var(--d-border)",
-    boxShadow: "0 18px 60px rgba(0,0,0,0.35)",
     overflow: "hidden",
   },
 
   header: {
     padding: "14px 16px",
-    borderBottom: "1px solid var(--d-border)",
+    borderBottom: "1px solid var(--border)",
     display: "flex",
     justifyContent: "space-between",
     gap: 10,
@@ -44,13 +41,12 @@ const styles = {
   title: {
     fontSize: 15,
     fontWeight: 900,
-    color: "var(--d-ink)",
   },
 
   subtitle: {
     marginTop: 4,
     fontSize: 12,
-    color: "var(--d-muted)",
+    color: "var(--text-muted)",
   },
 
   body: {
