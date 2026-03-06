@@ -39,18 +39,19 @@ const styles = {
   },
 
   primary: {
-    background: "linear-gradient(135deg,#37f59b,#3ab5ff)",
     color: "#071013",
+    background:
+      "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
   },
 
   secondary: {
-    background: "rgba(255,255,255,0.06)",
-    color: "var(--d-ink)",
-    border: "1px solid var(--d-border)",
+    color: "var(--text)",
+    background: "var(--surface)",
+    border: "1px solid var(--border)",
   },
 
   danger: {
-    background: "#ef4444",
+    background: "var(--brand-red)",
     color: "#fff",
   },
 };
