@@ -1,7 +1,9 @@
 // pages/app/index.js
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useAuthProfile } from "../../lib/useAuthProfile";
+import { supabase } from "../../lib/supabaseClient";
 
 import AppCard from "../../components/ui/AppCard";
 import AppButton from "../../components/ui/AppButton";
@@ -47,7 +49,45 @@ function Section({ title, subtitle, children }) {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { checking, user, profile, errorMsg } = useAuthProfile();
+  const { checking, user, subscriberId, profile, errorMsg } = useAuthProfile();
+
+  const [subscriberName, setSubscriberName] = useState("");
+  const [subscriberNameLoading, setSubscriberNameLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSubscriberName() {
+      if (!subscriberId) {
+        setSubscriberName("");
+        return;
+      }
+
+      setSubscriberNameLoading(true);
+
+      const { data, error } = await supabase
+        .from("subscribers")
+        .select("name")
+        .eq("id", subscriberId)
+        .single();
+
+      if (!cancelled) {
+        if (error) {
+          console.error("Could not load subscriber name:", error);
+          setSubscriberName("");
+        } else {
+          setSubscriberName(data?.name || "");
+        }
+        setSubscriberNameLoading(false);
+      }
+    }
+
+    loadSubscriberName();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [subscriberId]);
 
   if (checking) {
     return <p style={styles.loading}>Loading…</p>;
@@ -62,17 +102,23 @@ export default function DashboardPage() {
     );
   }
 
-  const displayName =
+  const workspaceName =
+    subscriberName ||
     profile?.company_name ||
     profile?.full_name ||
-    user?.email ||
-    "your workspace";
+    "";
+
+  const welcomeSubtitle = workspaceName
+    ? `Workspace: ${workspaceName}`
+    : subscriberNameLoading
+    ? "Loading workspace…"
+    : "Everything you need for day-to-day ops.";
 
   return (
     <div style={styles.page}>
       <AppCard
-        title="Today"
-        subtitle={`Quick access to the pages you’ll use all day for ${displayName}.`}
+        title="Welcome to SkipLogic"
+        subtitle={welcomeSubtitle}
         right={
           <div style={styles.buttonRow}>
             <AppButton onClick={() => router.push("/app/jobs/book")}>+ Book job</AppButton>
@@ -92,7 +138,15 @@ export default function DashboardPage() {
             </AppButton>
           </div>
         }
+        style={styles.heroCard}
       >
+        <div style={styles.heroIntro}>
+          <div style={styles.heroIntroTitle}>Today</div>
+          <div style={styles.heroIntroText}>
+            Quick access to the pages you’ll use all day.
+          </div>
+        </div>
+
         <div style={styles.statsRow}>
           <Stat label="Jobs today" value="—" />
           <Stat label="Deliveries" value="—" />
@@ -157,10 +211,34 @@ const styles = {
     color: "var(--l-ink)",
   },
 
+  heroCard: {
+    background: "#edf2f7",
+    border: "1px solid #d7e0eb",
+    boxShadow: "0 10px 30px rgba(11,18,32,0.10)",
+  },
+
   buttonRow: {
     display: "flex",
     gap: 8,
     flexWrap: "wrap",
+  },
+
+  heroIntro: {
+    marginBottom: 14,
+  },
+
+  heroIntroTitle: {
+    fontSize: 16,
+    fontWeight: 900,
+    color: "#0f172a",
+    lineHeight: 1.1,
+  },
+
+  heroIntroText: {
+    marginTop: 4,
+    fontSize: 13,
+    color: "#64748b",
+    lineHeight: 1.45,
   },
 
   statsRow: {
@@ -170,16 +248,16 @@ const styles = {
   },
 
   stat: {
-    background: "var(--l-surface-2)",
-    border: "1px solid var(--l-border)",
+    background: "#f6f8fb",
+    border: "1px solid #d4dde8",
     borderRadius: "var(--r-md)",
     padding: 14,
-    color: "var(--l-ink)",
+    color: "#0f172a",
   },
 
   statLabel: {
     fontSize: 12,
-    color: "var(--l-muted)",
+    color: "#64748b",
     fontWeight: 800,
   },
 
@@ -187,7 +265,7 @@ const styles = {
     fontSize: 22,
     fontWeight: 900,
     marginTop: 8,
-    color: "var(--l-ink)",
+    color: "#0f172a",
     lineHeight: 1,
   },
 
