@@ -1,212 +1,126 @@
-// pages/_app.js
-import "../styles/globals.css";
-import "../styles/theme.css";
+/* SkipLogic Theme System */
 
-import { useRouter } from "next/router";
-import { useAuthProfile } from "../lib/useAuthProfile";
-import AppShell from "../components/AppShell";
+:root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
 
-export default function MyApp({ Component, pageProps }) {
-  const router = useRouter();
-  const isAppRoute = router.pathname.startsWith("/app");
+  --brand-mint: #37f59b;
+  --brand-sky: #3ab5ff;
+  --brand-red: #ef4444;
 
-  // Non-app routes (marketing/auth) render without AppShell
-  if (!isAppRoute) {
-    return <Component {...pageProps} />;
-  }
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
 
-  const { checking, user, profile, errorMsg } = useAuthProfile();
+  --shadow-1: 0 10px 30px rgba(11,18,32,0.10);
 
-  if (checking) {
-    return (
-      <main style={center}>
-        <div style={authPanel}>
-          <div style={brandRow}>
-            <div style={brandMark} aria-hidden="true" />
-            <div>
-              <div style={brandName}>SkipLogic</div>
-              <div style={brandTag}>Preparing your workspace…</div>
-            </div>
-          </div>
+  --l-bg: #f4f7fb;
+  --l-surface: #ffffff;
+  --l-ink: #0f172a;
+  --l-muted: #64748b;
+  --l-border: #dbe3f0;
 
-          <div style={loadingBarWrap} aria-hidden="true">
-            <div style={loadingBar} />
-          </div>
+  --d-bg: #0f172a;
+  --d-panel: #182744;
+  --d-ink: #f1f5ff;
+  --d-muted: rgba(241,245,255,0.74);
+  --d-border: rgba(241,245,255,0.14);
 
-          <p style={muted}>Loading…</p>
-        </div>
-      </main>
-    );
-  }
-
-  if (!user) {
-    return (
-      <main style={center}>
-        <div style={authPanel}>
-          <div style={brandRow}>
-            <div style={brandMark} aria-hidden="true" />
-            <div>
-              <div style={brandName}>SkipLogic</div>
-              <div style={brandTag}>You’re not signed in.</div>
-            </div>
-          </div>
-
-          <p style={muted}>
-            Please sign in to access your workspace.
-          </p>
-
-          <button style={btnPrimary} onClick={() => router.push("/login")}>
-            Go to login
-          </button>
-
-          <div style={tinyRow}>
-            <span style={tinyMuted}>New here?</span>
-            <button style={linkBtn} onClick={() => router.push("/signup")}>
-              Create an account
-            </button>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  // App routes render inside dark wrapper (hybrid theme)
-  return (
-    <div className="sl-dark">
-      <AppShell
-        profile={profile}
-        title={pageProps?.title}
-        subtitle={pageProps?.subtitle}
-        right={pageProps?.right}
-      >
-        {errorMsg ? (
-          <div style={errorBox}>
-            <b>Auth warning:</b> {errorMsg}
-          </div>
-        ) : null}
-        <Component {...pageProps} />
-      </AppShell>
-    </div>
-  );
+  --text: var(--l-ink);
+  --text-muted: var(--l-muted);
+  --border: var(--l-border);
+  --surface: var(--l-surface);
 }
 
-/* ====== Inline styles (kept simple; uses theme variables) ====== */
+/* base */
 
-const center = {
-  minHeight: "100vh",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontFamily: "var(--font-sans)",
-  background: "var(--l-bg)",
-  padding: 20,
-};
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  color: var(--text);
+  background: var(--l-bg);
+}
 
-const authPanel = {
-  width: "min(520px, 100%)",
-  background: "rgba(255,255,255,0.92)",
-  border: "1px solid var(--l-border)",
-  borderRadius: "var(--r-lg)",
-  padding: 18,
-  boxShadow: "var(--shadow-2)",
-};
+/* buttons */
 
-const brandRow = {
-  display: "flex",
-  alignItems: "center",
-  gap: 12,
-  marginBottom: 10,
-};
+.sl-btn {
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  font-weight: 800;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+}
 
-const brandMark = {
-  width: 36,
-  height: 36,
-  borderRadius: "var(--r-md)",
-  background:
-    "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
-  boxShadow: "0 10px 30px rgba(11,18,32,0.10)",
-};
+.sl-btnPrimary {
+  color: #071013;
+  background: linear-gradient(135deg, var(--brand-mint), var(--brand-sky));
+}
 
-const brandName = {
-  fontWeight: 900,
-  letterSpacing: "-0.02em",
-  color: "var(--l-ink)",
-  lineHeight: 1.1,
-};
+.sl-btnSecondary {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
 
-const brandTag = {
-  fontSize: 13,
-  color: "var(--l-muted)",
-  marginTop: 2,
-};
+/* cards */
 
-const muted = {
-  marginTop: 10,
-  marginBottom: 0,
-  color: "var(--l-muted)",
-  lineHeight: 1.5,
-};
+.sl-page-surface {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
 
-const btnPrimary = {
-  marginTop: 14,
-  padding: "12px 14px",
-  borderRadius: "var(--r-md)",
-  border: 0,
-  cursor: "pointer",
-  fontSize: 13,
-  fontWeight: 900,
-  letterSpacing: "-0.01em",
-  color: "#071013",
-  background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
-};
+/* inputs */
 
-const tinyRow = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  marginTop: 12,
-};
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  font-size: 14px;
+  box-sizing: border-box;
+}
 
-const tinyMuted = {
-  fontSize: 13,
-  color: "var(--l-muted)",
-};
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--brand-sky);
+}
 
-const linkBtn = {
-  border: 0,
-  background: "transparent",
-  cursor: "pointer",
-  padding: 0,
-  fontSize: 13,
-  fontWeight: 800,
-  color: "rgba(11,18,32,0.92)",
-  textDecoration: "underline",
-  textUnderlineOffset: 3,
-};
+/* dark app wrapper */
 
-const errorBox = {
-  marginBottom: 12,
-  padding: 12,
-  borderRadius: 12,
-  background: "rgba(255, 96, 96, 0.10)",
-  border: "1px solid rgba(255, 96, 96, 0.30)",
-  color: "rgba(180, 20, 40, 0.95)",
-  fontSize: 13,
-};
+.sl-dark {
+  background: var(--d-bg);
+  color: var(--d-ink);
+}
 
-const loadingBarWrap = {
-  height: 10,
-  borderRadius: 999,
-  overflow: "hidden",
-  border: "1px solid rgba(11,18,32,0.10)",
-  background: "rgba(11,18,32,0.04)",
-  marginTop: 12,
-};
+.sl-dark p,
+.sl-dark small {
+  color: var(--d-muted);
+}
 
-const loadingBar = {
-  height: "100%",
-  width: "55%",
-  borderRadius: 999,
-  background:
-    "linear-gradient(90deg, rgba(55,245,155,0.85), rgba(58,181,255,0.85))",
-};
+/* tables */
+
+.sl-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sl-table th {
+  text-align: left;
+  padding: 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.sl-table td {
+  padding: 12px;
+  border-bottom: 1px solid rgba(15,23,42,0.06);
+}
