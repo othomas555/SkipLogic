@@ -9,17 +9,17 @@ export default function AppShell({ children, profile, title, subtitle, right }) 
       <div style={styles.main}>
         <header style={styles.header}>
           <div style={styles.headerLeft}>
-            <div style={styles.brandMark} aria-hidden="true" />
+            <div style={styles.headerMark} aria-hidden="true" />
             <div>
               <div style={styles.eyebrow}>SkipLogic</div>
               <h1 style={styles.h1}>{title || "Dashboard"}</h1>
-              <div style={styles.sub}>{subtitle || "Everything you need for day-to-day ops."}</div>
+              <div style={styles.sub}>
+                {subtitle || "Everything you need for day-to-day ops."}
+              </div>
             </div>
           </div>
 
-          <div style={styles.headerRight}>
-            {right ? <div style={styles.rightSlot}>{right}</div> : null}
-          </div>
+          {right ? <div style={styles.right}>{right}</div> : null}
         </header>
 
         <div style={styles.content}>{children}</div>
@@ -31,8 +31,8 @@ export default function AppShell({ children, profile, title, subtitle, right }) 
 const styles = {
   wrap: {
     minHeight: "100vh",
-    background: "var(--d-bg)",
-    color: "var(--d-ink)",
+    background: "var(--bg)",
+    color: "var(--text)",
   },
 
   main: {
@@ -40,22 +40,22 @@ const styles = {
     minHeight: "100vh",
     padding: 18,
     background:
-      "radial-gradient(closest-side at 18% 22%, rgba(55,245,155,0.12), transparent 55%)," +
-      "radial-gradient(closest-side at 78% 30%, rgba(58,181,255,0.12), transparent 55%)," +
-      "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.00))",
+      "radial-gradient(closest-side at 20% 10%, rgba(58,181,255,0.05), transparent 55%)," +
+      "radial-gradient(closest-side at 80% 15%, rgba(55,245,155,0.05), transparent 55%)," +
+      "var(--bg)",
   },
 
   header: {
-    background: "rgba(22, 35, 65, 0.85)", // dim dark panel
-    border: "1px solid var(--d-border)",
-    borderRadius: "var(--r-lg)",
+    background: "var(--surface)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--r-xl)",
     padding: 16,
     display: "flex",
     justifyContent: "space-between",
+    alignItems: "center",
     gap: 12,
     flexWrap: "wrap",
-    boxShadow: "0 14px 40px rgba(0,0,0,0.25)",
-    backdropFilter: "blur(10px)",
+    boxShadow: "var(--shadow-1)",
   },
 
   headerLeft: {
@@ -65,13 +65,12 @@ const styles = {
     minWidth: 260,
   },
 
-  brandMark: {
+  headerMark: {
     width: 38,
     height: 38,
-    borderRadius: "var(--r-md)",
-    background: "linear-gradient(135deg, rgba(55,245,155,0.95), rgba(58,181,255,0.90))",
-    boxShadow: "0 10px 26px rgba(0,0,0,0.22)",
-    border: "1px solid rgba(241,245,255,0.16)",
+    borderRadius: "14px",
+    background: "linear-gradient(135deg, var(--brand-mint), var(--brand-sky))",
+    border: "1px solid rgba(15,23,42,0.06)",
     flex: "0 0 auto",
     marginTop: 2,
   },
@@ -80,42 +79,35 @@ const styles = {
     fontSize: 11,
     letterSpacing: "0.10em",
     textTransform: "uppercase",
-    color: "rgba(241,245,255,0.72)",
+    color: "var(--text-muted)",
     marginBottom: 6,
+    fontWeight: 800,
   },
 
   h1: {
     margin: 0,
     fontSize: 20,
-    fontWeight: 950,
-    letterSpacing: "-0.02em",
-    color: "var(--d-ink)",
     lineHeight: 1.1,
+    letterSpacing: "-0.02em",
+    color: "var(--text)",
+    fontWeight: 900,
   },
 
   sub: {
     marginTop: 6,
     fontSize: 13,
-    color: "var(--d-muted)",
-    lineHeight: 1.35,
+    lineHeight: 1.45,
+    color: "var(--text-muted)",
   },
 
-  headerRight: {
-    display: "flex",
-    gap: 10,
-    alignItems: "center",
-    justifyContent: "flex-end",
-    flexWrap: "wrap",
-  },
-
-  rightSlot: {
+  right: {
     display: "flex",
     gap: 8,
-    flexWrap: "wrap",
     alignItems: "center",
+    flexWrap: "wrap",
   },
 
   content: {
-    marginTop: 14,
+    marginTop: 16,
   },
 };
