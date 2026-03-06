@@ -1,5 +1,8 @@
 /* styles/theme.css
-   SkipLogic Hybrid Theme v1.1 (Dim Dark app)
+   SkipLogic Hybrid Theme v1.2
+   - Light auth / marketing
+   - Dim dark app shell
+   - Readable light form controls inside app pages
 */
 
 :root {
@@ -28,12 +31,12 @@
   --l-muted: rgba(11, 18, 32, 0.68);
   --l-border: rgba(11, 18, 32, 0.12);
 
-  /* Dark (DIM DARK — easier to read than near-black) */
-  --d-bg: #0f172a;            /* slate/navy */
-  --d-surface: #111c33;       /* page surface */
-  --d-panel: #162341;         /* cards/panels */
-  --d-panel-2: #1a2b4d;       /* hover/raised */
-  --d-ink: #f1f5ff;           /* near-white */
+  /* Dark (dim dark app shell) */
+  --d-bg: #0f172a;
+  --d-surface: #111c33;
+  --d-panel: #162341;
+  --d-panel-2: #1a2b4d;
+  --d-ink: #f1f5ff;
   --d-muted: rgba(241, 245, 255, 0.74);
   --d-border: rgba(241, 245, 255, 0.14);
 
@@ -127,4 +130,76 @@ body {
 
 .sl-dark .sl-link {
   color: rgba(241, 245, 255, 0.9);
+}
+
+/* ===== SkipLogic form readability fix ===== */
+
+/* Keep the shell dark, but make actual form work areas readable */
+.sl-dark form,
+.sl-dark .formCard,
+.sl-dark .formPanel,
+.sl-dark .formSection {
+  color: #0f172a;
+}
+
+/* Native form controls inside app pages */
+.sl-dark input:not([type="checkbox"]):not([type="radio"]),
+.sl-dark select,
+.sl-dark textarea {
+  background: #ffffff;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+}
+
+.sl-dark input::placeholder,
+.sl-dark textarea::placeholder {
+  color: #64748b;
+}
+
+.sl-dark input:focus,
+.sl-dark select:focus,
+.sl-dark textarea:focus {
+  outline: none;
+  border-color: #3ab5ff;
+  box-shadow: 0 0 0 4px rgba(58, 181, 255, 0.18);
+}
+
+/* Labels/help text on dark pages need more contrast */
+.sl-dark label {
+  color: #f1f5ff;
+}
+
+.sl-dark small,
+.sl-dark .hint,
+.sl-dark .muted,
+.sl-dark p {
+  color: rgba(241, 245, 255, 0.78);
+}
+
+/* White panels used for form sections */
+.sl-dark .sl-form-surface {
+  background: #ffffff;
+  color: #0f172a;
+  border: 1px solid #dbe3f0;
+  border-radius: var(--r-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+
+.sl-dark .sl-form-surface label,
+.sl-dark .sl-form-surface h1,
+.sl-dark .sl-form-surface h2,
+.sl-dark .sl-form-surface h3,
+.sl-dark .sl-form-surface h4,
+.sl-dark .sl-form-surface h5,
+.sl-dark .sl-form-surface h6,
+.sl-dark .sl-form-surface p,
+.sl-dark .sl-form-surface div,
+.sl-dark .sl-form-surface span {
+  color: #0f172a;
+}
+
+.sl-dark .sl-form-surface .muted,
+.sl-dark .sl-form-surface small,
+.sl-dark .sl-form-surface .hint {
+  color: #64748b;
 }
