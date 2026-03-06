@@ -3,8 +3,19 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 
 function Icon({ name }) {
-  const common = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", xmlns: "http://www.w3.org/2000/svg" };
-  const stroke = { stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" };
+  const common = {
+    width: 18,
+    height: 18,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    xmlns: "http://www.w3.org/2000/svg",
+  };
+  const stroke = {
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+  };
 
   switch (name) {
     case "dashboard":
@@ -102,18 +113,33 @@ function NavGroup({ title, items, router }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={styles.groupTitle}>{title}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+
+      <div style={styles.groupList}>
         {items.map((it) => {
           const active =
             router.pathname === it.href ||
             (it.activeStartsWith ? router.pathname.startsWith(it.activeStartsWith) : false);
 
           return (
-            <Link key={it.href} href={it.href} style={{ ...styles.navItem, ...(active ? styles.navItemActive : null) }}>
-              <span style={{ ...styles.iconWrap, ...(active ? styles.iconWrapActive : null) }}>
+            <Link
+              key={it.href}
+              href={it.href}
+              style={{
+                ...styles.navItem,
+                ...(active ? styles.navItemActive : null),
+              }}
+            >
+              <span
+                style={{
+                  ...styles.iconWrap,
+                  ...(active ? styles.iconWrapActive : null),
+                }}
+              >
                 <Icon name={it.icon} />
               </span>
+
               <span style={styles.label}>{it.label}</span>
+
               {it.badge ? <span style={styles.badge}>{it.badge}</span> : null}
             </Link>
           );
@@ -195,7 +221,7 @@ export default function AppSidebar({ profile }) {
       </div>
 
       <div style={styles.footer}>
-        Signed in as <b style={{ color: "var(--d-ink)" }}>{profile?.email || "—"}</b>
+        Signed in as <b style={{ color: "var(--sidebar-text)" }}>{profile?.email || "—"}</b>
       </div>
     </aside>
   );
@@ -208,50 +234,72 @@ const styles = {
     left: 0,
     bottom: 0,
     width: 270,
-    background: "rgba(17, 28, 51, 0.95)", // lighter than before
-    borderRight: "1px solid var(--d-border)",
+    background: "linear-gradient(180deg, var(--sidebar-bg), var(--sidebar-bg-2))",
+    borderRight: "1px solid var(--sidebar-border)",
     padding: 14,
     display: "flex",
     flexDirection: "column",
     zIndex: 20,
+    boxShadow: "6px 0 24px rgba(15,23,42,0.10)",
   },
 
   brand: {
     display: "flex",
     alignItems: "center",
     gap: 10,
-    padding: "10px 10px",
-    borderRadius: 12,
-    background: "rgba(241,245,255,0.05)",
-    border: "1px solid rgba(241,245,255,0.10)",
+    padding: 10,
+    borderRadius: 14,
+    background: "rgba(255,255,255,0.05)",
+    border: "1px solid rgba(255,255,255,0.08)",
     marginBottom: 12,
   },
 
   brandMark: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    background: "linear-gradient(135deg, var(--brand-mint), var(--brand-sky))",
     color: "#071013",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     fontWeight: 900,
     fontSize: 13,
+    flexShrink: 0,
   },
 
-  brandName: { fontWeight: 900, lineHeight: 1.1, color: "var(--d-ink)" },
-  brandSub: { fontSize: 12, color: "var(--d-muted)", marginTop: 2 },
+  brandName: {
+    fontWeight: 900,
+    lineHeight: 1.1,
+    color: "var(--sidebar-text)",
+    letterSpacing: "-0.02em",
+  },
 
-  nav: { flex: 1, overflowY: "auto", paddingRight: 4 },
+  brandSub: {
+    fontSize: 12,
+    color: "var(--sidebar-muted)",
+    marginTop: 2,
+  },
+
+  nav: {
+    flex: 1,
+    overflowY: "auto",
+    paddingRight: 4,
+  },
 
   groupTitle: {
     fontSize: 11,
     fontWeight: 900,
-    color: "rgba(241,245,255,0.62)",
+    color: "var(--sidebar-muted)",
     textTransform: "uppercase",
-    letterSpacing: 0.7,
-    padding: "6px 8px",
+    letterSpacing: 0.8,
+    padding: "8px 8px 6px",
+  },
+
+  groupList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
   },
 
   navItem: {
@@ -259,36 +307,38 @@ const styles = {
     alignItems: "center",
     gap: 10,
     padding: "10px 10px",
-    borderRadius: 12,
+    borderRadius: 14,
     textDecoration: "none",
-    color: "rgba(241,245,255,0.86)",
+    color: "var(--sidebar-text)",
     border: "1px solid transparent",
     background: "transparent",
   },
 
   navItemActive: {
-    background: "rgba(241,245,255,0.06)",
-    border: "1px solid rgba(58,181,255,0.30)",
+    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(58,181,255,0.35)",
   },
 
   iconWrap: {
     width: 30,
     height: 30,
     borderRadius: 10,
-    background: "rgba(241,245,255,0.06)",
+    background: "rgba(255,255,255,0.06)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    color: "rgba(241,245,255,0.85)",
+    color: "rgba(237,243,255,0.92)",
     flexShrink: 0,
   },
 
   iconWrapActive: {
     background: "rgba(58,181,255,0.18)",
-    color: "rgba(241,245,255,0.95)",
   },
 
-  label: { fontWeight: 750, fontSize: 13 },
+  label: {
+    fontWeight: 750,
+    fontSize: 13,
+  },
 
   badge: {
     marginLeft: "auto",
@@ -297,15 +347,15 @@ const styles = {
     padding: "3px 8px",
     borderRadius: 999,
     background: "rgba(55,245,155,0.18)",
-    border: "1px solid rgba(55,245,155,0.35)",
-    color: "rgba(241,245,255,0.92)",
+    border: "1px solid rgba(55,245,155,0.30)",
+    color: "var(--sidebar-text)",
     whiteSpace: "nowrap",
   },
 
   footer: {
     paddingTop: 10,
-    borderTop: "1px solid var(--d-border)",
+    borderTop: "1px solid var(--sidebar-border)",
     fontSize: 12,
-    color: "var(--d-muted)",
+    color: "var(--sidebar-muted)",
   },
 };
