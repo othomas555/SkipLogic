@@ -14,7 +14,6 @@ function ymdTodayUTC() {
 }
 
 function parseYmdAsUTC(ymd) {
-  // ymd: "YYYY-MM-DD"
   if (!ymd) return null;
   const [y, m, d] = ymd.split("-").map((x) => Number(x));
   if (!y || !m || !d) return null;
@@ -31,7 +30,6 @@ function formatYmdUTC(dt) {
 function isWeekendYmd(ymd) {
   const dt = parseYmdAsUTC(ymd);
   if (!dt) return false;
-  // JS getUTCDay(): Sun=0 .. Sat=6
   const dow = dt.getUTCDay();
   return dow === 0 || dow === 6;
 }
@@ -45,8 +43,8 @@ function addBusinessDaysUTC(startYmd, businessDays) {
 
   while (remaining > 0) {
     dt = new Date(dt.getTime() + 24 * 60 * 60 * 1000);
-    const dow = dt.getUTCDay(); // 0 Sun .. 6 Sat
-    if (dow === 0 || dow === 6) continue; // skip weekends
+    const dow = dt.getUTCDay();
+    if (dow === 0 || dow === 6) continue;
     remaining -= 1;
   }
 
@@ -59,11 +57,6 @@ async function getAccessToken() {
   return data?.session?.access_token || null;
 }
 
-/**
- * IMPORTANT:
- * credit_override_token is a Postgres UUID column.
- * We MUST send either a real UUID string or null — NEVER "override-123" and NEVER "".
- */
 function safeRandomUUIDOrNull() {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -79,13 +72,10 @@ function isCreditLimitError(err) {
   const code = err?.code || "";
   const msg = String(err?.message || "");
   if (code !== "P0001") return false;
-  // Your trigger raises "Credit limit exceeded..."
   return msg.toLowerCase().includes("credit limit exceeded");
 }
 
 function extractCreditDetailsFromMessage(msg) {
-  // Expected: "Credit limit exceeded. Unpaid: X, This job: Y, Limit: Z"
-  // Or: "Credit limit exceeded (no credit_limit set...)"
   const text = String(msg || "");
   const lower = text.toLowerCase();
 
@@ -93,7 +83,6 @@ function extractCreditDetailsFromMessage(msg) {
     return { kind: "no_limit", unpaid: null, thisJob: null, limit: null };
   }
 
-  // Try to parse numbers if present
   const unpaidMatch = text.match(/Unpaid:\s*([0-9]+(\.[0-9]+)?)/i);
   const thisJobMatch = text.match(/This job:\s*([0-9]+(\.[0-9]+)?)/i);
   const limitMatch = text.match(/Limit:\s*([0-9]+(\.[0-9]+)?)/i);
@@ -106,6 +95,25 @@ function extractCreditDetailsFromMessage(msg) {
   };
 }
 
+function FieldError({ children }) {
+  if (!children) return null;
+  return <div style={styles.fieldError}>{children}</div>;
+}
+
+function SectionCard({ title, subtitle, children }) {
+  return (
+    <section style={styles.sectionCard}>
+      <div style={styles.sectionCardHeader}>
+        <div>
+          <h3 style={styles.sectionCardTitle}>{title}</h3>
+          {subtitle ? <div style={styles.sectionCardSubtitle}>{subtitle}</div> : null}
+        </div>
+      </div>
+      <div style={styles.sectionCardBody}>{children}</div>
+    </section>
+  );
+}
+
 export default function BookJobPage() {
   const router = useRouter();
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
@@ -114,19 +122,15 @@ export default function BookJobPage() {
   const [skipTypes, setSkipTypes] = useState([]);
   const [permitSettings, setPermitSettings] = useState([]);
 
-  // NOTE: we keep errorMsg for internal use if you ever need it,
-  // but we no longer rely on "top of page" banners for user feedback.
   const [errorMsg, setErrorMsg] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
 
-  // Toasts (popups) — NEW
   const [toasts, setToasts] = useState([]);
   function pushToast({ type = "info", title = "", message = "", durationMs = 6000 } = {}) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const toast = { id, type, title, message };
     setToasts((prev) => [...prev, toast]);
 
-    // Auto-remove
     const ms = Number(durationMs);
     if (Number.isFinite(ms) && ms > 0) {
       setTimeout(() => {
@@ -152,50 +156,38 @@ export default function BookJobPage() {
     });
   }
 
-  // Form state
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Site / job fields
   const [siteName, setSiteName] = useState("");
   const [siteAddress1, setSiteAddress1] = useState("");
   const [siteAddress2, setSiteAddress2] = useState("");
   const [siteTown, setSiteTown] = useState("");
   const [sitePostcode, setSitePostcode] = useState("");
-  const [scheduledDate, setScheduledDate] = useState(""); // yyyy-mm-dd
+  const [scheduledDate, setScheduledDate] = useState("");
   const [notes, setNotes] = useState("");
   const [paymentType, setPaymentType] = useState("card");
 
-  // Placement / permits
-  const [placementType, setPlacementType] = useState("private"); // 'private' | 'permit'
+  const [placementType, setPlacementType] = useState("private");
   const [selectedPermitId, setSelectedPermitId] = useState("");
   const [permitOverride, setPermitOverride] = useState(false);
   const [weekendOverride, setWeekendOverride] = useState(false);
 
-  // Postcode → skip + price
   const [postcodeSkips, setPostcodeSkips] = useState([]);
   const [postcodeMsg, setPostcodeMsg] = useState("");
   const [jobPrice, setJobPrice] = useState("");
   const [lookingUpPostcode, setLookingUpPostcode] = useState(false);
 
-  // Create invoice toggle — DEFAULT ON
   const [createInvoice, setCreateInvoice] = useState(true);
-
-  // Mark paid toggle — DEFAULT OFF
   const [markPaidNow, setMarkPaidNow] = useState(false);
 
-  // Invoice result messaging (kept for internal use, but we show popups)
   const [invoiceMsg, setInvoiceMsg] = useState("");
   const [invoiceErr, setInvoiceErr] = useState("");
-
-  // Payment result messaging (kept for internal use, but we show popups)
   const [paymentMsg, setPaymentMsg] = useState("");
   const [paymentErr, setPaymentErr] = useState("");
 
-  // “Same as customer address”
   const [sameAsCustomerAddress, setSameAsCustomerAddress] = useState(false);
 
-  // Add customer modal
   const [showNewCustomerModal, setShowNewCustomerModal] = useState(false);
   const [newCustomerFirstName, setNewCustomerFirstName] = useState("");
   const [newCustomerLastName, setNewCustomerLastName] = useState("");
@@ -210,14 +202,12 @@ export default function BookJobPage() {
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [newCustomerError, setNewCustomerError] = useState("");
 
-  // Last booked job for visual confirmation
   const [lastJob, setLastJob] = useState(null);
   const [lastJobCustomerName, setLastJobCustomerName] = useState("");
   const [lastJobSkipName, setLastJobSkipName] = useState("");
 
   const [selectedSkipTypeId, setSelectedSkipTypeId] = useState("");
 
-  // Credit-limit modal
   const [showCreditLimitModal, setShowCreditLimitModal] = useState(false);
   const [creditLimitModalMsg, setCreditLimitModalMsg] = useState("");
   const [creditLimitDetails, setCreditLimitDetails] = useState(null);
@@ -227,8 +217,6 @@ export default function BookJobPage() {
 
   useEffect(() => {
     if (checking) return;
-
-    // Auth/load error as popup
     if (authError) {
       pushToast({ type: "error", title: "Auth error", message: String(authError), durationMs: 10000 });
     }
@@ -244,8 +232,7 @@ export default function BookJobPage() {
 
       const { data: customerData, error: customersError } = await supabase
         .from("customers")
-        .select(
-          `
+        .select(`
           id,
           first_name,
           last_name,
@@ -256,8 +243,7 @@ export default function BookJobPage() {
           address_line3,
           postcode,
           is_credit_account
-        `
-        )
+        `)
         .eq("subscriber_id", subscriberId)
         .order("last_name", { ascending: true });
 
@@ -303,12 +289,9 @@ export default function BookJobPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, subscriberId]);
 
-  // Helpers
   function formatCustomerLabel(c) {
     const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
-    if (c.company_name) {
-      return `${c.company_name} – ${baseName || "Unknown contact"}`;
-    }
+    if (c.company_name) return `${c.company_name} – ${baseName || "Unknown contact"}`;
     return baseName || "Unknown customer";
   }
 
@@ -316,9 +299,7 @@ export default function BookJobPage() {
     const c = customers.find((cust) => cust.id === customerId);
     if (!c) return "Unknown customer";
     const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
-    if (c.company_name) {
-      return `${c.company_name} – ${baseName || "Unknown contact"}`;
-    }
+    if (c.company_name) return `${c.company_name} – ${baseName || "Unknown contact"}`;
     return baseName || "Unknown customer";
   }
 
@@ -337,7 +318,6 @@ export default function BookJobPage() {
     return permitSettings.find((p) => p.id === permitId) || null;
   }
 
-  // Copy customer address into site fields
   function applyCustomerAddressToSite(customerId) {
     const c = customers.find((cust) => cust.id === customerId);
     if (!c) return;
@@ -349,12 +329,9 @@ export default function BookJobPage() {
 
   function handleSameAsCustomerToggle(checked) {
     setSameAsCustomerAddress(checked);
-    if (checked && selectedCustomerId) {
-      applyCustomerAddressToSite(selectedCustomerId);
-    }
+    if (checked && selectedCustomerId) applyCustomerAddressToSite(selectedCustomerId);
   }
 
-  // Permit date rules
   const permitInfo = useMemo(() => {
     if (placementType !== "permit") return null;
     if (!selectedPermitId) return null;
@@ -371,28 +348,20 @@ export default function BookJobPage() {
   function enforceDateRules(nextYmd, { showErrors = true } = {}) {
     if (!nextYmd) return true;
 
-    // Weekend rule (hard rule unless weekend_override)
     if (!weekendOverride && isWeekendYmd(nextYmd)) {
       if (showErrors) {
         const msg = "Weekends are blocked. Tick “Weekend override” to allow Saturday/Sunday.";
-        setFieldErrors((prev) => ({
-          ...prev,
-          scheduledDate: msg,
-        }));
+        setFieldErrors((prev) => ({ ...prev, scheduledDate: msg }));
         pushToast({ type: "error", title: "Date not allowed", message: msg, durationMs: 8000 });
       }
       return false;
     }
 
-    // Permit earliest rule (unless permit_override)
     if (placementType === "permit" && permitInfo && !permitOverride) {
       if (earliestAllowedDateYmd && nextYmd < earliestAllowedDateYmd) {
         if (showErrors) {
           const msg = `This permit usually takes ${permitInfo.delay_business_days || 0} business day(s). Earliest delivery is ${earliestAllowedDateYmd}. Tick “Permit override” to book earlier.`;
-          setFieldErrors((prev) => ({
-            ...prev,
-            scheduledDate: msg,
-          }));
+          setFieldErrors((prev) => ({ ...prev, scheduledDate: msg }));
           pushToast({ type: "error", title: "Permit delay", message: msg, durationMs: 9000 });
         }
         return false;
@@ -402,7 +371,6 @@ export default function BookJobPage() {
     return true;
   }
 
-  // Postcode lookup
   const handleLookupPostcode = async () => {
     setPostcodeMsg("");
     setErrorMsg("");
@@ -461,7 +429,6 @@ export default function BookJobPage() {
     }
   };
 
-  // Create customer from modal
   async function handleCreateCustomerFromModal() {
     try {
       setNewCustomerError("");
@@ -494,8 +461,7 @@ export default function BookJobPage() {
             is_credit_account: newCustomerCreditAccount,
           },
         ])
-        .select(
-          `
+        .select(`
           id,
           first_name,
           last_name,
@@ -506,8 +472,7 @@ export default function BookJobPage() {
           address_line3,
           postcode,
           is_credit_account
-        `
-        )
+        `)
         .single();
 
       if (error) {
@@ -530,7 +495,6 @@ export default function BookJobPage() {
 
       pushToast({ type: "success", title: "Customer added", message: "Customer created and selected.", durationMs: 3500 });
 
-      // Reset modal
       setNewCustomerFirstName("");
       setNewCustomerLastName("");
       setNewCustomerCompanyName("");
@@ -569,12 +533,10 @@ export default function BookJobPage() {
   }, [numericSkipPriceIncVat, permitCostNoVat]);
 
   const canShowMarkPaid = useMemo(() => {
-    // Only allow "mark paid now" for cash/card bookings (not account).
     return paymentType === "cash" || paymentType === "card";
   }, [paymentType]);
 
   useEffect(() => {
-    // If payment type changes to something we don't support for marking paid, force it off.
     if (!canShowMarkPaid && markPaidNow) setMarkPaidNow(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canShowMarkPaid]);
@@ -597,7 +559,6 @@ export default function BookJobPage() {
   }
 
   async function runPostInsertWork(inserted, { jobPriceValue }) {
-    // Create initial delivery event in the job timeline
     const { error: eventError } = await supabase.rpc("create_job_event", {
       _subscriber_id: subscriberId,
       _job_id: inserted.id,
@@ -612,7 +573,6 @@ export default function BookJobPage() {
       throw new Error(`Job was created but the delivery event failed: ${eventError.message}`);
     }
 
-    // If requested, create invoice immediately
     let invoiceCreatedOk = false;
     if (createInvoice) {
       try {
@@ -648,7 +608,6 @@ export default function BookJobPage() {
       }
     }
 
-    // If requested, apply payment in Xero (only after invoice created)
     if (markPaidNow) {
       if (!createInvoice) {
         const msg = "Payment not applied: you must tick “Create invoice in Xero” to mark paid now.";
@@ -697,7 +656,6 @@ export default function BookJobPage() {
       }
     }
 
-    // Email (fire and forget)
     try {
       const customerLabel = findCustomerNameById(inserted.customer_id);
       const customerEmail = findCustomerEmailById(inserted.customer_id);
@@ -714,16 +672,13 @@ export default function BookJobPage() {
       });
     } catch (err) {
       console.error("Email send failed:", err);
-      // Non-blocking, but tell you
       pushToast({ type: "info", title: "Email", message: "Booking saved, but email send failed (see console).", durationMs: 8000 });
     }
 
-    // Visual confirmation
     setLastJob(inserted);
     setLastJobCustomerName(findCustomerNameById(inserted.customer_id));
     setLastJobSkipName(findSkipTypeNameById(inserted.skip_type_id));
 
-    // Popup success (so you never need to scroll)
     pushToast({
       type: "success",
       title: "Job booked",
@@ -731,7 +686,6 @@ export default function BookJobPage() {
       durationMs: 6500,
     });
 
-    // Reset form (IMPORTANT: keep createInvoice as-is, do NOT force it off)
     setSelectedCustomerId("");
     setSelectedSkipTypeId("");
     setSiteName("");
@@ -766,7 +720,6 @@ export default function BookJobPage() {
     setPaymentMsg("");
     setPaymentErr("");
 
-    // If modal is open, we should not submit again
     if (showCreditLimitModal) return;
 
     const newErrors = {};
@@ -783,8 +736,6 @@ export default function BookJobPage() {
       if (!selectedPermitId) newErrors.placement = "Select a council permit (or choose Private ground).";
     }
 
-    // IMPORTANT: scheduledDate is optional (your UI allows blank)
-    // but if present, it must be valid with rules.
     if (scheduledDate) {
       const ok = enforceDateRules(scheduledDate, { showErrors: false });
       if (!ok) {
@@ -837,7 +788,6 @@ export default function BookJobPage() {
         payment_type: paymentType || null,
         price_inc_vat: numericPrice,
 
-        // Placement / permit snapshot
         placement_type: placementType,
         permit_setting_id: permit ? permit.id : null,
         permit_price_no_vat: permit ? Number(permit.price_no_vat || 0) : null,
@@ -847,7 +797,6 @@ export default function BookJobPage() {
         weekend_override: !!weekendOverride,
       };
 
-      // STEP 4: Allocate job number per-subscriber (atomic, no collisions)
       const { data: allocatedJobNumber, error: allocErr } = await supabase.rpc("alloc_job_number", {
         p_subscriber_id: subscriberId,
       });
@@ -866,8 +815,7 @@ export default function BookJobPage() {
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([insertPayload])
-        .select(
-          `
+        .select(`
           id,
           job_number,
           customer_id,
@@ -891,14 +839,12 @@ export default function BookJobPage() {
           xero_invoice_id,
           xero_invoice_number,
           xero_invoice_status
-        `
-        )
+        `)
         .single();
 
       if (insertError) {
         console.error("Insert job error:", insertError);
 
-        // CREDIT LIMIT → show modal (no popup here; modal is the popup)
         if (isCreditLimitError(insertError)) {
           setSaving(false);
           openCreditLimitModal({
@@ -948,7 +894,6 @@ export default function BookJobPage() {
         return;
       }
 
-      // STEP 4 (override path): Allocate job number per-subscriber
       const { data: allocatedJobNumber, error: allocErr } = await supabase.rpc("alloc_job_number", {
         p_subscriber_id: subscriberId,
       });
@@ -962,9 +907,6 @@ export default function BookJobPage() {
         return;
       }
 
-      // Only include columns we KNOW exist (from your schema check):
-      // - credit_override_token (uuid)
-      // - credit_override_reason (text)
       const overrideReason = `Credit limit override by ${user?.email || "unknown"} on ${new Date().toISOString()}`;
 
       const overridePayload = {
@@ -977,8 +919,7 @@ export default function BookJobPage() {
       const { data: inserted, error: insertError } = await supabase
         .from("jobs")
         .insert([overridePayload])
-        .select(
-          `
+        .select(`
           id,
           job_number,
           customer_id,
@@ -1002,8 +943,7 @@ export default function BookJobPage() {
           xero_invoice_id,
           xero_invoice_number,
           xero_invoice_status
-        `
-        )
+        `)
         .single();
 
       if (insertError) {
@@ -1012,11 +952,9 @@ export default function BookJobPage() {
         setErrorMsg(msg);
         pushToast({ type: "error", title: "Override failed", message: msg, durationMs: 10000 });
         setCreditOverrideWorking(false);
-        // keep modal open so you can try again / cancel
         return;
       }
 
-      // Log override via RPC (does not block booking if it fails)
       try {
         const custName = findCustomerNameById(overridePayload.customer_id);
         const reasonParts = ["Credit limit override from /app/jobs/book", `Customer: ${custName}`];
@@ -1039,7 +977,6 @@ export default function BookJobPage() {
         });
       }
 
-      // Continue normal post-insert flow
       await runPostInsertWork(inserted, { jobPriceValue: String(pendingInsertPayload.price_inc_vat ?? "") });
 
       setCreditOverrideWorking(false);
@@ -1050,49 +987,20 @@ export default function BookJobPage() {
       setErrorMsg(msg);
       pushToast({ type: "error", title: "Override failed", message: msg, durationMs: 10000 });
       setCreditOverrideWorking(false);
-      // keep modal open; user can cancel
     }
   }
 
   if (checking) {
     return (
-      <main
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
+      <main style={styles.loadingWrap}>
         <p>Loading…</p>
       </main>
     );
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        padding: 24,
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      {/* Toasts (Popups) */}
-      <div
-        style={{
-          position: "fixed",
-          top: 16,
-          right: 16,
-          zIndex: 2000,
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-          width: 380,
-          maxWidth: "calc(100vw - 32px)",
-          pointerEvents: "none",
-        }}
-      >
+    <main style={styles.page}>
+      <div style={styles.toastStack}>
         {toasts.map((t) => {
           const bg =
             t.type === "error" ? "#fff1f0" : t.type === "success" ? "#e6ffed" : t.type === "info" ? "#eef5ff" : "#f5f5f5";
@@ -1101,69 +1009,43 @@ export default function BookJobPage() {
           const titleColor = t.type === "error" ? "#8a1f1f" : t.type === "success" ? "#1f6b2a" : "#1d3b6a";
 
           return (
-            <div
-              key={t.id}
-              style={{
-                background: bg,
-                border,
-                borderRadius: 10,
-                padding: 12,
-                boxShadow: "0 10px 24px rgba(0,0,0,0.12)",
-                pointerEvents: "auto",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                <div style={{ fontWeight: 900, color: titleColor, fontSize: 14 }}>{t.title || "Notice"}</div>
+            <div key={t.id} style={{ ...styles.toast, background: bg, border }}>
+              <div style={styles.toastHead}>
+                <div style={{ ...styles.toastTitle, color: titleColor }}>{t.title || "Notice"}</div>
                 <button
                   type="button"
                   onClick={() => removeToast(t.id)}
-                  style={{
-                    border: "none",
-                    background: "transparent",
-                    cursor: "pointer",
-                    fontSize: 16,
-                    lineHeight: 1,
-                    padding: 2,
-                  }}
+                  style={styles.toastClose}
                   aria-label="Dismiss"
                 >
                   ×
                 </button>
               </div>
-              {t.message ? <div style={{ marginTop: 6, fontSize: 13, color: "#333", whiteSpace: "pre-wrap" }}>{t.message}</div> : null}
+              {t.message ? <div style={styles.toastMessage}>{t.message}</div> : null}
             </div>
           );
         })}
       </div>
 
-      <header style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, marginBottom: 8 }}>Book a Standard Skip</h1>
-        {user?.email && <p style={{ fontSize: 14, color: "#555" }}>Signed in as {user.email}</p>}
-        <p style={{ marginTop: 8 }}>
-          <a href="/app/jobs" style={{ fontSize: 14 }}>
-            ← Back to jobs list
-          </a>
-        </p>
+      <header style={styles.header}>
+        <div>
+          <h1 style={styles.pageTitle}>Book a Standard Skip</h1>
+          {user?.email ? <p style={styles.pageSub}>Signed in as {user.email}</p> : null}
+          <p style={styles.backRow}>
+            <a href="/app/jobs" style={styles.backLink}>
+              ← Back to jobs list
+            </a>
+          </p>
+        </div>
       </header>
 
-      {/* (Removed top-of-page error/success banners — everything is now popup-based) */}
-
-      {/* Success / visual confirmation (kept, but popups are the primary feedback) */}
       {lastJob && (
-        <section
-          style={{
-            marginBottom: 24,
-            padding: 12,
-            borderRadius: 6,
-            background: "#e6ffed",
-            border: "1px solid #b7eb8f",
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: 16 }}>Job booked</h2>
-          <p style={{ margin: "4px 0" }}>
+        <section style={styles.successBanner}>
+          <h2 style={styles.successTitle}>Job booked</h2>
+          <p style={styles.successText}>
             Job number: <strong>{lastJob.job_number || lastJob.id}</strong>
           </p>
-          <p style={{ margin: "4px 0" }}>
+          <p style={styles.successText}>
             Customer: {lastJobCustomerName}
             <br />
             Skip type: {lastJobSkipName}
@@ -1178,73 +1060,47 @@ export default function BookJobPage() {
               </>
             ) : null}
           </p>
-          <p style={{ margin: "4px 0" }}>
+          <p style={styles.successText}>
             <a href={`/app/jobs/${lastJob.id}`}>View / edit this job ↗</a>
           </p>
         </section>
       )}
 
-      {/* Booking form */}
-      <section
-        style={{
-          marginBottom: 32,
-          padding: 16,
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          maxWidth: 700,
-        }}
-      >
+      <section className="sl-page-surface" style={styles.formSurface}>
         <form onSubmit={handleAddJob}>
-          {/* Step 1 – Postcode & Skip */}
-          <div
-            style={{
-              marginBottom: 16,
-              padding: 12,
-              borderRadius: 6,
-              border: "1px solid #eee",
-              backgroundColor: "#f9f9f9",
-            }}
+          <SectionCard
+            title="Step 1: Postcode & Skip"
+            subtitle="Find the skips available for the delivery postcode, then confirm the selling price."
           >
-            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Step 1: Postcode & Skip</h3>
-
-            <div style={{ marginBottom: 8 }}>
-              <label style={{ display: "block", marginBottom: 4 }}>Site postcode *</label>
-              <div style={{ display: "flex", gap: 8 }}>
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Site postcode *</label>
+              <div style={styles.row}>
                 <input
                   type="text"
                   value={sitePostcode}
                   onChange={(e) => setSitePostcode(e.target.value)}
                   placeholder="CF32 7AB"
-                  style={{
-                    flex: 1,
-                    padding: 8,
-                    borderRadius: 4,
-                    border: "1px solid #ccc",
-                  }}
+                  style={styles.inputFlex}
                 />
                 <button
                   type="button"
                   onClick={handleLookupPostcode}
                   disabled={lookingUpPostcode}
                   style={{
-                    padding: "8px 12px",
-                    borderRadius: 4,
-                    border: "1px solid #0070f3",
-                    backgroundColor: lookingUpPostcode ? "#e0e0e0" : "#0070f3",
-                    color: "#fff",
+                    ...styles.primaryBtn,
+                    opacity: lookingUpPostcode ? 0.75 : 1,
                     cursor: lookingUpPostcode ? "default" : "pointer",
-                    whiteSpace: "nowrap",
                   }}
                 >
                   {lookingUpPostcode ? "Looking up…" : "Find skips"}
                 </button>
               </div>
-              {postcodeMsg && <div style={{ marginTop: 4, fontSize: 12 }}>{postcodeMsg}</div>}
-              {fieldErrors.sitePostcode && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.sitePostcode}</div>}
+              {postcodeMsg ? <div style={styles.hintText}>{postcodeMsg}</div> : null}
+              <FieldError>{fieldErrors.sitePostcode}</FieldError>
             </div>
 
-            <div style={{ marginBottom: 8 }}>
-              <label style={{ display: "block", marginBottom: 4 }}>Available skips for this postcode *</label>
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Available skips for this postcode *</label>
               <select
                 value={selectedSkipTypeId}
                 onChange={(e) => {
@@ -1260,12 +1116,7 @@ export default function BookJobPage() {
                   }
                 }}
                 disabled={postcodeSkips.length === 0}
-                style={{
-                  width: "100%",
-                  padding: 8,
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                }}
+                style={styles.select}
               >
                 <option value="">{postcodeSkips.length === 0 ? "No skips found yet" : "Select skip type"}</option>
                 {postcodeSkips.map((s) => (
@@ -1274,11 +1125,11 @@ export default function BookJobPage() {
                   </option>
                 ))}
               </select>
-              {fieldErrors.skipType && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.skipType}</div>}
+              <FieldError>{fieldErrors.skipType}</FieldError>
             </div>
 
-            <div>
-              <label style={{ display: "block", marginBottom: 4 }}>Skip price for this job (inc VAT) (£)</label>
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Skip price for this job (inc VAT) (£)</label>
               <input
                 type="number"
                 step="0.01"
@@ -1287,433 +1138,362 @@ export default function BookJobPage() {
                   setJobPrice(e.target.value);
                   setFieldErrors((prev) => ({ ...prev, jobPrice: undefined }));
                 }}
-                style={{
-                  width: 160,
-                  padding: 8,
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                  textAlign: "right",
-                }}
+                style={styles.priceInput}
               />
-              <div style={{ marginTop: 4, fontSize: 12 }}>Auto-filled from postcode table. You can override if needed.</div>
-              {fieldErrors.jobPrice && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.jobPrice}</div>}
+              <div style={styles.hintText}>Auto-filled from postcode table. You can override if needed.</div>
+              <FieldError>{fieldErrors.jobPrice}</FieldError>
             </div>
-          </div>
+          </SectionCard>
 
-          {/* Customer */}
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Customer *</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <select
-                value={selectedCustomerId}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  setSelectedCustomerId(id);
-                  setFieldErrors((prev) => ({
-                    ...prev,
-                    customer: undefined,
-                    paymentType: undefined,
-                  }));
-                  if (sameAsCustomerAddress && id) applyCustomerAddressToSite(id);
-                }}
-                style={{
-                  flex: 1,
-                  padding: 8,
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                }}
-              >
-                <option value="">Select a customer…</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {formatCustomerLabel(c)}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => {
-                  setNewCustomerError("");
-                  setShowNewCustomerModal(true);
-                }}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                  background: "#f5f5f5",
-                  cursor: "pointer",
-                  fontSize: 14,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                + New
-              </button>
+          <SectionCard
+            title="Customer & Site"
+            subtitle="Choose the customer first, then confirm the delivery address and site details."
+          >
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Customer *</label>
+              <div style={styles.row}>
+                <select
+                  value={selectedCustomerId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSelectedCustomerId(id);
+                    setFieldErrors((prev) => ({
+                      ...prev,
+                      customer: undefined,
+                      paymentType: undefined,
+                    }));
+                    if (sameAsCustomerAddress && id) applyCustomerAddressToSite(id);
+                  }}
+                  style={styles.inputFlex}
+                >
+                  <option value="">Select a customer…</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {formatCustomerLabel(c)}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewCustomerError("");
+                    setShowNewCustomerModal(true);
+                  }}
+                  style={styles.secondaryBtn}
+                >
+                  + New
+                </button>
+              </div>
+              <FieldError>{fieldErrors.customer}</FieldError>
             </div>
-            {fieldErrors.customer && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.customer}</div>}
-          </div>
 
-          {/* Same as customer address */}
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+            <div style={styles.checkboxRowWrap}>
+              <label style={styles.checkboxLabelLight}>
+                <input
+                  type="checkbox"
+                  checked={sameAsCustomerAddress}
+                  disabled={!selectedCustomerId}
+                  onChange={(e) => handleSameAsCustomerToggle(e.target.checked)}
+                />
+                <span>Site address same as customer</span>
+              </label>
+              {!selectedCustomerId ? <div style={styles.hintText}>Select a customer first to use this.</div> : null}
+            </div>
+
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Site name / description (optional)</label>
               <input
-                type="checkbox"
-                checked={sameAsCustomerAddress}
-                disabled={!selectedCustomerId}
-                onChange={(e) => handleSameAsCustomerToggle(e.target.checked)}
+                type="text"
+                value={siteName}
+                onChange={(e) => setSiteName(e.target.value)}
+                placeholder="e.g. Front drive, Unit 3, Rear yard"
+                style={styles.input}
               />
-              Site address same as customer
-            </label>
-            {!selectedCustomerId && <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>Select a customer first to use this.</div>}
-          </div>
+            </div>
 
-          {/* Site fields */}
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Site name / description (optional)</label>
-            <input
-              type="text"
-              value={siteName}
-              onChange={(e) => setSiteName(e.target.value)}
-              placeholder="e.g. Front drive, Unit 3, Rear yard"
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Site address line 1</label>
+              <input
+                type="text"
+                value={siteAddress1}
+                onChange={(e) => setSiteAddress1(e.target.value)}
+                style={styles.input}
+              />
+            </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Site address line 1</label>
-            <input
-              type="text"
-              value={siteAddress1}
-              onChange={(e) => setSiteAddress1(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Site address line 2 (optional)</label>
+              <input
+                type="text"
+                value={siteAddress2}
+                onChange={(e) => setSiteAddress2(e.target.value)}
+                style={styles.input}
+              />
+            </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Site address line 2 (optional)</label>
-            <input
-              type="text"
-              value={siteAddress2}
-              onChange={(e) => setSiteAddress2(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-          </div>
-
-          <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: "block", marginBottom: 4 }}>Town</label>
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Town</label>
               <input
                 type="text"
                 value={siteTown}
                 onChange={(e) => setSiteTown(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: 8,
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                }}
+                style={styles.input}
               />
             </div>
-          </div>
+          </SectionCard>
 
-          {/* Placement */}
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Placement</label>
-            <select
-              value={placementType === "private" ? "private" : selectedPermitId ? `permit:${selectedPermitId}` : "permit:"}
-              onChange={(e) => {
-                const v = e.target.value;
-                setFieldErrors((prev) => ({ ...prev, placement: undefined, scheduledDate: undefined }));
-
-                if (v === "private") {
-                  setPlacementType("private");
-                  setSelectedPermitId("");
-                  setPermitOverride(false);
-                  if (scheduledDate) {
-                    const ok = enforceDateRules(scheduledDate, { showErrors: true });
-                    if (!ok) setScheduledDate("");
-                  }
-                  return;
-                }
-
-                if (v.startsWith("permit:")) {
-                  const id = v.slice("permit:".length);
-                  setPlacementType("permit");
-                  setSelectedPermitId(id || "");
-                  if (scheduledDate) {
-                    const ok = enforceDateRules(scheduledDate, { showErrors: true });
-                    if (!ok) setScheduledDate("");
-                  }
-                }
-              }}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            >
-              <option value="private">Private ground (no permit)</option>
-              <optgroup label="Council permit (road)">
-                {permitSettings.length === 0 ? (
-                  <option value="permit:" disabled>
-                    No active permits configured (add them in Settings)
-                  </option>
-                ) : (
-                  permitSettings.map((p) => (
-                    <option key={p.id} value={`permit:${p.id}`}>
-                      {p.name} — £{Number(p.price_no_vat || 0).toFixed(2)} (NO VAT), {Number(p.delay_business_days || 0)} business day(s)
-                    </option>
-                  ))
-                )}
-              </optgroup>
-            </select>
-
-            {placementType === "permit" && permitInfo ? (
-              <div style={{ marginTop: 6, fontSize: 12, color: "#333" }}>
-                Permit: <b>{permitInfo.name}</b> — £{Number(permitInfo.price_no_vat || 0).toFixed(2)} (NO VAT).
-                <br />
-                Typical approval delay: <b>{Number(permitInfo.delay_business_days || 0)}</b> business day(s). Earliest delivery: <b>{earliestAllowedDateYmd || "—"}</b>{" "}
-                (unless overridden).
-              </div>
-            ) : null}
-
-            {fieldErrors.placement && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.placement}</div>}
-          </div>
-
-          {/* Overrides */}
-          <div style={{ marginBottom: 12, display: "grid", gap: 8 }}>
-            <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 14 }}>
-              <input
-                type="checkbox"
-                checked={weekendOverride}
-                onChange={(e) => {
-                  setWeekendOverride(e.target.checked);
-                  setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
-                  if (!e.target.checked && scheduledDate && isWeekendYmd(scheduledDate)) {
-                    setScheduledDate("");
-                  }
-                }}
-              />
-              Weekend override (allow Saturday/Sunday)
-            </label>
-
-            <label
-              style={{
-                display: "inline-flex",
-                gap: 8,
-                alignItems: "center",
-                fontSize: 14,
-                opacity: placementType === "permit" ? 1 : 0.5,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={permitOverride}
-                disabled={placementType !== "permit"}
-                onChange={(e) => {
-                  setPermitOverride(e.target.checked);
-                  setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
-                  if (
-                    placementType === "permit" &&
-                    permitInfo &&
-                    !e.target.checked &&
-                    scheduledDate &&
-                    earliestAllowedDateYmd &&
-                    scheduledDate < earliestAllowedDateYmd
-                  ) {
-                    setScheduledDate("");
-                  }
-                }}
-              />
-              Permit override (book earlier than approval delay)
-            </label>
-          </div>
-
-          {/* Delivery date */}
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Delivery date</label>
-            <input
-              type="date"
-              value={scheduledDate}
-              onChange={(e) => {
-                const next = e.target.value || "";
-                setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
-
-                if (!next) {
-                  setScheduledDate("");
-                  return;
-                }
-
-                const ok = enforceDateRules(next, { showErrors: true });
-                if (!ok) {
-                  setScheduledDate("");
-                  return;
-                }
-
-                setScheduledDate(next);
-              }}
-              style={{
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            />
-            <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>Weekends are blocked by default. Permit delays count Mon–Fri only.</div>
-            {fieldErrors.scheduledDate && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.scheduledDate}</div>}
-          </div>
-
-          {/* Payment type */}
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Payment type</label>
-            <select
-              value={paymentType}
-              onChange={(e) => {
-                setPaymentType(e.target.value);
-                setFieldErrors((prev) => ({ ...prev, paymentType: undefined }));
-              }}
-              disabled={!selectedCustomerId}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-              }}
-            >
-              <option value="">Select payment type</option>
-              <option value="card">Card</option>
-              <option value="cash">Cash</option>
-              <option value="account">Account</option>
-            </select>
-            {!selectedCustomerId && <div style={{ fontSize: 12, marginTop: 4, color: "#666" }}>Select a customer to choose payment type.</div>}
-            {fieldErrors.paymentType && <div style={{ marginTop: 4, fontSize: 12, color: "red" }}>{fieldErrors.paymentType}</div>}
-          </div>
-
-          {/* Totals */}
-          <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
-            <div style={{ fontWeight: 800, marginBottom: 6 }}>Charges</div>
-            <div style={{ fontSize: 13, color: "#333", lineHeight: 1.6 }}>
-              <div>
-                Skip hire (inc VAT): <b>£{numericSkipPriceIncVat.toFixed(2)}</b>
-              </div>
-              <div>
-                Permit (NO VAT): <b>£{permitCostNoVat.toFixed(2)}</b>
-              </div>
-              <div style={{ marginTop: 6, fontSize: 14 }}>
-                Total to charge: <b>£{totalChargeDisplay.toFixed(2)}</b>
-              </div>
-            </div>
-          </div>
-
-          {/* Create invoice toggle */}
-          <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 800 }}>
-              <input type="checkbox" checked={createInvoice} onChange={(e) => setCreateInvoice(e.target.checked)} />
-              Create invoice in Xero
-            </label>
-            <div style={{ fontSize: 12, marginTop: 6, color: "#666", lineHeight: 1.4 }}>If ticked, SkipLogic will create the invoice immediately after booking.</div>
-          </div>
-
-          {/* Mark paid now */}
-          <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, border: "1px solid #eee", background: "#fafafa" }}>
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                fontWeight: 800,
-                opacity: canShowMarkPaid ? 1 : 0.5,
-              }}
-              title={canShowMarkPaid ? "" : "Mark paid is only available for cash/card bookings"}
-            >
-              <input type="checkbox" checked={markPaidNow} disabled={!canShowMarkPaid} onChange={(e) => setMarkPaidNow(e.target.checked)} />
-              Mark invoice as paid now (applies payment in Xero)
-            </label>
-            <div style={{ fontSize: 12, marginTop: 6, color: "#666", lineHeight: 1.4 }}>
-              Only use this if you have taken the payment now (cash/card). Requires “Create invoice in Xero”.
-            </div>
-          </div>
-
-          {/* Notes */}
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Notes (optional)</label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={3}
-              style={{
-                width: "100%",
-                padding: 8,
-                borderRadius: 4,
-                border: "1px solid #ccc",
-                resize: "vertical",
-              }}
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={saving}
-            style={{
-              padding: "8px 16px",
-              borderRadius: 4,
-              border: "none",
-              cursor: saving ? "default" : "pointer",
-              backgroundColor: saving ? "#999" : "#0070f3",
-              color: "#fff",
-              fontWeight: 500,
-            }}
+          <SectionCard
+            title="Placement, Date & Payment"
+            subtitle="Choose whether the skip is on private ground or requires a road permit, then confirm date and payment."
           >
-            {saving ? "Saving…" : "Book A Standard Skip"}
-          </button>
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Placement</label>
+              <select
+                value={placementType === "private" ? "private" : selectedPermitId ? `permit:${selectedPermitId}` : "permit:"}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setFieldErrors((prev) => ({ ...prev, placement: undefined, scheduledDate: undefined }));
+
+                  if (v === "private") {
+                    setPlacementType("private");
+                    setSelectedPermitId("");
+                    setPermitOverride(false);
+                    if (scheduledDate) {
+                      const ok = enforceDateRules(scheduledDate, { showErrors: true });
+                      if (!ok) setScheduledDate("");
+                    }
+                    return;
+                  }
+
+                  if (v.startsWith("permit:")) {
+                    const id = v.slice("permit:".length);
+                    setPlacementType("permit");
+                    setSelectedPermitId(id || "");
+                    if (scheduledDate) {
+                      const ok = enforceDateRules(scheduledDate, { showErrors: true });
+                      if (!ok) setScheduledDate("");
+                    }
+                  }
+                }}
+                style={styles.select}
+              >
+                <option value="private">Private ground (no permit)</option>
+                <optgroup label="Council permit (road)">
+                  {permitSettings.length === 0 ? (
+                    <option value="permit:" disabled>
+                      No active permits configured (add them in Settings)
+                    </option>
+                  ) : (
+                    permitSettings.map((p) => (
+                      <option key={p.id} value={`permit:${p.id}`}>
+                        {p.name} — £{Number(p.price_no_vat || 0).toFixed(2)} (NO VAT), {Number(p.delay_business_days || 0)} business day(s)
+                      </option>
+                    ))
+                  )}
+                </optgroup>
+              </select>
+
+              {placementType === "permit" && permitInfo ? (
+                <div style={styles.infoBox}>
+                  Permit: <b>{permitInfo.name}</b> — £{Number(permitInfo.price_no_vat || 0).toFixed(2)} (NO VAT).
+                  <br />
+                  Typical approval delay: <b>{Number(permitInfo.delay_business_days || 0)}</b> business day(s). Earliest delivery: <b>{earliestAllowedDateYmd || "—"}</b>.
+                </div>
+              ) : null}
+
+              <FieldError>{fieldErrors.placement}</FieldError>
+            </div>
+
+            <div style={styles.toggleGrid}>
+              <label style={styles.checkboxLabelLight}>
+                <input
+                  type="checkbox"
+                  checked={weekendOverride}
+                  onChange={(e) => {
+                    setWeekendOverride(e.target.checked);
+                    setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
+                    if (!e.target.checked && scheduledDate && isWeekendYmd(scheduledDate)) {
+                      setScheduledDate("");
+                    }
+                  }}
+                />
+                <span>Weekend override (allow Saturday/Sunday)</span>
+              </label>
+
+              <label
+                style={{
+                  ...styles.checkboxLabelLight,
+                  opacity: placementType === "permit" ? 1 : 0.55,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={permitOverride}
+                  disabled={placementType !== "permit"}
+                  onChange={(e) => {
+                    setPermitOverride(e.target.checked);
+                    setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
+                    if (
+                      placementType === "permit" &&
+                      permitInfo &&
+                      !e.target.checked &&
+                      scheduledDate &&
+                      earliestAllowedDateYmd &&
+                      scheduledDate < earliestAllowedDateYmd
+                    ) {
+                      setScheduledDate("");
+                    }
+                  }}
+                />
+                <span>Permit override (book earlier than approval delay)</span>
+              </label>
+            </div>
+
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Delivery date</label>
+              <input
+                type="date"
+                value={scheduledDate}
+                onChange={(e) => {
+                  const next = e.target.value || "";
+                  setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
+
+                  if (!next) {
+                    setScheduledDate("");
+                    return;
+                  }
+
+                  const ok = enforceDateRules(next, { showErrors: true });
+                  if (!ok) {
+                    setScheduledDate("");
+                    return;
+                  }
+
+                  setScheduledDate(next);
+                }}
+                style={styles.dateInput}
+              />
+              <div style={styles.hintText}>Weekends are blocked by default. Permit delays count Mon–Fri only.</div>
+              <FieldError>{fieldErrors.scheduledDate}</FieldError>
+            </div>
+
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Payment type</label>
+              <select
+                value={paymentType}
+                onChange={(e) => {
+                  setPaymentType(e.target.value);
+                  setFieldErrors((prev) => ({ ...prev, paymentType: undefined }));
+                }}
+                disabled={!selectedCustomerId}
+                style={styles.select}
+              >
+                <option value="">Select payment type</option>
+                <option value="card">Card</option>
+                <option value="cash">Cash</option>
+                <option value="account">Account</option>
+              </select>
+              {!selectedCustomerId ? <div style={styles.hintText}>Select a customer to choose payment type.</div> : null}
+              <FieldError>{fieldErrors.paymentType}</FieldError>
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            title="Charges & Notes"
+            subtitle="Review the amount to charge, decide whether to invoice immediately, and add any notes."
+          >
+            <div style={styles.chargeBox}>
+              <div style={styles.chargeTitle}>Charges</div>
+              <div style={styles.chargeLine}>
+                <span>Skip hire (inc VAT):</span>
+                <b>£{numericSkipPriceIncVat.toFixed(2)}</b>
+              </div>
+              <div style={styles.chargeLine}>
+                <span>Permit (NO VAT):</span>
+                <b>£{permitCostNoVat.toFixed(2)}</b>
+              </div>
+              <div style={styles.chargeTotal}>
+                <span>Total to charge:</span>
+                <b>£{totalChargeDisplay.toFixed(2)}</b>
+              </div>
+            </div>
+
+            <div style={styles.togglePanel}>
+              <label style={styles.checkboxLabelLight}>
+                <input type="checkbox" checked={createInvoice} onChange={(e) => setCreateInvoice(e.target.checked)} />
+                <span>Create invoice in Xero</span>
+              </label>
+              <div style={styles.hintText}>If ticked, SkipLogic will create the invoice immediately after booking.</div>
+            </div>
+
+            <div style={styles.togglePanel}>
+              <label
+                style={{
+                  ...styles.checkboxLabelLight,
+                  opacity: canShowMarkPaid ? 1 : 0.55,
+                }}
+                title={canShowMarkPaid ? "" : "Mark paid is only available for cash/card bookings"}
+              >
+                <input
+                  type="checkbox"
+                  checked={markPaidNow}
+                  disabled={!canShowMarkPaid}
+                  onChange={(e) => setMarkPaidNow(e.target.checked)}
+                />
+                <span>Mark invoice as paid now (applies payment in Xero)</span>
+              </label>
+              <div style={styles.hintText}>
+                Only use this if you have taken the payment now (cash/card). Requires “Create invoice in Xero”.
+              </div>
+            </div>
+
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Notes (optional)</label>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={4}
+                style={styles.textarea}
+              />
+            </div>
+          </SectionCard>
+
+          <div style={styles.footerBar}>
+            <div style={styles.footerMeta}>
+              {invoiceMsg ? <div style={styles.metaSuccess}>{invoiceMsg}</div> : null}
+              {invoiceErr ? <div style={styles.metaError}>{invoiceErr}</div> : null}
+              {paymentMsg ? <div style={styles.metaSuccess}>{paymentMsg}</div> : null}
+              {paymentErr ? <div style={styles.metaError}>{paymentErr}</div> : null}
+              {errorMsg ? <div style={styles.metaError}>{errorMsg}</div> : null}
+            </div>
+
+            <button
+              type="submit"
+              disabled={saving}
+              style={{
+                ...styles.submitBtn,
+                opacity: saving ? 0.75 : 1,
+                cursor: saving ? "default" : "pointer",
+              }}
+            >
+              {saving ? "Saving…" : "Book A Standard Skip"}
+            </button>
+          </div>
         </form>
       </section>
 
-      {/* Credit Limit Modal */}
       {showCreditLimitModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.45)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1200,
-          }}
-        >
-          <div
-            style={{
-              background: "#fff",
-              padding: 24,
-              borderRadius: 10,
-              width: "100%",
-              maxWidth: 520,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-            }}
-          >
-            <h2 style={{ marginTop: 0, marginBottom: 10 }}>Credit limit exceeded</h2>
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalCard}>
+            <h2 style={styles.modalTitle}>Credit limit exceeded</h2>
 
-            <div style={{ marginBottom: 12, color: "#333", lineHeight: 1.5 }}>
-              <div style={{ fontWeight: 700 }}>This booking will exceed the customer’s credit limit.</div>
-              <div style={{ fontSize: 13, marginTop: 6, color: "#555", whiteSpace: "pre-wrap" }}>{creditLimitModalMsg}</div>
+            <div style={styles.modalBody}>
+              <div style={styles.modalLead}>This booking will exceed the customer’s credit limit.</div>
+              <div style={styles.modalText}>{creditLimitModalMsg}</div>
 
               {creditLimitDetails?.kind === "values" && (
-                <div style={{ marginTop: 12, fontSize: 13, border: "1px solid #eee", borderRadius: 8, padding: 12, background: "#fafafa" }}>
+                <div style={styles.modalInfoBox}>
                   <div>
                     Unpaid balance: <b>£{creditLimitDetails.unpaid != null ? Number(creditLimitDetails.unpaid).toFixed(2) : "—"}</b>
                   </div>
@@ -1727,28 +1507,22 @@ export default function BookJobPage() {
               )}
 
               {creditLimitDetails?.kind === "no_limit" && (
-                <div style={{ marginTop: 12, fontSize: 13, border: "1px solid #eee", borderRadius: 8, padding: 12, background: "#fafafa" }}>
+                <div style={styles.modalInfoBox}>
                   This customer is marked as a credit account, but <b>no credit limit is set</b>. Account bookings are blocked unless you override.
                 </div>
               )}
 
-              <div style={{ marginTop: 12, fontSize: 13, color: "#444" }}>
+              <div style={styles.modalHelp}>
                 If you override, the booking will proceed and an override audit record will be logged.
               </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <div style={styles.modalActions}>
               <button
                 type="button"
                 onClick={closeCreditLimitModal}
                 disabled={creditOverrideWorking}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 6,
-                  border: "1px solid #ccc",
-                  background: "#f5f5f5",
-                  cursor: creditOverrideWorking ? "default" : "pointer",
-                }}
+                style={styles.modalCancelBtn}
               >
                 Cancel
               </button>
@@ -1757,14 +1531,8 @@ export default function BookJobPage() {
                 onClick={handleOverrideAndBook}
                 disabled={creditOverrideWorking}
                 style={{
-                  padding: "10px 12px",
-                  borderRadius: 6,
-                  border: "none",
-                  background: "#d83a3a",
-                  color: "#fff",
-                  fontWeight: 800,
-                  cursor: creditOverrideWorking ? "default" : "pointer",
-                  opacity: creditOverrideWorking ? 0.8 : 1,
+                  ...styles.modalDangerBtn,
+                  opacity: creditOverrideWorking ? 0.85 : 1,
                 }}
               >
                 {creditOverrideWorking ? "Overriding…" : "Override & Book Anyway"}
@@ -1774,133 +1542,117 @@ export default function BookJobPage() {
         </div>
       )}
 
-      {/* New Customer Modal */}
       {showNewCustomerModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.4)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-          }}
-        >
-          <div
-            style={{
-              background: "#fff",
-              padding: 24,
-              borderRadius: 8,
-              width: "100%",
-              maxWidth: 480,
-              boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-              maxHeight: "90vh",
-              overflowY: "auto",
-            }}
-          >
-            <h2 style={{ marginTop: 0, marginBottom: 16 }}>Add new customer</h2>
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalCardLarge}>
+            <h2 style={styles.modalTitle}>Add new customer</h2>
 
-            {newCustomerError && <p style={{ color: "red", marginBottom: 12 }}>{newCustomerError}</p>}
+            {newCustomerError ? <p style={styles.modalError}>{newCustomerError}</p> : null}
 
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>First Name *</label>
-              <input
-                type="text"
-                value={newCustomerFirstName}
-                onChange={(e) => setNewCustomerFirstName(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
+            <div style={styles.modalFormGrid}>
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>First Name *</label>
+                <input
+                  type="text"
+                  value={newCustomerFirstName}
+                  onChange={(e) => setNewCustomerFirstName(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>Last Name *</label>
+                <input
+                  type="text"
+                  value={newCustomerLastName}
+                  onChange={(e) => setNewCustomerLastName(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>Company Name (optional)</label>
+                <input
+                  type="text"
+                  value={newCustomerCompanyName}
+                  onChange={(e) => setNewCustomerCompanyName(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>Customer Email *</label>
+                <input
+                  type="email"
+                  value={newCustomerEmail}
+                  onChange={(e) => setNewCustomerEmail(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>Customer Phone *</label>
+                <input
+                  type="tel"
+                  value={newCustomerPhone}
+                  onChange={(e) => setNewCustomerPhone(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>Address Line 1 *</label>
+                <input
+                  type="text"
+                  value={newCustomerAddress1}
+                  onChange={(e) => setNewCustomerAddress1(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>Address Line 2 *</label>
+                <input
+                  type="text"
+                  value={newCustomerAddress2}
+                  onChange={(e) => setNewCustomerAddress2(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>Address Line 3 (optional)</label>
+                <input
+                  type="text"
+                  value={newCustomerAddress3}
+                  onChange={(e) => setNewCustomerAddress3(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.label}>Postcode *</label>
+                <input
+                  type="text"
+                  value={newCustomerPostcode}
+                  onChange={(e) => setNewCustomerPostcode(e.target.value)}
+                  style={styles.input}
+                />
+              </div>
+
+              <div style={styles.fieldBlock}>
+                <label style={styles.checkboxLabelLight}>
+                  <input
+                    type="checkbox"
+                    checked={newCustomerCreditAccount}
+                    onChange={(e) => setNewCustomerCreditAccount(e.target.checked)}
+                  />
+                  <span>Credit Account Customer</span>
+                </label>
+              </div>
             </div>
 
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Last Name *</label>
-              <input
-                type="text"
-                value={newCustomerLastName}
-                onChange={(e) => setNewCustomerLastName(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Company Name (optional)</label>
-              <input
-                type="text"
-                value={newCustomerCompanyName}
-                onChange={(e) => setNewCustomerCompanyName(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Customer Email *</label>
-              <input
-                type="email"
-                value={newCustomerEmail}
-                onChange={(e) => setNewCustomerEmail(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Customer Phone *</label>
-              <input
-                type="tel"
-                value={newCustomerPhone}
-                onChange={(e) => setNewCustomerPhone(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Address Line 1 *</label>
-              <input
-                type="text"
-                value={newCustomerAddress1}
-                onChange={(e) => setNewCustomerAddress1(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Address Line 2 *</label>
-              <input
-                type="text"
-                value={newCustomerAddress2}
-                onChange={(e) => setNewCustomerAddress2(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Address Line 3 (optional)</label>
-              <input
-                type="text"
-                value={newCustomerAddress3}
-                onChange={(e) => setNewCustomerAddress3(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 14 }}>Postcode *</label>
-              <input
-                type="text"
-                value={newCustomerPostcode}
-                onChange={(e) => setNewCustomerPostcode(e.target.value)}
-                style={{ width: "100%", padding: 8, borderRadius: 4, border: "1px solid #ccc" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-                <input type="checkbox" checked={newCustomerCreditAccount} onChange={(e) => setNewCustomerCreditAccount(e.target.checked)} />
-                Credit Account Customer *
-              </label>
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+            <div style={styles.modalActions}>
               <button
                 type="button"
                 onClick={() => {
@@ -1909,14 +1661,7 @@ export default function BookJobPage() {
                     setNewCustomerError("");
                   }
                 }}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 4,
-                  border: "1px solid #ccc",
-                  background: "#f5f5f5",
-                  cursor: "pointer",
-                  fontSize: 14,
-                }}
+                style={styles.modalCancelBtn}
               >
                 Cancel
               </button>
@@ -1925,14 +1670,8 @@ export default function BookJobPage() {
                 onClick={handleCreateCustomerFromModal}
                 disabled={creatingCustomer}
                 style={{
-                  padding: "8px 12px",
-                  borderRadius: 4,
-                  border: "none",
-                  background: "#0070f3",
-                  color: "#fff",
-                  cursor: "pointer",
-                  fontSize: 14,
-                  opacity: creatingCustomer ? 0.7 : 1,
+                  ...styles.modalPrimaryBtn,
+                  opacity: creatingCustomer ? 0.8 : 1,
                 }}
               >
                 {creatingCustomer ? "Saving..." : "Save customer"}
@@ -1944,3 +1683,502 @@ export default function BookJobPage() {
     </main>
   );
 }
+
+const styles = {
+  loadingWrap: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontFamily: "var(--font-sans)",
+  },
+
+  page: {
+    minHeight: "100vh",
+    padding: 24,
+    fontFamily: "var(--font-sans)",
+  },
+
+  toastStack: {
+    position: "fixed",
+    top: 16,
+    right: 16,
+    zIndex: 2000,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    width: 380,
+    maxWidth: "calc(100vw - 32px)",
+    pointerEvents: "none",
+  },
+
+  toast: {
+    borderRadius: 12,
+    padding: 12,
+    boxShadow: "0 10px 24px rgba(0,0,0,0.12)",
+    pointerEvents: "auto",
+  },
+
+  toastHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 10,
+    alignItems: "center",
+  },
+
+  toastTitle: {
+    fontWeight: 900,
+    fontSize: 14,
+  },
+
+  toastClose: {
+    border: "none",
+    background: "transparent",
+    cursor: "pointer",
+    fontSize: 16,
+    lineHeight: 1,
+    padding: 2,
+  },
+
+  toastMessage: {
+    marginTop: 6,
+    fontSize: 13,
+    color: "#333",
+    whiteSpace: "pre-wrap",
+  },
+
+  header: {
+    marginBottom: 18,
+  },
+
+  pageTitle: {
+    margin: 0,
+    fontSize: 32,
+    lineHeight: 1.1,
+    color: "var(--d-ink)",
+    letterSpacing: "-0.02em",
+  },
+
+  pageSub: {
+    marginTop: 10,
+    marginBottom: 0,
+    fontSize: 14,
+    color: "var(--d-muted)",
+  },
+
+  backRow: {
+    marginTop: 12,
+    marginBottom: 0,
+  },
+
+  backLink: {
+    fontSize: 14,
+    color: "#8ecbff",
+    textDecoration: "underline",
+    textUnderlineOffset: 3,
+  },
+
+  successBanner: {
+    marginBottom: 18,
+    padding: 14,
+    borderRadius: 12,
+    background: "#e6ffed",
+    border: "1px solid #b7eb8f",
+    maxWidth: 980,
+  },
+
+  successTitle: {
+    margin: 0,
+    fontSize: 16,
+    color: "#14532d",
+  },
+
+  successText: {
+    margin: "6px 0 0",
+    color: "#14532d",
+    lineHeight: 1.5,
+  },
+
+  formSurface: {
+    maxWidth: 980,
+    padding: 18,
+  },
+
+  sectionCard: {
+    background: "#f8fafc",
+    border: "1px solid #dbe3f0",
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 16,
+  },
+
+  sectionCardHeader: {
+    padding: "14px 16px 10px",
+    borderBottom: "1px solid #e6edf5",
+    background: "#f3f7fb",
+  },
+
+  sectionCardTitle: {
+    margin: 0,
+    fontSize: 20,
+    color: "#0f172a",
+    letterSpacing: "-0.01em",
+  },
+
+  sectionCardSubtitle: {
+    marginTop: 6,
+    fontSize: 13,
+    color: "#64748b",
+    lineHeight: 1.45,
+  },
+
+  sectionCardBody: {
+    padding: 16,
+  },
+
+  fieldBlock: {
+    marginBottom: 14,
+  },
+
+  label: {
+    display: "block",
+    marginBottom: 6,
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#0f172a",
+  },
+
+  hintText: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#64748b",
+    lineHeight: 1.45,
+  },
+
+  fieldError: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#b91c1c",
+    lineHeight: 1.4,
+    fontWeight: 600,
+  },
+
+  row: {
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+
+  input: {
+    width: "100%",
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
+    boxSizing: "border-box",
+  },
+
+  inputFlex: {
+    flex: 1,
+    minWidth: 260,
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
+    boxSizing: "border-box",
+  },
+
+  select: {
+    width: "100%",
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
+    boxSizing: "border-box",
+  },
+
+  priceInput: {
+    width: 180,
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
+    textAlign: "right",
+    boxSizing: "border-box",
+  },
+
+  dateInput: {
+    width: 220,
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
+    boxSizing: "border-box",
+  },
+
+  textarea: {
+    width: "100%",
+    padding: 12,
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
+    resize: "vertical",
+    boxSizing: "border-box",
+  },
+
+  primaryBtn: {
+    padding: "12px 16px",
+    borderRadius: 10,
+    border: "none",
+    background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
+    color: "#071013",
+    fontWeight: 900,
+    whiteSpace: "nowrap",
+  },
+
+  secondaryBtn: {
+    padding: "12px 14px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+    cursor: "pointer",
+  },
+
+  checkboxRowWrap: {
+    marginBottom: 14,
+  },
+
+  checkboxLabelLight: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 10,
+    fontSize: 14,
+    color: "#0f172a",
+    fontWeight: 600,
+  },
+
+  infoBox: {
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 10,
+    background: "#eef6ff",
+    border: "1px solid #cfe4ff",
+    color: "#0f172a",
+    fontSize: 13,
+    lineHeight: 1.55,
+  },
+
+  toggleGrid: {
+    display: "grid",
+    gap: 10,
+    marginBottom: 14,
+  },
+
+  chargeBox: {
+    marginBottom: 14,
+    padding: 14,
+    borderRadius: 12,
+    background: "#f8fafc",
+    border: "1px solid #dbe3f0",
+  },
+
+  chargeTitle: {
+    fontWeight: 900,
+    marginBottom: 10,
+    color: "#0f172a",
+  },
+
+  chargeLine: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    fontSize: 14,
+    color: "#334155",
+    marginBottom: 6,
+  },
+
+  chargeTotal: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    fontSize: 16,
+    color: "#0f172a",
+    marginTop: 10,
+    paddingTop: 10,
+    borderTop: "1px solid #dbe3f0",
+    fontWeight: 900,
+  },
+
+  togglePanel: {
+    marginBottom: 14,
+    padding: 14,
+    borderRadius: 12,
+    background: "#f8fafc",
+    border: "1px solid #dbe3f0",
+  },
+
+  footerBar: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 16,
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+    paddingTop: 4,
+  },
+
+  footerMeta: {
+    display: "grid",
+    gap: 6,
+    minWidth: 280,
+  },
+
+  metaSuccess: {
+    fontSize: 12,
+    color: "#166534",
+  },
+
+  metaError: {
+    fontSize: 12,
+    color: "#b91c1c",
+  },
+
+  submitBtn: {
+    padding: "14px 18px",
+    borderRadius: 12,
+    border: "none",
+    background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
+    color: "#071013",
+    fontWeight: 900,
+    fontSize: 14,
+  },
+
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.45)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 1200,
+    padding: 20,
+  },
+
+  modalCard: {
+    background: "#fff",
+    padding: 24,
+    borderRadius: 14,
+    width: "100%",
+    maxWidth: 520,
+    boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+  },
+
+  modalCardLarge: {
+    background: "#fff",
+    padding: 24,
+    borderRadius: 14,
+    width: "100%",
+    maxWidth: 620,
+    boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+    maxHeight: "90vh",
+    overflowY: "auto",
+  },
+
+  modalTitle: {
+    marginTop: 0,
+    marginBottom: 16,
+    color: "#0f172a",
+  },
+
+  modalBody: {
+    color: "#334155",
+    lineHeight: 1.55,
+  },
+
+  modalLead: {
+    fontWeight: 800,
+    color: "#0f172a",
+  },
+
+  modalText: {
+    fontSize: 13,
+    marginTop: 8,
+    color: "#475569",
+    whiteSpace: "pre-wrap",
+  },
+
+  modalInfoBox: {
+    marginTop: 12,
+    fontSize: 13,
+    border: "1px solid #e2e8f0",
+    borderRadius: 10,
+    padding: 12,
+    background: "#f8fafc",
+    color: "#0f172a",
+    lineHeight: 1.6,
+  },
+
+  modalHelp: {
+    marginTop: 12,
+    fontSize: 13,
+    color: "#475569",
+  },
+
+  modalActions: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 10,
+    marginTop: 18,
+    flexWrap: "wrap",
+  },
+
+  modalCancelBtn: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#f8fafc",
+    cursor: "pointer",
+    color: "#0f172a",
+    fontWeight: 700,
+  },
+
+  modalDangerBtn: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "none",
+    background: "#d83a3a",
+    color: "#fff",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+
+  modalPrimaryBtn: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "none",
+    background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
+    color: "#071013",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+
+  modalError: {
+    color: "#b91c1c",
+    marginBottom: 12,
+  },
+
+  modalFormGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: 12,
+  },
+};
