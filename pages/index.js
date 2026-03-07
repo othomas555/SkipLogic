@@ -1,142 +1,728 @@
+import Head from "next/head";
 import Link from "next/link";
 
 export default function HomePage() {
   return (
-    <main style={{ minHeight: "100vh", fontFamily: "system-ui, sans-serif", background: "#f8fafc" }}>
-      <header
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          padding: "20px 40px",
-          background: "#ffffff",
-          borderBottom: "1px solid #e5e7eb",
-        }}
-      >
-        <div style={{ fontWeight: 800, fontSize: 18 }}>SkipLogic</div>
+    <>
+      <Head>
+        <title>SkipLogic • Skip hire software built for operators</title>
+      </Head>
 
-        <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
-          <Link href="/pricing" style={{ textDecoration: "none", color: "#111" }}>
-            Pricing
+      <main style={styles.page}>
+        <div style={styles.bgGlowA} aria-hidden="true" />
+        <div style={styles.bgGlowB} aria-hidden="true" />
+        <div style={styles.grid} aria-hidden="true" />
+
+        <header style={styles.header}>
+          <Link href="/" style={styles.brandLink}>
+            <div style={styles.brandMark}>SL</div>
+            <div>
+              <div style={styles.brandName}>SkipLogic</div>
+              <div style={styles.brandTag}>Operations platform for skip hire</div>
+            </div>
           </Link>
 
-          <Link href="/login?type=office" style={{ textDecoration: "none", color: "#111" }}>
-            Office login
-          </Link>
+          <div style={styles.headerLinks}>
+            <Link href="/pricing" style={styles.headerTextLink}>
+              Pricing
+            </Link>
 
-          <Link href="/login?type=driver" style={{ textDecoration: "none", color: "#111" }}>
-            Driver sign in
-          </Link>
-
-          <Link href="/pricing" style={{ textDecoration: "none" }}>
-            <button
-              style={{
-                background: "#1677ff",
-                color: "#fff",
-                border: "none",
-                padding: "10px 16px",
-                borderRadius: 10,
-                fontWeight: 800,
-                cursor: "pointer",
-              }}
-            >
-              Start free trial
-            </button>
-          </Link>
-        </div>
-      </header>
-
-      <section style={{ maxWidth: 980, margin: "70px auto", textAlign: "center", padding: "0 20px" }}>
-        <h1 style={{ fontSize: 44, fontWeight: 950, marginBottom: 14, letterSpacing: -0.4 }}>
-          Skip hire software built for operators
-        </h1>
-
-        <p style={{ fontSize: 20, color: "#555", marginBottom: 26, lineHeight: 1.55 }}>
-          Booking, scheduling, drivers, invoicing and compliance — in one system that’s designed around the reality of a
-          skip yard.
-        </p>
-
-        <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-          <Link href="/login?type=office" style={{ textDecoration: "none" }}>
-            <button
-              style={{
-                background: "#1677ff",
-                color: "#fff",
-                border: "none",
-                padding: "14px 22px",
-                borderRadius: 12,
-                fontSize: 16,
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
+            <Link href="/login?type=office" style={styles.headerTextLink}>
               Office login
-            </button>
-          </Link>
+            </Link>
 
-          <Link href="/login?type=driver" style={{ textDecoration: "none" }}>
-            <button
-              style={{
-                background: "#fff",
-                color: "#111",
-                border: "1px solid #e5e7eb",
-                padding: "14px 22px",
-                borderRadius: 12,
-                fontSize: 16,
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
+            <Link href="/login?type=driver" style={styles.headerTextLink}>
               Driver sign in
-            </button>
-          </Link>
+            </Link>
 
-          <Link href="/signup" style={{ textDecoration: "none" }}>
-            <button
-              style={{
-                background: "#fff",
-                color: "#111",
-                border: "1px solid #e5e7eb",
-                padding: "14px 22px",
-                borderRadius: 12,
-                fontSize: 16,
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
-              Create account
-            </button>
-          </Link>
-        </div>
-
-        <div style={{ marginTop: 14, color: "#777" }}>30-day free trial • card required • cancel anytime</div>
-      </section>
-
-      <section
-        style={{
-          maxWidth: 1100,
-          margin: "40px auto 70px",
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-          gap: 14,
-          padding: "0 20px",
-        }}
-      >
-        {[
-          { title: "Jobs & Scheduler", text: "Book jobs fast, manage runs, and keep the day under control." },
-          { title: "Customers & Pricing", text: "Postcode pricing, account customers, and tidy customer records." },
-          { title: "Driver Workflow", text: "Driver run lists, delivery/collection status, and proof trail." },
-          { title: "Finance & Compliance", text: "Built to plug into Xero and fleet compliance workflows." },
-        ].map((f) => (
-          <div
-            key={f.title}
-            style={{ background: "#fff", padding: 18, borderRadius: 16, border: "1px solid #e5e7eb" }}
-          >
-            <div style={{ fontWeight: 900, marginBottom: 8 }}>{f.title}</div>
-            <div style={{ color: "#555", lineHeight: 1.6 }}>{f.text}</div>
+            <Link href="/signup" style={styles.headerButtonLink}>
+              <button style={styles.primaryButton}>Start free trial</button>
+            </Link>
           </div>
-        ))}
-      </section>
-    </main>
+        </header>
+
+        <section style={styles.heroWrap}>
+          <div style={styles.heroLeft}>
+            <div style={styles.chip}>
+              <span style={styles.chipDot} />
+              Built for real skip operators
+            </div>
+
+            <h1 style={styles.h1}>
+              Skip hire software that understands the yard.{" "}
+              <span style={styles.emoji}>🚛</span>
+            </h1>
+
+            <p style={styles.heroText}>
+              Book jobs, run the scheduler, manage drivers, track customers,
+              handle invoicing and keep compliance under control — all in one
+              system designed around the way skip businesses actually work.
+            </p>
+
+            <div style={styles.ctaRow}>
+              <Link href="/signup" style={styles.headerButtonLink}>
+                <button style={styles.heroPrimaryButton}>Start 30-day free trial</button>
+              </Link>
+
+              <Link href="/login?type=office" style={styles.headerButtonLink}>
+                <button style={styles.heroSecondaryButton}>Office login</button>
+              </Link>
+
+              <Link href="/login?type=driver" style={styles.headerButtonLink}>
+                <button style={styles.heroGhostButton}>Driver sign in</button>
+              </Link>
+            </div>
+
+            <div style={styles.smallPrint}>
+              30-day free trial • card required • built for independent operators
+            </div>
+          </div>
+
+          <div style={styles.heroRight}>
+            <div style={styles.previewCard}>
+              <div style={styles.previewTop}>
+                <div>
+                  <div style={styles.previewEyebrow}>Today in SkipLogic</div>
+                  <div style={styles.previewTitle}>Keep the whole day moving</div>
+                </div>
+                <div style={styles.previewBadge}>Live ops</div>
+              </div>
+
+              <div style={styles.previewList}>
+                <div style={styles.previewItem}>
+                  <div style={styles.previewIcon}>📅</div>
+                  <div>
+                    <div style={styles.previewItemTitle}>Bookings & scheduler</div>
+                    <div style={styles.previewItemText}>
+                      Plan deliveries, collections and exchanges without losing
+                      the plot.
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.previewItem}>
+                  <div style={styles.previewIcon}>👷</div>
+                  <div>
+                    <div style={styles.previewItemTitle}>Office & drivers</div>
+                    <div style={styles.previewItemText}>
+                      Give office staff control and drivers a simple workflow in
+                      the field.
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.previewItem}>
+                  <div style={styles.previewIcon}>💷</div>
+                  <div>
+                    <div style={styles.previewItemTitle}>Pricing & invoicing</div>
+                    <div style={styles.previewItemText}>
+                      Keep pricing tidy, account customers organised and finance
+                      flowing properly.
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.previewItem}>
+                  <div style={styles.previewIcon}>✅</div>
+                  <div>
+                    <div style={styles.previewItemTitle}>Compliance</div>
+                    <div style={styles.previewItemText}>
+                      Stay on top of the jobs, the fleet and the admin that
+                      keeps the business safe.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section style={styles.section}>
+          <div style={styles.sectionHead}>
+            <div style={styles.sectionEyebrow}>What SkipLogic helps with</div>
+            <h2 style={styles.h2}>Built around day-to-day skip yard reality</h2>
+            <p style={styles.sectionText}>
+              The aim is simple: less friction, fewer missed details, clearer
+              control.
+            </p>
+          </div>
+
+          <div style={styles.featureGrid}>
+            {[
+              {
+                title: "Jobs & Scheduler",
+                text: "Book work quickly, organise the day and keep collections and deliveries under control.",
+                icon: "📍",
+              },
+              {
+                title: "Customers & Pricing",
+                text: "Keep customer records clean, handle account customers and apply sensible pricing logic.",
+                icon: "📒",
+              },
+              {
+                title: "Driver Workflow",
+                text: "Let drivers view runs, update job status and keep the office informed as the day unfolds.",
+                icon: "🚚",
+              },
+              {
+                title: "Finance & Compliance",
+                text: "Support invoicing, reporting and the practical compliance tasks operators have to stay on top of.",
+                icon: "🧾",
+              },
+            ].map((item) => (
+              <div key={item.title} style={styles.featureCard}>
+                <div style={styles.featureIcon}>{item.icon}</div>
+                <div style={styles.featureTitle}>{item.title}</div>
+                <div style={styles.featureText}>{item.text}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section style={styles.section}>
+          <div style={styles.sectionHead}>
+            <div style={styles.sectionEyebrow}>How it works</div>
+            <h2 style={styles.h2}>From sign-up to running jobs</h2>
+          </div>
+
+          <div style={styles.howGrid}>
+            {[
+              {
+                step: "01",
+                title: "Create your account",
+                text: "Start your trial and set up your office workspace.",
+              },
+              {
+                step: "02",
+                title: "Add your team",
+                text: "Create office users and add drivers from inside the system.",
+              },
+              {
+                step: "03",
+                title: "Start booking jobs",
+                text: "Build the day, manage customers and keep the scheduler moving.",
+              },
+              {
+                step: "04",
+                title: "Run the operation",
+                text: "Drivers update work on the go while the office stays in control.",
+              },
+            ].map((item) => (
+              <div key={item.step} style={styles.howCard}>
+                <div style={styles.stepBadge}>{item.step}</div>
+                <div style={styles.howTitle}>{item.title}</div>
+                <div style={styles.howText}>{item.text}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section style={styles.section}>
+          <div style={styles.ctaPanel}>
+            <div>
+              <div style={styles.sectionEyebrow}>Ready to get started?</div>
+              <h2 style={{ ...styles.h2, marginBottom: 8 }}>
+                One system for office users and drivers
+              </h2>
+              <p style={{ ...styles.sectionText, margin: 0 }}>
+                Clean sign-in, proper workflows and a platform built for the
+                way skip operators actually work.
+              </p>
+            </div>
+
+            <div style={styles.bottomCtas}>
+              <Link href="/signup" style={styles.headerButtonLink}>
+                <button style={styles.primaryButtonLarge}>Create account</button>
+              </Link>
+
+              <Link href="/login?type=office" style={styles.headerButtonLink}>
+                <button style={styles.secondaryButtonLarge}>Office login</button>
+              </Link>
+            </div>
+          </div>
+        </section>
+      </main>
+    </>
   );
 }
+
+const styles = {
+  page: {
+    minHeight: "100vh",
+    fontFamily:
+      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    background: "#08111f",
+    color: "#e8eef8",
+    position: "relative",
+    overflow: "hidden",
+  },
+
+  bgGlowA: {
+    position: "absolute",
+    top: -120,
+    left: -120,
+    width: 420,
+    height: 420,
+    borderRadius: "50%",
+    background: "rgba(58,181,255,0.14)",
+    filter: "blur(80px)",
+    pointerEvents: "none",
+  },
+
+  bgGlowB: {
+    position: "absolute",
+    top: 40,
+    right: -120,
+    width: 420,
+    height: 420,
+    borderRadius: "50%",
+    background: "rgba(55,245,155,0.12)",
+    filter: "blur(90px)",
+    pointerEvents: "none",
+  },
+
+  grid: {
+    position: "absolute",
+    inset: 0,
+    backgroundImage:
+      "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
+    backgroundSize: "32px 32px",
+    maskImage: "linear-gradient(to bottom, rgba(0,0,0,0.8), rgba(0,0,0,0.15))",
+    pointerEvents: "none",
+  },
+
+  header: {
+    position: "relative",
+    zIndex: 2,
+    maxWidth: 1180,
+    margin: "0 auto",
+    padding: "22px 20px",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 16,
+    flexWrap: "wrap",
+  },
+
+  brandLink: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    textDecoration: "none",
+    color: "#fff",
+  },
+
+  brandMark: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    background: "linear-gradient(135deg, #37f59b, #3ab5ff)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#08111f",
+    fontWeight: 900,
+    fontSize: 13,
+    boxShadow: "0 10px 30px rgba(58,181,255,0.18)",
+  },
+
+  brandName: {
+    fontWeight: 900,
+    fontSize: 18,
+    lineHeight: 1.1,
+    letterSpacing: "-0.02em",
+  },
+
+  brandTag: {
+    fontSize: 12,
+    color: "rgba(232,238,248,0.72)",
+    marginTop: 2,
+  },
+
+  headerLinks: {
+    display: "flex",
+    alignItems: "center",
+    gap: 14,
+    flexWrap: "wrap",
+  },
+
+  headerTextLink: {
+    color: "rgba(232,238,248,0.88)",
+    textDecoration: "none",
+    fontSize: 14,
+    fontWeight: 700,
+  },
+
+  headerButtonLink: {
+    textDecoration: "none",
+  },
+
+  primaryButton: {
+    background: "linear-gradient(135deg, #37f59b, #3ab5ff)",
+    color: "#08111f",
+    border: "none",
+    padding: "11px 16px",
+    borderRadius: 12,
+    fontWeight: 900,
+    cursor: "pointer",
+    boxShadow: "0 12px 30px rgba(58,181,255,0.2)",
+  },
+
+  heroWrap: {
+    position: "relative",
+    zIndex: 2,
+    maxWidth: 1180,
+    margin: "10px auto 0",
+    padding: "50px 20px 30px",
+    display: "grid",
+    gridTemplateColumns: "1.2fr 0.9fr",
+    gap: 28,
+    alignItems: "center",
+  },
+
+  heroLeft: {
+    minWidth: 0,
+  },
+
+  chip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "8px 12px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.1)",
+    background: "rgba(255,255,255,0.05)",
+    fontSize: 12,
+    fontWeight: 800,
+    color: "#cfe7ff",
+    marginBottom: 18,
+  },
+
+  chipDot: {
+    width: 8,
+    height: 8,
+    borderRadius: "50%",
+    background: "#37f59b",
+    boxShadow: "0 0 12px rgba(55,245,155,0.7)",
+  },
+
+  h1: {
+    margin: 0,
+    fontSize: 56,
+    lineHeight: 1.02,
+    letterSpacing: "-0.045em",
+    fontWeight: 950,
+    color: "#ffffff",
+    maxWidth: 720,
+  },
+
+  emoji: {
+    display: "inline-block",
+    transform: "translateY(-2px)",
+  },
+
+  heroText: {
+    marginTop: 18,
+    fontSize: 20,
+    lineHeight: 1.65,
+    color: "rgba(232,238,248,0.8)",
+    maxWidth: 760,
+  },
+
+  ctaRow: {
+    display: "flex",
+    gap: 12,
+    flexWrap: "wrap",
+    marginTop: 28,
+  },
+
+  heroPrimaryButton: {
+    background: "linear-gradient(135deg, #37f59b, #3ab5ff)",
+    color: "#08111f",
+    border: "none",
+    padding: "14px 22px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    boxShadow: "0 16px 38px rgba(58,181,255,0.22)",
+  },
+
+  heroSecondaryButton: {
+    background: "rgba(255,255,255,0.08)",
+    color: "#ffffff",
+    border: "1px solid rgba(255,255,255,0.14)",
+    padding: "14px 22px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+
+  heroGhostButton: {
+    background: "transparent",
+    color: "#cfe7ff",
+    border: "1px solid rgba(58,181,255,0.28)",
+    padding: "14px 22px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+
+  smallPrint: {
+    marginTop: 14,
+    color: "rgba(232,238,248,0.6)",
+    fontSize: 13,
+    fontWeight: 600,
+  },
+
+  heroRight: {
+    minWidth: 0,
+  },
+
+  previewCard: {
+    background: "rgba(9,18,31,0.82)",
+    border: "1px solid rgba(255,255,255,0.09)",
+    borderRadius: 24,
+    padding: 22,
+    boxShadow: "0 20px 50px rgba(0,0,0,0.28)",
+    backdropFilter: "blur(12px)",
+  },
+
+  previewTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 18,
+  },
+
+  previewEyebrow: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: "0.12em",
+    color: "rgba(232,238,248,0.55)",
+    fontWeight: 800,
+    marginBottom: 6,
+  },
+
+  previewTitle: {
+    fontWeight: 900,
+    fontSize: 22,
+    letterSpacing: "-0.03em",
+    color: "#fff",
+  },
+
+  previewBadge: {
+    padding: "7px 10px",
+    borderRadius: 999,
+    background: "rgba(55,245,155,0.12)",
+    border: "1px solid rgba(55,245,155,0.24)",
+    color: "#9bf6cb",
+    fontSize: 12,
+    fontWeight: 800,
+    whiteSpace: "nowrap",
+  },
+
+  previewList: {
+    display: "grid",
+    gap: 12,
+  },
+
+  previewItem: {
+    display: "flex",
+    gap: 12,
+    alignItems: "flex-start",
+    padding: 14,
+    borderRadius: 18,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.06)",
+  },
+
+  previewIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    background: "linear-gradient(135deg, rgba(55,245,155,0.18), rgba(58,181,255,0.18))",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 20,
+    flex: "0 0 auto",
+  },
+
+  previewItemTitle: {
+    fontWeight: 850,
+    fontSize: 15,
+    color: "#fff",
+    marginBottom: 4,
+  },
+
+  previewItemText: {
+    fontSize: 13,
+    lineHeight: 1.55,
+    color: "rgba(232,238,248,0.7)",
+  },
+
+  section: {
+    position: "relative",
+    zIndex: 2,
+    maxWidth: 1180,
+    margin: "0 auto",
+    padding: "34px 20px 28px",
+  },
+
+  sectionHead: {
+    maxWidth: 760,
+    marginBottom: 20,
+  },
+
+  sectionEyebrow: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: "0.12em",
+    color: "#8abfff",
+    fontWeight: 900,
+    marginBottom: 8,
+  },
+
+  h2: {
+    margin: 0,
+    fontSize: 34,
+    lineHeight: 1.05,
+    letterSpacing: "-0.04em",
+    fontWeight: 950,
+    color: "#fff",
+  },
+
+  sectionText: {
+    marginTop: 10,
+    fontSize: 16,
+    lineHeight: 1.65,
+    color: "rgba(232,238,248,0.72)",
+  },
+
+  featureGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: 16,
+  },
+
+  featureCard: {
+    background: "rgba(255,255,255,0.05)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 22,
+    padding: 20,
+    backdropFilter: "blur(10px)",
+  },
+
+  featureIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "linear-gradient(135deg, rgba(55,245,155,0.16), rgba(58,181,255,0.18))",
+    fontSize: 22,
+    marginBottom: 14,
+  },
+
+  featureTitle: {
+    fontWeight: 900,
+    fontSize: 18,
+    color: "#fff",
+    marginBottom: 8,
+    letterSpacing: "-0.02em",
+  },
+
+  featureText: {
+    color: "rgba(232,238,248,0.72)",
+    lineHeight: 1.65,
+    fontSize: 14,
+  },
+
+  howGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 16,
+  },
+
+  howCard: {
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.07)",
+    borderRadius: 22,
+    padding: 20,
+  },
+
+  stepBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 42,
+    height: 30,
+    padding: "0 10px",
+    borderRadius: 999,
+    background: "rgba(58,181,255,0.12)",
+    border: "1px solid rgba(58,181,255,0.22)",
+    color: "#9dd5ff",
+    fontWeight: 900,
+    fontSize: 12,
+    marginBottom: 14,
+  },
+
+  howTitle: {
+    fontWeight: 900,
+    fontSize: 18,
+    color: "#fff",
+    marginBottom: 8,
+    letterSpacing: "-0.02em",
+  },
+
+  howText: {
+    color: "rgba(232,238,248,0.72)",
+    lineHeight: 1.65,
+    fontSize: 14,
+  },
+
+  ctaPanel: {
+    background: "linear-gradient(135deg, rgba(58,181,255,0.12), rgba(55,245,155,0.08))",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 28,
+    padding: 26,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 18,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+
+  bottomCtas: {
+    display: "flex",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+
+  primaryButtonLarge: {
+    background: "linear-gradient(135deg, #37f59b, #3ab5ff)",
+    color: "#08111f",
+    border: "none",
+    padding: "14px 22px",
+    borderRadius: 14,
+    fontSize: 15,
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+
+  secondaryButtonLarge: {
+    background: "rgba(255,255,255,0.08)",
+    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.14)",
+    padding: "14px 22px",
+    borderRadius: 14,
+    fontSize: 15,
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+};
