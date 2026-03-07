@@ -15,13 +15,19 @@ export default function HomePage() {
       >
         <div style={{ fontWeight: 800, fontSize: 18 }}>SkipLogic</div>
 
-        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-          <Link href="/pricing" style={{ textDecoration: "none" }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+          <Link href="/pricing" style={{ textDecoration: "none", color: "#111" }}>
             Pricing
           </Link>
-          <Link href="/signin" style={{ textDecoration: "none" }}>
-            Sign in
+
+          <Link href="/login?type=office" style={{ textDecoration: "none", color: "#111" }}>
+            Office login
           </Link>
+
+          <Link href="/login?type=driver" style={{ textDecoration: "none", color: "#111" }}>
+            Driver sign in
+          </Link>
+
           <Link href="/pricing" style={{ textDecoration: "none" }}>
             <button
               style={{
@@ -40,7 +46,7 @@ export default function HomePage() {
         </div>
       </header>
 
-      <section style={{ maxWidth: 900, margin: "70px auto", textAlign: "center", padding: "0 20px" }}>
+      <section style={{ maxWidth: 980, margin: "70px auto", textAlign: "center", padding: "0 20px" }}>
         <h1 style={{ fontSize: 44, fontWeight: 950, marginBottom: 14, letterSpacing: -0.4 }}>
           Skip hire software built for operators
         </h1>
@@ -51,7 +57,7 @@ export default function HomePage() {
         </p>
 
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-          <Link href="/pricing" style={{ textDecoration: "none" }}>
+          <Link href="/login?type=office" style={{ textDecoration: "none" }}>
             <button
               style={{
                 background: "#1677ff",
@@ -64,7 +70,24 @@ export default function HomePage() {
                 cursor: "pointer",
               }}
             >
-              View pricing
+              Office login
+            </button>
+          </Link>
+
+          <Link href="/login?type=driver" style={{ textDecoration: "none" }}>
+            <button
+              style={{
+                background: "#fff",
+                color: "#111",
+                border: "1px solid #e5e7eb",
+                padding: "14px 22px",
+                borderRadius: 12,
+                fontSize: 16,
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              Driver sign in
             </button>
           </Link>
 
