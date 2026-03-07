@@ -11,7 +11,6 @@ export default function HomePage() {
       <main style={styles.page}>
         <div style={styles.bgGlowA} aria-hidden="true" />
         <div style={styles.bgGlowB} aria-hidden="true" />
-        <div style={styles.grid} aria-hidden="true" />
 
         <header style={styles.header}>
           <Link href="/" style={styles.brandLink}>
@@ -49,7 +48,7 @@ export default function HomePage() {
             </div>
 
             <h1 style={styles.h1}>
-              Skip hire software that understands the yard.{" "}
+              Skip hire software that understands the yard{" "}
               <span style={styles.emoji}>🚛</span>
             </h1>
 
@@ -251,8 +250,8 @@ const styles = {
     minHeight: "100vh",
     fontFamily:
       'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    background: "#08111f",
-    color: "#e8eef8",
+    background: "#f6fbff",
+    color: "#0f172a",
     position: "relative",
     overflow: "hidden",
   },
@@ -264,30 +263,20 @@ const styles = {
     width: 420,
     height: 420,
     borderRadius: "50%",
-    background: "rgba(58,181,255,0.14)",
+    background: "rgba(58,181,255,0.10)",
     filter: "blur(80px)",
     pointerEvents: "none",
   },
 
   bgGlowB: {
     position: "absolute",
-    top: 40,
+    top: 80,
     right: -120,
     width: 420,
     height: 420,
     borderRadius: "50%",
-    background: "rgba(55,245,155,0.12)",
+    background: "rgba(55,245,155,0.10)",
     filter: "blur(90px)",
-    pointerEvents: "none",
-  },
-
-  grid: {
-    position: "absolute",
-    inset: 0,
-    backgroundImage:
-      "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
-    backgroundSize: "32px 32px",
-    maskImage: "linear-gradient(to bottom, rgba(0,0,0,0.8), rgba(0,0,0,0.15))",
     pointerEvents: "none",
   },
 
@@ -309,7 +298,7 @@ const styles = {
     alignItems: "center",
     gap: 12,
     textDecoration: "none",
-    color: "#fff",
+    color: "#0f172a",
   },
 
   brandMark: {
@@ -335,7 +324,7 @@ const styles = {
 
   brandTag: {
     fontSize: 12,
-    color: "rgba(232,238,248,0.72)",
+    color: "#64748b",
     marginTop: 2,
   },
 
@@ -347,7 +336,7 @@ const styles = {
   },
 
   headerTextLink: {
-    color: "rgba(232,238,248,0.88)",
+    color: "#334155",
     textDecoration: "none",
     fontSize: 14,
     fontWeight: 700,
@@ -365,7 +354,7 @@ const styles = {
     borderRadius: 12,
     fontWeight: 900,
     cursor: "pointer",
-    boxShadow: "0 12px 30px rgba(58,181,255,0.2)",
+    boxShadow: "0 12px 30px rgba(58,181,255,0.16)",
   },
 
   heroWrap: {
@@ -390,12 +379,13 @@ const styles = {
     gap: 8,
     padding: "8px 12px",
     borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.1)",
-    background: "rgba(255,255,255,0.05)",
+    border: "1px solid rgba(58,181,255,0.16)",
+    background: "#ffffff",
     fontSize: 12,
     fontWeight: 800,
-    color: "#cfe7ff",
+    color: "#2563eb",
     marginBottom: 18,
+    boxShadow: "0 10px 24px rgba(15,23,42,0.05)",
   },
 
   chipDot: {
@@ -403,7 +393,7 @@ const styles = {
     height: 8,
     borderRadius: "50%",
     background: "#37f59b",
-    boxShadow: "0 0 12px rgba(55,245,155,0.7)",
+    boxShadow: "0 0 12px rgba(55,245,155,0.5)",
   },
 
   h1: {
@@ -412,7 +402,7 @@ const styles = {
     lineHeight: 1.02,
     letterSpacing: "-0.045em",
     fontWeight: 950,
-    color: "#ffffff",
+    color: "#0f172a",
     maxWidth: 720,
   },
 
@@ -425,7 +415,7 @@ const styles = {
     marginTop: 18,
     fontSize: 20,
     lineHeight: 1.65,
-    color: "rgba(232,238,248,0.8)",
+    color: "#475569",
     maxWidth: 760,
   },
 
@@ -445,24 +435,25 @@ const styles = {
     fontSize: 16,
     fontWeight: 900,
     cursor: "pointer",
-    boxShadow: "0 16px 38px rgba(58,181,255,0.22)",
+    boxShadow: "0 16px 38px rgba(58,181,255,0.18)",
   },
 
   heroSecondaryButton: {
-    background: "rgba(255,255,255,0.08)",
-    color: "#ffffff",
-    border: "1px solid rgba(255,255,255,0.14)",
+    background: "#ffffff",
+    color: "#0f172a",
+    border: "1px solid #dbe8f4",
     padding: "14px 22px",
     borderRadius: 14,
     fontSize: 16,
     fontWeight: 900,
     cursor: "pointer",
+    boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
   },
 
   heroGhostButton: {
     background: "transparent",
-    color: "#cfe7ff",
-    border: "1px solid rgba(58,181,255,0.28)",
+    color: "#2563eb",
+    border: "1px solid rgba(58,181,255,0.24)",
     padding: "14px 22px",
     borderRadius: 14,
     fontSize: 16,
@@ -472,7 +463,7 @@ const styles = {
 
   smallPrint: {
     marginTop: 14,
-    color: "rgba(232,238,248,0.6)",
+    color: "#64748b",
     fontSize: 13,
     fontWeight: 600,
   },
@@ -482,11 +473,11 @@ const styles = {
   },
 
   previewCard: {
-    background: "rgba(9,18,31,0.82)",
-    border: "1px solid rgba(255,255,255,0.09)",
+    background: "rgba(255,255,255,0.82)",
+    border: "1px solid #dbe8f4",
     borderRadius: 24,
     padding: 22,
-    boxShadow: "0 20px 50px rgba(0,0,0,0.28)",
+    boxShadow: "0 20px 50px rgba(15,23,42,0.08)",
     backdropFilter: "blur(12px)",
   },
 
@@ -502,7 +493,7 @@ const styles = {
     fontSize: 11,
     textTransform: "uppercase",
     letterSpacing: "0.12em",
-    color: "rgba(232,238,248,0.55)",
+    color: "#64748b",
     fontWeight: 800,
     marginBottom: 6,
   },
@@ -511,15 +502,15 @@ const styles = {
     fontWeight: 900,
     fontSize: 22,
     letterSpacing: "-0.03em",
-    color: "#fff",
+    color: "#0f172a",
   },
 
   previewBadge: {
     padding: "7px 10px",
     borderRadius: 999,
-    background: "rgba(55,245,155,0.12)",
+    background: "rgba(55,245,155,0.14)",
     border: "1px solid rgba(55,245,155,0.24)",
-    color: "#9bf6cb",
+    color: "#0f766e",
     fontSize: 12,
     fontWeight: 800,
     whiteSpace: "nowrap",
@@ -536,15 +527,15 @@ const styles = {
     alignItems: "flex-start",
     padding: 14,
     borderRadius: 18,
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.06)",
+    background: "#f8fbff",
+    border: "1px solid #e5eef7",
   },
 
   previewIcon: {
     width: 42,
     height: 42,
     borderRadius: 14,
-    background: "linear-gradient(135deg, rgba(55,245,155,0.18), rgba(58,181,255,0.18))",
+    background: "linear-gradient(135deg, rgba(55,245,155,0.16), rgba(58,181,255,0.16))",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -555,14 +546,14 @@ const styles = {
   previewItemTitle: {
     fontWeight: 850,
     fontSize: 15,
-    color: "#fff",
+    color: "#0f172a",
     marginBottom: 4,
   },
 
   previewItemText: {
     fontSize: 13,
     lineHeight: 1.55,
-    color: "rgba(232,238,248,0.7)",
+    color: "#475569",
   },
 
   section: {
@@ -582,7 +573,7 @@ const styles = {
     fontSize: 11,
     textTransform: "uppercase",
     letterSpacing: "0.12em",
-    color: "#8abfff",
+    color: "#2563eb",
     fontWeight: 900,
     marginBottom: 8,
   },
@@ -593,14 +584,14 @@ const styles = {
     lineHeight: 1.05,
     letterSpacing: "-0.04em",
     fontWeight: 950,
-    color: "#fff",
+    color: "#0f172a",
   },
 
   sectionText: {
     marginTop: 10,
     fontSize: 16,
     lineHeight: 1.65,
-    color: "rgba(232,238,248,0.72)",
+    color: "#475569",
   },
 
   featureGrid: {
@@ -610,11 +601,11 @@ const styles = {
   },
 
   featureCard: {
-    background: "rgba(255,255,255,0.05)",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "#ffffff",
+    border: "1px solid #dbe8f4",
     borderRadius: 22,
     padding: 20,
-    backdropFilter: "blur(10px)",
+    boxShadow: "0 14px 36px rgba(15,23,42,0.05)",
   },
 
   featureIcon: {
@@ -624,7 +615,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    background: "linear-gradient(135deg, rgba(55,245,155,0.16), rgba(58,181,255,0.18))",
+    background: "linear-gradient(135deg, rgba(55,245,155,0.16), rgba(58,181,255,0.16))",
     fontSize: 22,
     marginBottom: 14,
   },
@@ -632,13 +623,13 @@ const styles = {
   featureTitle: {
     fontWeight: 900,
     fontSize: 18,
-    color: "#fff",
+    color: "#0f172a",
     marginBottom: 8,
     letterSpacing: "-0.02em",
   },
 
   featureText: {
-    color: "rgba(232,238,248,0.72)",
+    color: "#475569",
     lineHeight: 1.65,
     fontSize: 14,
   },
@@ -650,10 +641,11 @@ const styles = {
   },
 
   howCard: {
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.07)",
+    background: "#ffffff",
+    border: "1px solid #dbe8f4",
     borderRadius: 22,
     padding: 20,
+    boxShadow: "0 14px 36px rgba(15,23,42,0.05)",
   },
 
   stepBadge: {
@@ -664,9 +656,9 @@ const styles = {
     height: 30,
     padding: "0 10px",
     borderRadius: 999,
-    background: "rgba(58,181,255,0.12)",
-    border: "1px solid rgba(58,181,255,0.22)",
-    color: "#9dd5ff",
+    background: "rgba(58,181,255,0.10)",
+    border: "1px solid rgba(58,181,255,0.18)",
+    color: "#2563eb",
     fontWeight: 900,
     fontSize: 12,
     marginBottom: 14,
@@ -675,20 +667,20 @@ const styles = {
   howTitle: {
     fontWeight: 900,
     fontSize: 18,
-    color: "#fff",
+    color: "#0f172a",
     marginBottom: 8,
     letterSpacing: "-0.02em",
   },
 
   howText: {
-    color: "rgba(232,238,248,0.72)",
+    color: "#475569",
     lineHeight: 1.65,
     fontSize: 14,
   },
 
   ctaPanel: {
-    background: "linear-gradient(135deg, rgba(58,181,255,0.12), rgba(55,245,155,0.08))",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "linear-gradient(135deg, rgba(58,181,255,0.08), rgba(55,245,155,0.07))",
+    border: "1px solid #dbe8f4",
     borderRadius: 28,
     padding: 26,
     display: "flex",
@@ -696,6 +688,7 @@ const styles = {
     gap: 18,
     alignItems: "center",
     flexWrap: "wrap",
+    boxShadow: "0 18px 40px rgba(15,23,42,0.06)",
   },
 
   bottomCtas: {
@@ -716,9 +709,9 @@ const styles = {
   },
 
   secondaryButtonLarge: {
-    background: "rgba(255,255,255,0.08)",
-    color: "#fff",
-    border: "1px solid rgba(255,255,255,0.14)",
+    background: "#ffffff",
+    color: "#0f172a",
+    border: "1px solid #dbe8f4",
     padding: "14px 22px",
     borderRadius: 14,
     fontSize: 15,
