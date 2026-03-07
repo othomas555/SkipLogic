@@ -54,8 +54,9 @@ export default function HomePage() {
 
             <p style={styles.heroText}>
               Book jobs, run the scheduler, manage drivers, track customers,
-              handle invoicing and keep compliance under control — all in one
-              system designed around the way skip businesses actually work.
+              take online bookings, handle invoicing and keep compliance under
+              control — all in one system designed around the way skip
+              businesses actually work.
             </p>
 
             <div style={styles.ctaRow}>
@@ -93,8 +94,8 @@ export default function HomePage() {
                   <div>
                     <div style={styles.previewItemTitle}>Bookings & scheduler</div>
                     <div style={styles.previewItemText}>
-                      Plan deliveries, collections and exchanges without losing
-                      the plot.
+                      Plan deliveries, collections, exchanges and online
+                      bookings without losing the plot.
                     </div>
                   </div>
                 </div>
@@ -150,7 +151,7 @@ export default function HomePage() {
             {[
               {
                 title: "Jobs & Scheduler",
-                text: "Book work quickly, organise the day and keep collections and deliveries under control.",
+                text: "Book work quickly, organise the day, handle online bookings and keep collections and deliveries under control.",
                 icon: "📍",
               },
               {
@@ -199,7 +200,7 @@ export default function HomePage() {
               {
                 step: "03",
                 title: "Start booking jobs",
-                text: "Build the day, manage customers and keep the scheduler moving.",
+                text: "Build the day, take online bookings and keep the scheduler moving.",
               },
               {
                 step: "04",
@@ -224,8 +225,8 @@ export default function HomePage() {
                 One system for office users and drivers
               </h2>
               <p style={{ ...styles.sectionText, margin: 0 }}>
-                Clean sign-in, proper workflows and a platform built for the
-                way skip operators actually work.
+                Clean sign-in, online bookings, proper workflows and a platform
+                built for the way skip operators actually work.
               </p>
             </div>
 
