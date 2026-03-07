@@ -1,146 +1,113 @@
-import Link from "next/link";
-import { useRouter } from "next/router";
-import { supabase } from "../lib/supabaseClient";
+// components/AppShell.js
+import AppSidebar from "./AppSidebar";
 
-export default function AppSidebar({ profile }) {
-  const router = useRouter();
-
-  async function logout() {
-    await supabase.auth.signOut();
-    router.push("/login");
-  }
-
+export default function AppShell({ children, profile, title, subtitle, right }) {
   return (
-    <aside style={styles.sidebar}>
-      <div>
-        <div style={styles.logo}>
-          <div style={styles.logoMark} />
-          <div style={styles.logoText}>SkipLogic</div>
-        </div>
+    <div style={styles.wrap}>
+      <AppSidebar profile={profile} />
 
-        <nav style={styles.nav}>
-          <SidebarLink href="/app" label="Dashboard" router={router} />
-          <SidebarLink href="/app/jobs" label="Jobs" router={router} />
-          <SidebarLink href="/app/customers" label="Customers" router={router} />
-          <SidebarLink href="/app/scheduler" label="Scheduler" router={router} />
-          <SidebarLink href="/app/drivers" label="Drivers" router={router} />
-          <SidebarLink href="/app/vehicles" label="Vehicles" router={router} />
-          <SidebarLink href="/app/settings" label="Settings" router={router} />
-        </nav>
+      <div style={styles.main}>
+        <header style={styles.header}>
+          <div style={styles.headerLeft}>
+            <div style={styles.headerMark} aria-hidden="true" />
+            <div>
+              <div style={styles.eyebrow}>SkipLogic</div>
+              <h1 style={styles.h1}>{title || "Dashboard"}</h1>
+              <div style={styles.sub}>
+                {subtitle || "Everything you need for day-to-day ops."}
+              </div>
+            </div>
+          </div>
+
+          {right ? <div style={styles.right}>{right}</div> : null}
+        </header>
+
+        <div style={styles.content}>{children}</div>
       </div>
-
-      <div style={styles.userSection}>
-        <div style={styles.userName}>
-          {profile?.full_name || "User"}
-        </div>
-
-        <div style={styles.userEmail}>
-          {profile?.email}
-        </div>
-
-        <button onClick={logout} style={styles.logout}>
-          Log out
-        </button>
-      </div>
-    </aside>
-  );
-}
-
-function SidebarLink({ href, label, router }) {
-  const active = router.pathname === href;
-
-  return (
-    <Link href={href} style={{ textDecoration: "none" }}>
-      <div
-        style={{
-          ...styles.link,
-          ...(active ? styles.linkActive : {}),
-        }}
-      >
-        {label}
-      </div>
-    </Link>
+    </div>
   );
 }
 
 const styles = {
-  sidebar: {
-    position: "fixed",
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 270,
-    background: "var(--surface)",
-    borderRight: "1px solid var(--border)",
+  wrap: {
+    minHeight: "100vh",
+    background: "var(--bg)",
+    color: "var(--text)",
+  },
+
+  main: {
+    marginLeft: 270,
+    minHeight: "100vh",
     padding: 18,
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "space-between",
+    background:
+      "radial-gradient(closest-side at 20% 10%, rgba(58,181,255,0.05), transparent 55%)," +
+      "radial-gradient(closest-side at 80% 15%, rgba(55,245,155,0.05), transparent 55%)," +
+      "var(--bg)",
   },
 
-  logo: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 24,
-  },
-
-  logoMark: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    background: "linear-gradient(135deg, var(--brand-mint), var(--brand-sky))",
-  },
-
-  logoText: {
-    fontWeight: 900,
-    fontSize: 16,
-    letterSpacing: "-0.01em",
-  },
-
-  nav: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 6,
-  },
-
-  link: {
-    padding: "10px 12px",
-    borderRadius: 10,
-    fontSize: 14,
-    color: "var(--text)",
-    cursor: "pointer",
-  },
-
-  linkActive: {
-    background: "var(--surface-2)",
-    fontWeight: 700,
-  },
-
-  userSection: {
-    borderTop: "1px solid var(--border)",
-    paddingTop: 12,
-  },
-
-  userName: {
-    fontSize: 14,
-    fontWeight: 700,
-    color: "var(--text)",
-  },
-
-  userEmail: {
-    fontSize: 12,
-    color: "var(--text-muted)",
-    marginBottom: 10,
-  },
-
-  logout: {
-    width: "100%",
-    padding: "8px 10px",
-    borderRadius: 8,
-    border: "1px solid var(--border)",
+  header: {
     background: "var(--surface)",
-    cursor: "pointer",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--r-xl)",
+    padding: 16,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    flexWrap: "wrap",
+    boxShadow: "var(--shadow-1)",
+  },
+
+  headerLeft: {
+    display: "flex",
+    gap: 12,
+    alignItems: "flex-start",
+    minWidth: 260,
+  },
+
+  headerMark: {
+    width: 38,
+    height: 38,
+    borderRadius: "14px",
+    background: "linear-gradient(135deg, var(--brand-mint), var(--brand-sky))",
+    border: "1px solid rgba(15,23,42,0.06)",
+    flex: "0 0 auto",
+    marginTop: 2,
+  },
+
+  eyebrow: {
+    fontSize: 11,
+    letterSpacing: "0.10em",
+    textTransform: "uppercase",
+    color: "var(--text-muted)",
+    marginBottom: 6,
+    fontWeight: 800,
+  },
+
+  h1: {
+    margin: 0,
+    fontSize: 20,
+    lineHeight: 1.1,
+    letterSpacing: "-0.02em",
+    color: "var(--text)",
+    fontWeight: 900,
+  },
+
+  sub: {
+    marginTop: 6,
     fontSize: 13,
+    lineHeight: 1.45,
+    color: "var(--text-muted)",
+  },
+
+  right: {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+
+  content: {
+    marginTop: 16,
   },
 };
