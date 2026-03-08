@@ -11,10 +11,26 @@ function parseYmd(ymd) {
   return new Date(y, m - 1, d);
 }
 
+function toYmd(dt) {
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function formatDate(ymd) {
   const dt = parseYmd(ymd);
   if (!dt) return ymd || "";
   return dt.toLocaleDateString("en-GB");
+}
+
+function formatMonthDay(ymd) {
+  const dt = parseYmd(ymd);
+  if (!dt) return "";
+  return dt.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+  });
 }
 
 function countWorkingDaysInclusive(startYmd, endYmd) {
@@ -46,7 +62,8 @@ function holidayYearRange(staffMember, referenceDateYmd) {
     return {
       start: `${year}-01-01`,
       end: `${year}-12-31`,
-      label: `${year}`,
+      startRuleLabel: "1 January each year",
+      currentWindowLabel: `${year}-01-01 to ${year}-12-31`,
     };
   }
 
@@ -65,18 +82,22 @@ function holidayYearRange(staffMember, referenceDateYmd) {
   const rangeEnd = new Date(nextRangeStart);
   rangeEnd.setDate(rangeEnd.getDate() - 1);
 
-  const toYmd = (dt) => {
-    const y = dt.getFullYear();
-    const m = String(dt.getMonth() + 1).padStart(2, "0");
-    const d = String(dt.getDate()).padStart(2, "0");
-    return `${y}-${m}-${d}`;
-  };
-
   return {
     start: toYmd(rangeStart),
     end: toYmd(rangeEnd),
-    label: `${formatDate(toYmd(rangeStart))} to ${formatDate(toYmd(rangeEnd))}`,
+    startRuleLabel: `${formatMonthDay(holidayStart)} each year`,
+    currentWindowLabel: `${formatDate(toYmd(rangeStart))} to ${formatDate(toYmd(rangeEnd))}`,
   };
+}
+
+function getOverlapWorkingDays(rangeStart, rangeEnd, holidayStart, holidayEnd) {
+  if (!rangeStart || !rangeEnd || !holidayStart || !holidayEnd) return 0;
+  if (holidayEnd < rangeStart || holidayStart > rangeEnd) return 0;
+
+  const clippedStart = holidayStart < rangeStart ? rangeStart : holidayStart;
+  const clippedEnd = holidayEnd > rangeEnd ? rangeEnd : holidayEnd;
+
+  return countWorkingDaysInclusive(clippedStart, clippedEnd);
 }
 
 export default function StaffHolidaysPage() {
@@ -97,6 +118,7 @@ export default function StaffHolidaysPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [reason, setReason] = useState("");
+  const [selectedSummaryStaffId, setSelectedSummaryStaffId] = useState("all");
 
   useEffect(() => {
     if (!checking && !user) {
@@ -265,19 +287,25 @@ export default function StaffHolidaysPage() {
     return acc;
   }, [staff]);
 
+  const todayYmd = new Date().toISOString().slice(0, 10);
+
   const holidaySummariesByStaffId = useMemo(() => {
     const map = {};
 
     for (const s of staff) {
-      const year = holidayYearRange(s, new Date().toISOString().slice(0, 10));
+      const year = holidayYearRange(s, todayYmd);
       map[s.id] = {
         allowance: Number(s.annual_leave_allowance ?? 28) || 28,
         yearStart: year.start,
         yearEnd: year.end,
-        yearLabel: year.label,
+        leaveYearStartsLabel: year.startRuleLabel,
+        currentWindowLabel: year.currentWindowLabel,
         approvedDaysTaken: 0,
         pendingDays: 0,
         remaining: Number(s.annual_leave_allowance ?? 28) || 28,
+        approvedBookings: [],
+        pendingBookings: [],
+        allBookingsInCurrentYear: [],
       };
     }
 
@@ -288,35 +316,55 @@ export default function StaffHolidaysPage() {
       const summary = map[h.staff_id];
       if (!summary) continue;
 
-      if (!h.start_date || !h.end_date) continue;
+      const days = getOverlapWorkingDays(
+        summary.yearStart,
+        summary.yearEnd,
+        h.start_date,
+        h.end_date
+      );
 
-      if (h.end_date < summary.yearStart || h.start_date > summary.yearEnd) {
-        continue;
-      }
+      if (days <= 0) continue;
 
-      const clippedStart = h.start_date < summary.yearStart ? summary.yearStart : h.start_date;
-      const clippedEnd = h.end_date > summary.yearEnd ? summary.yearEnd : h.end_date;
+      const booking = {
+        id: h.id,
+        start_date: h.start_date,
+        end_date: h.end_date,
+        status: h.status,
+        reason: h.reason || "",
+        workingDays: days,
+        label: `${formatDate(h.start_date)} to ${formatDate(h.end_date)} (${days} day${days === 1 ? "" : "s"})`,
+      };
 
-      const days = countWorkingDaysInclusive(clippedStart, clippedEnd);
+      summary.allBookingsInCurrentYear.push(booking);
 
       if (h.status === "approved") {
         summary.approvedDaysTaken += days;
+        summary.approvedBookings.push(booking);
       } else if (h.status === "pending") {
         summary.pendingDays += days;
+        summary.pendingBookings.push(booking);
       }
     }
 
     for (const staffId of Object.keys(map)) {
       map[staffId].remaining = map[staffId].allowance - map[staffId].approvedDaysTaken;
+      map[staffId].approvedBookings.sort((a, b) => a.start_date.localeCompare(b.start_date));
+      map[staffId].pendingBookings.sort((a, b) => a.start_date.localeCompare(b.start_date));
+      map[staffId].allBookingsInCurrentYear.sort((a, b) => a.start_date.localeCompare(b.start_date));
     }
 
     return map;
-  }, [staff, holidays, staffById]);
+  }, [staff, holidays, staffById, todayYmd]);
 
   const previewWorkingDays =
     startDate && endDate && endDate >= startDate
       ? countWorkingDaysInclusive(startDate, endDate)
       : 0;
+
+  const visibleStaffForSummary = useMemo(() => {
+    if (selectedSummaryStaffId === "all") return staff;
+    return staff.filter((s) => String(s.id) === String(selectedSummaryStaffId));
+  }, [staff, selectedSummaryStaffId]);
 
   if (checking) {
     return <div style={{ padding: 20 }}>Checking login…</div>;
@@ -331,20 +379,11 @@ export default function StaffHolidaysPage() {
   }
 
   return (
-    <div style={{ padding: 20, maxWidth: 1200, margin: "0 auto" }}>
+    <div style={{ padding: 20, maxWidth: 1280, margin: "0 auto" }}>
       <h1>Staff Holidays</h1>
 
-      {errorMsg && (
-        <div style={errorStyle}>
-          {errorMsg}
-        </div>
-      )}
-
-      {successMsg && (
-        <div style={successStyle}>
-          {successMsg}
-        </div>
-      )}
+      {errorMsg && <div style={errorStyle}>{errorMsg}</div>}
+      {successMsg && <div style={successStyle}>{successMsg}</div>}
 
       <section style={cardStyle}>
         <h2 style={{ marginTop: 0 }}>Add Holiday</h2>
@@ -361,7 +400,7 @@ export default function StaffHolidaysPage() {
               <select
                 value={selectedStaffId}
                 onChange={(e) => setSelectedStaffId(e.target.value)}
-                style={{ ...inputStyle, minWidth: 280 }}
+                style={{ ...inputStyle, minWidth: 280, width: "100%" }}
               >
                 <option value="">Select staff…</option>
                 {staff.map((s) => (
@@ -427,45 +466,118 @@ export default function StaffHolidaysPage() {
       </section>
 
       <section style={{ ...cardStyle, marginTop: 24 }}>
-        <h2 style={{ marginTop: 0 }}>Leave Balances</h2>
+        <div style={sectionHeaderRow}>
+          <div>
+            <h2 style={{ margin: 0 }}>Leave Balances</h2>
+            <div style={{ marginTop: 6, color: "#555", fontSize: 13 }}>
+              Shows the leave-year rule, the current leave-year window, and exactly which bookings make up the totals.
+            </div>
+          </div>
+
+          <div>
+            <label style={{ fontSize: 13, color: "#444" }}>
+              View:
+              <br />
+              <select
+                value={selectedSummaryStaffId}
+                onChange={(e) => setSelectedSummaryStaffId(e.target.value)}
+                style={{ ...inputStyle, minWidth: 220 }}
+              >
+                <option value="all">All staff</option>
+                {staff.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.full_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
 
         {loading ? (
           <div>Loading balances…</div>
-        ) : staff.length === 0 ? (
+        ) : visibleStaffForSummary.length === 0 ? (
           <div>No staff found yet.</div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 850 }}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Staff</th>
-                  <th style={thStyle}>Role</th>
-                  <th style={thStyle}>Holiday Year</th>
-                  <th style={thStyle}>Allowance</th>
-                  <th style={thStyle}>Approved Taken</th>
-                  <th style={thStyle}>Pending</th>
-                  <th style={thStyle}>Remaining</th>
-                </tr>
-              </thead>
-              <tbody>
-                {staff.map((s) => {
-                  const summary = holidaySummariesByStaffId[s.id];
-                  return (
-                    <tr key={s.id}>
-                      <td style={tdStyle}>{s.full_name}</td>
-                      <td style={tdStyle}>{s.role || ""}</td>
-                      <td style={tdStyle}>{summary?.yearLabel || ""}</td>
-                      <td style={tdStyle}>{summary?.allowance ?? 28}</td>
-                      <td style={tdStyle}>{summary?.approvedDaysTaken ?? 0}</td>
-                      <td style={tdStyle}>{summary?.pendingDays ?? 0}</td>
-                      <td style={tdStyle}>
-                        <strong>{summary?.remaining ?? 28}</strong>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div style={{ display: "grid", gap: 16, marginTop: 16 }}>
+            {visibleStaffForSummary.map((s) => {
+              const summary = holidaySummariesByStaffId[s.id];
+              return (
+                <div key={s.id} style={summaryCard}>
+                  <div style={summaryTop}>
+                    <div>
+                      <div style={summaryName}>{s.full_name}</div>
+                      <div style={summaryRole}>{s.role || "No role set"}</div>
+                    </div>
+
+                    <div style={totalsGrid}>
+                      <div style={totalBox}>
+                        <div style={totalLabel}>Allowance</div>
+                        <div style={totalValue}>{summary?.allowance ?? 28}</div>
+                      </div>
+                      <div style={totalBox}>
+                        <div style={totalLabel}>Approved Taken</div>
+                        <div style={totalValue}>{summary?.approvedDaysTaken ?? 0}</div>
+                      </div>
+                      <div style={totalBox}>
+                        <div style={totalLabel}>Pending</div>
+                        <div style={totalValue}>{summary?.pendingDays ?? 0}</div>
+                      </div>
+                      <div style={totalBoxStrong}>
+                        <div style={totalLabel}>Remaining</div>
+                        <div style={totalValue}>{summary?.remaining ?? 28}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={detailsGrid}>
+                    <div style={detailBox}>
+                      <div style={detailLabel}>Leave year starts</div>
+                      <div style={detailValue}>{summary?.leaveYearStartsLabel || "1 January each year"}</div>
+                    </div>
+
+                    <div style={detailBox}>
+                      <div style={detailLabel}>Current leave year</div>
+                      <div style={detailValue}>{summary?.currentWindowLabel || ""}</div>
+                    </div>
+                  </div>
+
+                  <div style={bookingListsWrap}>
+                    <div style={bookingListCard}>
+                      <div style={bookingListTitle}>Approved bookings counted this year</div>
+                      {summary?.approvedBookings?.length ? (
+                        <div style={bookingList}>
+                          {summary.approvedBookings.map((b) => (
+                            <div key={b.id} style={bookingRow}>
+                              <div>{b.label}</div>
+                              {b.reason ? <div style={bookingReason}>{b.reason}</div> : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={emptyText}>No approved bookings in the current leave year.</div>
+                      )}
+                    </div>
+
+                    <div style={bookingListCard}>
+                      <div style={bookingListTitle}>Pending bookings in this year</div>
+                      {summary?.pendingBookings?.length ? (
+                        <div style={bookingList}>
+                          {summary.pendingBookings.map((b) => (
+                            <div key={b.id} style={bookingRow}>
+                              <div>{b.label}</div>
+                              {b.reason ? <div style={bookingReason}>{b.reason}</div> : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={emptyText}>No pending bookings in the current leave year.</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
@@ -626,4 +738,142 @@ const tdStyle = {
   padding: "8px 10px",
   fontSize: 12,
   verticalAlign: "top",
+};
+
+const sectionHeaderRow = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 16,
+  alignItems: "flex-start",
+  flexWrap: "wrap",
+};
+
+const summaryCard = {
+  border: "1px solid #e5e7eb",
+  borderRadius: 10,
+  padding: 16,
+  background: "#fafafa",
+};
+
+const summaryTop = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 16,
+  alignItems: "flex-start",
+  flexWrap: "wrap",
+};
+
+const summaryName = {
+  fontSize: 18,
+  fontWeight: 800,
+  color: "#111827",
+};
+
+const summaryRole = {
+  marginTop: 4,
+  fontSize: 13,
+  color: "#6b7280",
+};
+
+const totalsGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(110px, 1fr))",
+  gap: 10,
+  minWidth: 460,
+};
+
+const totalBox = {
+  border: "1px solid #e5e7eb",
+  borderRadius: 8,
+  padding: 10,
+  background: "#fff",
+};
+
+const totalBoxStrong = {
+  border: "1px solid #d1d5db",
+  borderRadius: 8,
+  padding: 10,
+  background: "#eef6ff",
+};
+
+const totalLabel = {
+  fontSize: 11,
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+  color: "#6b7280",
+};
+
+const totalValue = {
+  marginTop: 6,
+  fontSize: 22,
+  fontWeight: 800,
+  color: "#111827",
+};
+
+const detailsGrid = {
+  marginTop: 16,
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(220px, 1fr))",
+  gap: 10,
+};
+
+const detailBox = {
+  border: "1px solid #e5e7eb",
+  borderRadius: 8,
+  padding: 12,
+  background: "#fff",
+};
+
+const detailLabel = {
+  fontSize: 12,
+  color: "#6b7280",
+  marginBottom: 6,
+};
+
+const detailValue = {
+  fontSize: 14,
+  fontWeight: 600,
+  color: "#111827",
+};
+
+const bookingListsWrap = {
+  marginTop: 16,
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(280px, 1fr))",
+  gap: 12,
+};
+
+const bookingListCard = {
+  border: "1px solid #e5e7eb",
+  borderRadius: 8,
+  padding: 12,
+  background: "#fff",
+};
+
+const bookingListTitle = {
+  fontSize: 13,
+  fontWeight: 700,
+  color: "#111827",
+  marginBottom: 10,
+};
+
+const bookingList = {
+  display: "grid",
+  gap: 8,
+};
+
+const bookingRow = {
+  borderBottom: "1px solid #f1f5f9",
+  paddingBottom: 8,
+};
+
+const bookingReason = {
+  fontSize: 12,
+  color: "#6b7280",
+  marginTop: 4,
+};
+
+const emptyText = {
+  fontSize: 13,
+  color: "#6b7280",
 };
