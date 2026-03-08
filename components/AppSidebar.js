@@ -40,7 +40,6 @@ const NAV_SECTIONS = [
     title: "Drivers & Vehicles",
     items: [
       { href: "/app/drivers", label: "Drivers", match: ["/app/drivers"] },
-      { href: "/app/drivers/run", label: "Driver Runs", match: ["/app/drivers/run"] },
       { href: "/app/vehicles", label: "Vehicles", match: ["/app/vehicles", "/app/vehicles/[id]"] },
       { href: "/app/settings/vehicles", label: "Vehicle Alerts", match: ["/app/settings/vehicles"] },
     ],
