@@ -2,6 +2,96 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
 
+const NAV_SECTIONS = [
+  {
+    title: null,
+    items: [
+      { href: "/app", label: "Dashboard", match: ["/app"] },
+    ],
+  },
+
+  {
+    title: "Jobs",
+    items: [
+      { href: "/app/jobs", label: "Jobs", match: ["/app/jobs", "/app/jobs/[id]"] },
+      { href: "/app/jobs/book", label: "Book Job", match: ["/app/jobs/book"] },
+      { href: "/app/jobs/book-swap", label: "Book Swap", match: ["/app/jobs/book-swap"] },
+      { href: "/app/jobs/scheduler", label: "Scheduler", match: ["/app/jobs/scheduler"] },
+      { href: "/app/jobs/day-planner", label: "Day Planner", match: ["/app/jobs/day-planner"] },
+    ],
+  },
+
+  {
+    title: "Customers",
+    items: [
+      { href: "/app/customers", label: "Customers", match: ["/app/customers", "/app/customers/[id]", "/app/customers/[id]/history", "/app/customers/[id]/credit-application"] },
+      { href: "/app/customers/new", label: "New Customer", match: ["/app/customers/new"] },
+    ],
+  },
+
+  {
+    title: "Drivers & Vehicles",
+    items: [
+      { href: "/app/drivers", label: "Drivers", match: ["/app/drivers"] },
+      { href: "/app/drivers/run", label: "Driver Runs", match: ["/app/drivers/run"] },
+      { href: "/app/vehicles", label: "Vehicles", match: ["/app/vehicles", "/app/vehicles/[id]"] },
+    ],
+  },
+
+  {
+    title: "Operations",
+    items: [
+      { href: "/app/routes", label: "Routes", match: ["/app/routes"] },
+      { href: "/app/postcodes-served", label: "Postcodes Served", match: ["/app/postcodes-served"] },
+      { href: "/app/skip-types", label: "Skip Types", match: ["/app/skip-types"] },
+      { href: "/app/import/bookings", label: "Import Bookings", match: ["/app/import/bookings"] },
+    ],
+  },
+
+  {
+    title: "Waste & Compliance",
+    items: [
+      { href: "/app/waste/out", label: "Waste Out", match: ["/app/waste/out"] },
+      { href: "/app/waste/returns", label: "Waste Returns", match: ["/app/waste/returns"] },
+    ],
+  },
+
+  {
+    title: "Team",
+    items: [
+      { href: "/app/staff", label: "Staff", match: ["/app/staff"] },
+      { href: "/app/staff-holidays", label: "Staff Holidays", match: ["/app/staff-holidays"] },
+    ],
+  },
+
+  {
+    title: "Finance",
+    items: [
+      { href: "/app/xero-accounts", label: "Xero Accounts", match: ["/app/xero-accounts"] },
+    ],
+  },
+
+  {
+    title: "Settings",
+    items: [
+      { href: "/app/settings", label: "General", match: ["/app/settings"] },
+      { href: "/app/settings/emails", label: "Emails", match: ["/app/settings/emails"] },
+      { href: "/app/settings/invoicing", label: "Invoicing", match: ["/app/settings/invoicing"] },
+      { href: "/app/settings/subscription", label: "Subscription", match: ["/app/settings/subscription"] },
+      { href: "/app/settings/skip-hire-extras", label: "Skip Hire Extras", match: ["/app/settings/skip-hire-extras"] },
+      { href: "/app/settings/vehicles", label: "Vehicle Settings", match: ["/app/settings/vehicles"] },
+      { href: "/app/settings/waste", label: "Waste Settings", match: ["/app/settings/waste"] },
+    ],
+  },
+
+  {
+    title: "Platform",
+    items: [
+      { href: "/app/platform/subscribers", label: "Subscribers", match: ["/app/platform/subscribers", "/app/platform/subscribers/[id]"] },
+    ],
+  },
+];
+
 export default function AppSidebar({ profile }) {
   const router = useRouter();
 
@@ -12,30 +102,40 @@ export default function AppSidebar({ profile }) {
 
   return (
     <aside style={styles.sidebar}>
-      <div>
+      <div style={styles.top}>
         <div style={styles.logo}>
           <div style={styles.logoMark} />
-          <div style={styles.logoText}>SkipLogic</div>
+          <div>
+            <div style={styles.logoText}>SkipLogic</div>
+            <div style={styles.logoSub}>Operations</div>
+          </div>
         </div>
 
         <nav style={styles.nav}>
-          <SidebarLink href="/app" label="Dashboard" router={router} />
-          <SidebarLink href="/app/jobs" label="Jobs" router={router} />
-          <SidebarLink href="/app/customers" label="Customers" router={router} />
-          <SidebarLink href="/app/scheduler" label="Scheduler" router={router} />
-          <SidebarLink href="/app/drivers" label="Drivers" router={router} />
-          <SidebarLink href="/app/vehicles" label="Vehicles" router={router} />
-          <SidebarLink href="/app/settings" label="Settings" router={router} />
+          {NAV_SECTIONS.map((section, idx) => (
+            <div key={section.title || `section-${idx}`} style={styles.section}>
+              {section.title ? <div style={styles.sectionTitle}>{section.title}</div> : null}
+
+              <div style={styles.sectionItems}>
+                {section.items.map((item) => (
+                  <SidebarLink
+                    key={item.href}
+                    href={item.href}
+                    label={item.label}
+                    router={router}
+                    match={item.match}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
         </nav>
       </div>
 
       <div style={styles.userSection}>
-        <div style={styles.userName}>
-          {profile?.full_name || "User"}
-        </div>
-
-        <div style={styles.userEmail}>
-          {profile?.email}
+        <div style={styles.userCard}>
+          <div style={styles.userName}>{profile?.full_name || "User"}</div>
+          <div style={styles.userEmail}>{profile?.email || ""}</div>
         </div>
 
         <button onClick={logout} style={styles.logout}>
@@ -46,21 +146,36 @@ export default function AppSidebar({ profile }) {
   );
 }
 
-function SidebarLink({ href, label, router }) {
-  const active = router.pathname === href;
+function SidebarLink({ href, label, router, match = [] }) {
+  const active = isActiveRoute(router, href, match);
 
   return (
-    <Link href={href} style={{ textDecoration: "none" }}>
+    <Link href={href} style={styles.linkWrap}>
       <div
         style={{
           ...styles.link,
           ...(active ? styles.linkActive : {}),
         }}
       >
-        {label}
+        <span>{label}</span>
       </div>
     </Link>
   );
+}
+
+function isActiveRoute(router, href, match = []) {
+  const path = router.pathname || "";
+  const asPath = (router.asPath || "").split("?")[0];
+
+  if (path === href || asPath === href) return true;
+
+  for (const candidate of match) {
+    if (path === candidate || asPath === candidate) return true;
+  }
+
+  if (href !== "/app" && asPath.startsWith(`${href}/`)) return true;
+
+  return false;
 }
 
 const styles = {
@@ -76,32 +191,74 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     justifyContent: "space-between",
+    gap: 16,
+    overflowY: "auto",
+  },
+
+  top: {
+    minHeight: 0,
   },
 
   logo: {
     display: "flex",
     alignItems: "center",
     gap: 10,
-    marginBottom: 24,
+    marginBottom: 18,
+    paddingBottom: 14,
+    borderBottom: "1px solid var(--border)",
   },
 
   logoMark: {
-    width: 32,
-    height: 32,
+    width: 34,
+    height: 34,
     borderRadius: 10,
     background: "linear-gradient(135deg, var(--brand-mint), var(--brand-sky))",
+    flex: "0 0 auto",
   },
 
   logoText: {
     fontWeight: 900,
     fontSize: 16,
     letterSpacing: "-0.01em",
+    color: "var(--text)",
+    lineHeight: 1.1,
+  },
+
+  logoSub: {
+    fontSize: 12,
+    color: "var(--text-muted)",
+    marginTop: 2,
   },
 
   nav: {
     display: "flex",
     flexDirection: "column",
+    gap: 14,
+  },
+
+  section: {
+    display: "flex",
+    flexDirection: "column",
     gap: 6,
+  },
+
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "var(--text-muted)",
+    padding: "0 10px",
+  },
+
+  sectionItems: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  },
+
+  linkWrap: {
+    textDecoration: "none",
   },
 
   link: {
@@ -110,16 +267,27 @@ const styles = {
     fontSize: 14,
     color: "var(--text)",
     cursor: "pointer",
+    border: "1px solid transparent",
+    transition: "all 0.15s ease",
   },
 
   linkActive: {
     background: "var(--surface-2)",
     fontWeight: 700,
+    border: "1px solid var(--border)",
+    boxShadow: "var(--shadow-1)",
   },
 
   userSection: {
     borderTop: "1px solid var(--border)",
     paddingTop: 12,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+
+  userCard: {
+    minWidth: 0,
   },
 
   userName: {
@@ -131,16 +299,18 @@ const styles = {
   userEmail: {
     fontSize: 12,
     color: "var(--text-muted)",
-    marginBottom: 10,
+    marginTop: 3,
+    wordBreak: "break-word",
   },
 
   logout: {
     width: "100%",
-    padding: "8px 10px",
+    padding: "9px 10px",
     borderRadius: 8,
     border: "1px solid var(--border)",
     background: "var(--surface)",
     cursor: "pointer",
     fontSize: 13,
+    color: "var(--text)",
   },
 };
