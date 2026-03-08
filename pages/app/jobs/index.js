@@ -207,6 +207,9 @@ export default function JobsIndexPage() {
           <button style={btnSecondary} onClick={load}>
             Refresh
           </button>
+          <button style={btnSecondary} onClick={() => router.push("/app/jobs/book-swap")}>
+            Book swap
+          </button>
           <button style={btnPrimary} onClick={() => router.push("/app/jobs/book")}>
             + New job
           </button>
@@ -242,14 +245,14 @@ export default function JobsIndexPage() {
           <label style={labelStyle}>
             Sort
             <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} style={selectStyle}>
-              <option value="job_number_desc">Job # (most recent first)</option>
-              <option value="scheduled_date_asc">Scheduled date (oldest first)</option>
-              <option value="scheduled_date_desc">Scheduled date (newest first)</option>
-              <option value="created_at_desc">Created (newest first)</option>
+              <option value="job_number_desc">Newest booked first</option>
+              <option value="scheduled_date_asc">Oldest scheduled first</option>
+              <option value="scheduled_date_desc">Newest scheduled first</option>
+              <option value="created_at_desc">Newest created first</option>
             </select>
           </label>
 
-          <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ ...labelStyle, flexDirection: "row", alignItems: "center", gap: 8, marginTop: 20 }}>
             <input
               type="checkbox"
               checked={hideCollected}
@@ -257,197 +260,175 @@ export default function JobsIndexPage() {
             />
             Hide collected
           </label>
-
-          <div style={{ fontSize: 12, color: "#666", marginLeft: "auto" }}>
-            Showing <b>{filtered.length}</b> of <b>{jobs.length}</b>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-          Tip: set <b>Status = Delivered</b> and <b>Sort = Scheduled date (oldest first)</b> to work through the oldest uncollected skips.
         </div>
       </section>
 
-      <section style={cardStyle}>
-        {filtered.length === 0 ? (
-          <p style={{ margin: 0 }}>No jobs found.</p>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
-              <thead>
+      <section style={{ ...cardStyle, marginTop: 14, padding: 0, overflow: "hidden" }}>
+        <div style={tableWrapStyle}>
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Job #</th>
+                <th style={thStyle}>Status</th>
+                <th style={thStyle}>Scheduled</th>
+                <th style={thStyle}>Customer</th>
+                <th style={thStyle}>Site</th>
+                <th style={thStyle}>Placement</th>
+                <th style={thStyle}>Price</th>
+                <th style={thStyle}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
                 <tr>
-                  <th style={thStyle}>Job #</th>
-                  <th style={thStyle}>Status</th>
-                  <th style={thStyle}>Scheduled</th>
-                  <th style={thStyle}>Customer</th>
-                  <th style={thStyle}>Postcode</th>
-                  <th style={thStyle}>Address</th>
-                  <th style={thStyle}>Value</th>
-                  <th style={thStyle}>Actions</th>
+                  <td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: "#666" }}>
+                    No jobs found.
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {filtered.map((j) => {
+              ) : (
+                filtered.map((j) => {
                   const cust = j.customers;
-                  const addr = [j.site_address_line1, j.site_address_line2, j.site_town]
-                    .map((x) => String(x || "").trim())
+                  const site = [j.site_address_line1, j.site_address_line2, j.site_town, j.site_postcode]
                     .filter(Boolean)
                     .join(", ");
 
-                  const statusLabel = STATUS_LABELS[j.job_status] || j.job_status || "—";
-
                   return (
                     <tr key={j.id}>
-                      <td style={tdStyle}>
-                        <b>{j.job_number || "—"}</b>
-                      </td>
-                      <td style={tdStyle}>
-                        <span style={pillForStatus(j.job_status)}>{statusLabel}</span>
-                      </td>
+                      <td style={tdStyle}>{j.job_number || "—"}</td>
+                      <td style={tdStyle}>{STATUS_LABELS[j.job_status] || j.job_status || "—"}</td>
                       <td style={tdStyle}>{fmtDate(j.scheduled_date)}</td>
                       <td style={tdStyle}>{displayCustomer(cust)}</td>
-                      <td style={tdStyle}>{j.site_postcode || "—"}</td>
-                      <td style={tdStyle}>{addr || "—"}</td>
+                      <td style={tdStyle}>{site || "—"}</td>
+                      <td style={tdStyle}>{j.placement_type || "—"}</td>
                       <td style={tdStyle}>{moneyGBP(j.price_inc_vat)}</td>
-                      <td style={tdStyle}>
-                        <Link href={`/app/jobs/${j.id}`} style={actionLink}>
-                          View
-                        </Link>
-                        <span style={{ margin: "0 8px", color: "#ccc" }}>|</span>
-                        <Link href={`/app/customers/${j.customer_id}`} style={actionLink}>
-                          Customer
-                        </Link>
+                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                        <button style={btnRow} onClick={() => router.push(`/app/jobs/${j.id}`)}>
+                          Open
+                        </button>
                       </td>
                     </tr>
                   );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     </main>
   );
 }
 
-function pillForStatus(status) {
-  const s = String(status || "").toLowerCase();
-  if (s === "collected") return pillGreen;
-  if (s === "delivered") return pillBlue;
-  if (s === "booked") return pillGrey;
-  if (s === "cancelled") return pillRed;
-  return pillGrey;
-}
-
 const pageStyle = {
-  minHeight: "100vh",
-  padding: 24,
-  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#f7f7f7",
+  padding: 16,
 };
 
 const centerStyle = {
-  minHeight: "100vh",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontFamily: "system-ui, sans-serif",
+  minHeight: "60vh",
+  display: "grid",
+  placeItems: "center",
 };
 
 const headerStyle = {
   display: "flex",
   justifyContent: "space-between",
+  gap: 16,
   alignItems: "flex-start",
-  gap: 12,
+  marginBottom: 14,
   flexWrap: "wrap",
-  marginBottom: 16,
 };
 
-const linkStyle = { textDecoration: "underline", color: "#0070f3", fontSize: 13 };
-
 const cardStyle = {
-  background: "#fff",
-  border: "1px solid #eee",
+  border: "1px solid #e5e7eb",
   borderRadius: 12,
   padding: 14,
-  marginBottom: 14,
-  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+  background: "#fff",
+};
+
+const linkStyle = {
+  color: "#2563eb",
+  textDecoration: "none",
+  fontSize: 14,
+};
+
+const labelStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  fontSize: 12,
+  color: "#555",
+};
+
+const inputStyle = {
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  padding: "10px 12px",
+  fontSize: 14,
+  outline: "none",
+  background: "#fff",
+};
+
+const selectStyle = {
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  padding: "10px 12px",
+  fontSize: 14,
+  outline: "none",
+  background: "#fff",
+};
+
+const btnPrimary = {
+  border: "none",
+  borderRadius: 10,
+  padding: "10px 14px",
+  background: "#111827",
+  color: "#fff",
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+const btnSecondary = {
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  padding: "10px 14px",
+  background: "#fff",
+  color: "#111827",
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+const btnRow = {
+  border: "1px solid #d1d5db",
+  borderRadius: 8,
+  padding: "7px 10px",
+  background: "#fff",
+  color: "#111827",
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+const tableWrapStyle = {
+  overflowX: "auto",
+};
+
+const tableStyle = {
+  width: "100%",
+  borderCollapse: "collapse",
 };
 
 const thStyle = {
   textAlign: "left",
-  borderBottom: "1px solid #ddd",
-  padding: "10px 8px",
   fontSize: 12,
-  fontWeight: 800,
-  color: "#333",
+  color: "#666",
+  fontWeight: 700,
+  padding: "12px 14px",
+  borderBottom: "1px solid #e5e7eb",
+  background: "#fafafa",
 };
 
 const tdStyle = {
-  borderBottom: "1px solid #eee",
-  padding: "10px 8px",
-  fontSize: 12,
-  color: "#111",
+  fontSize: 14,
+  color: "#111827",
+  padding: "12px 14px",
+  borderBottom: "1px solid #f1f5f9",
   verticalAlign: "top",
 };
-
-const inputStyle = {
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid #ccc",
-  fontSize: 13,
-  background: "#fff",
-};
-
-const labelStyle = {
-  fontSize: 12,
-  color: "#333",
-  display: "flex",
-  flexDirection: "column",
-  gap: 6,
-};
-
-const selectStyle = {
-  padding: "7px 10px",
-  borderRadius: 8,
-  border: "1px solid #ccc",
-  fontSize: 13,
-  background: "#fff",
-  minWidth: 190,
-};
-
-const btnPrimary = {
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: "1px solid #0070f3",
-  background: "#0070f3",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-
-const btnSecondary = {
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: "1px solid #ccc",
-  background: "#f5f5f5",
-  color: "#111",
-  cursor: "pointer",
-  fontSize: 13,
-};
-
-const actionLink = { fontSize: 12, textDecoration: "underline", color: "#0070f3" };
-
-const pillBase = {
-  display: "inline-block",
-  padding: "2px 8px",
-  borderRadius: 999,
-  fontSize: 11,
-  fontWeight: 800,
-  border: "1px solid transparent",
-};
-
-const pillGreen = { ...pillBase, background: "#ecfdf3", color: "#0f5132", borderColor: "#b7ebc6" };
-const pillRed = { ...pillBase, background: "#fff5f5", color: "#8a1f1f", borderColor: "#f0b4b4" };
-const pillBlue = { ...pillBase, background: "#eef6ff", color: "#0b3d91", borderColor: "#b6d7ff" };
-const pillGrey = { ...pillBase, background: "#f2f2f2", color: "#444", borderColor: "#ddd" };
