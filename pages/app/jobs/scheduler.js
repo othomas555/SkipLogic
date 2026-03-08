@@ -274,6 +274,44 @@ export default function SchedulerPage() {
       if (jErr) throw new Error("Failed to load jobs");
 
       setJobs(jRows || []);
+
+      const { data: runRows, error: runErr } = await supabase
+        .from("driver_runs")
+        .select("driver_id, run_number, items")
+        .eq("subscriber_id", subscriberId)
+        .eq("run_date", date)
+        .order("driver_id", { ascending: true })
+        .order("run_number", { ascending: true });
+
+      if (runErr) {
+        console.error("Error loading driver runs:", runErr);
+        throw new Error("Failed to load saved runs");
+      }
+
+      const persistedExtras = {};
+      for (const row of runRows || []) {
+        const driverId = String(row.driver_id || "");
+        if (!driverId) continue;
+        if (!persistedExtras[driverId]) persistedExtras[driverId] = [];
+
+        const items = Array.isArray(row.items) ? row.items : [];
+        items.forEach((item, idx) => {
+          if (String(item?.type || "") !== "return_yard") return;
+
+          persistedExtras[driverId].push({
+            type: "block",
+            block_id: `saved-${driverId}-${row.run_number}-${idx}`,
+            block_type: "return_yard",
+            label: "Return to yard",
+            duration_mins: clampInt(item?.duration_mins ?? minsReturn, 0, 600),
+            driver_run_group: Number.isFinite(Number(item?.group_order))
+              ? Number(item.group_order)
+              : Number(`${row.run_number}999`),
+          });
+        });
+      }
+
+      setExtrasByDriverId(persistedExtras);
       setLoading(false);
     } catch (e) {
       console.error(e);
@@ -739,29 +777,27 @@ export default function SchedulerPage() {
             currentRun.push({
               type: "job",
               job_id: item.job.id,
+              group_order: Number(item.job?.driver_run_group ?? item.driver_run_group ?? 0),
             });
             continue;
           }
 
           if (item.type === "swap") {
-            if (item.collect?.id) {
-              currentRun.push({
-                type: "job",
-                job_id: item.collect.id,
-              });
-            }
-            if (item.deliver?.id) {
-              currentRun.push({
-                type: "job",
-                job_id: item.deliver.id,
-              });
-            }
+            currentRun.push({
+              type: "swap",
+              swap_group_id: item.swap_group_id || null,
+              collect_job_id: item.collect?.id || null,
+              deliver_job_id: item.deliver?.id || null,
+              group_order: Number(item.driver_run_group ?? item.collect?.driver_run_group ?? item.deliver?.driver_run_group ?? 0),
+            });
             continue;
           }
 
           if (item.type === "block" && item.block_type === "return_yard") {
             currentRun.push({
               type: "return_yard",
+              group_order: Number(item.driver_run_group ?? 0),
+              duration_mins: clampInt(item.duration_mins ?? minsReturn, 0, 600),
             });
 
             if (currentRun.length) {
@@ -810,6 +846,7 @@ export default function SchedulerPage() {
         }
       }
 
+      await loadAll();
       alert("Runs saved.");
       setSavingRuns(false);
     } catch (e) {
