@@ -5,9 +5,7 @@ import { supabase } from "../lib/supabaseClient";
 const NAV_SECTIONS = [
   {
     title: null,
-    items: [
-      { href: "/app", label: "Dashboard", match: ["/app"] },
-    ],
+    items: [{ href: "/app", label: "Dashboard", match: ["/app"] }],
   },
 
   {
@@ -24,7 +22,16 @@ const NAV_SECTIONS = [
   {
     title: "Customers",
     items: [
-      { href: "/app/customers", label: "Customers", match: ["/app/customers", "/app/customers/[id]", "/app/customers/[id]/history", "/app/customers/[id]/credit-application"] },
+      {
+        href: "/app/customers",
+        label: "Customers",
+        match: [
+          "/app/customers",
+          "/app/customers/[id]",
+          "/app/customers/[id]/history",
+          "/app/customers/[id]/credit-application",
+        ],
+      },
       { href: "/app/customers/new", label: "New Customer", match: ["/app/customers/new"] },
     ],
   },
@@ -41,7 +48,6 @@ const NAV_SECTIONS = [
   {
     title: "Operations",
     items: [
-      { href: "/app/routes", label: "Routes", match: ["/app/routes"] },
       { href: "/app/postcodes-served", label: "Postcodes Served", match: ["/app/postcodes-served"] },
       { href: "/app/skip-types", label: "Skip Types", match: ["/app/skip-types"] },
       { href: "/app/import/bookings", label: "Import Bookings", match: ["/app/import/bookings"] },
@@ -66,9 +72,7 @@ const NAV_SECTIONS = [
 
   {
     title: "Finance",
-    items: [
-      { href: "/app/xero-accounts", label: "Xero Accounts", match: ["/app/xero-accounts"] },
-    ],
+    items: [{ href: "/app/xero-accounts", label: "Xero Accounts", match: ["/app/xero-accounts"] }],
   },
 
   {
@@ -78,7 +82,11 @@ const NAV_SECTIONS = [
       { href: "/app/settings/emails", label: "Emails", match: ["/app/settings/emails"] },
       { href: "/app/settings/invoicing", label: "Invoicing", match: ["/app/settings/invoicing"] },
       { href: "/app/settings/subscription", label: "Subscription", match: ["/app/settings/subscription"] },
-      { href: "/app/settings/skip-hire-extras", label: "Skip Hire Extras", match: ["/app/settings/skip-hire-extras"] },
+      {
+        href: "/app/settings/skip-hire-extras",
+        label: "Skip Hire Extras",
+        match: ["/app/settings/skip-hire-extras"],
+      },
       { href: "/app/settings/vehicles", label: "Vehicle Settings", match: ["/app/settings/vehicles"] },
       { href: "/app/settings/waste", label: "Waste Settings", match: ["/app/settings/waste"] },
     ],
@@ -87,7 +95,11 @@ const NAV_SECTIONS = [
   {
     title: "Platform",
     items: [
-      { href: "/app/platform/subscribers", label: "Subscribers", match: ["/app/platform/subscribers", "/app/platform/subscribers/[id]"] },
+      {
+        href: "/app/platform/subscribers",
+        label: "Subscribers",
+        match: ["/app/platform/subscribers", "/app/platform/subscribers/[id]"],
+      },
     ],
   },
 ];
@@ -187,16 +199,17 @@ const styles = {
     width: 270,
     background: "var(--surface)",
     borderRight: "1px solid var(--border)",
-    padding: 18,
     display: "flex",
     flexDirection: "column",
-    justifyContent: "space-between",
-    gap: 16,
-    overflowY: "auto",
+    overflow: "hidden",
   },
 
   top: {
+    flex: 1,
     minHeight: 0,
+    overflowY: "auto",
+    padding: 18,
+    paddingBottom: 12,
   },
 
   logo: {
@@ -279,8 +292,10 @@ const styles = {
   },
 
   userSection: {
+    flexShrink: 0,
     borderTop: "1px solid var(--border)",
-    paddingTop: 12,
+    padding: 12,
+    background: "var(--surface)",
     display: "flex",
     flexDirection: "column",
     gap: 10,
