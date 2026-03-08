@@ -10,11 +10,15 @@ function ymdTodayLocal() {
   return `${y}-${m}-${d}`;
 }
 
+function normaliseLoginCode(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
 export default function DriverLoginPage() {
   const router = useRouter();
   const today = useMemo(() => ymdTodayLocal(), []);
 
-  const [email, setEmail] = useState("");
+  const [loginCode, setLoginCode] = useState("");
   const [password, setPassword] = useState("");
 
   const [loading, setLoading] = useState(false);
@@ -30,20 +34,19 @@ export default function DriverLoginPage() {
     setErr("");
     setInfo("");
 
-    const e1 = email.trim().toLowerCase();
-    const p1 = password;
+    const code = normaliseLoginCode(loginCode);
+    const pw = password;
 
-    if (!e1) return setErr("Enter your email");
-    if (!p1) return setErr("Enter your password");
+    if (!code) return setErr("Enter your login code");
+    if (!pw) return setErr("Enter your password");
 
     setLoading(true);
     try {
-      // 1) Login
       const res = await fetch("/api/driver/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: e1, password: p1 }),
+        body: JSON.stringify({ login_code: code, password: pw }),
       });
 
       if (!res.ok) {
@@ -55,7 +58,6 @@ export default function DriverLoginPage() {
         throw new Error(msg);
       }
 
-      // 2) Verify session is actually set (cookie present + readable by server)
       const verify = await fetch(`/api/driver/jobs?date=${encodeURIComponent(today)}`, {
         method: "GET",
         credentials: "include",
@@ -64,17 +66,14 @@ export default function DriverLoginPage() {
 
       if (verify.status === 401) {
         throw new Error(
-          "Login did not create a session (cookie not set). Check /api/driver/login Set-Cookie."
+          "Login did not create a session. Check the driver login API and cookie settings."
         );
       }
 
       if (!verify.ok) {
-        // not ideal but at least it's not a 401
-        // allow through, but show warning
         setInfo("Logged in, but jobs could not be loaded yet.");
       }
 
-      // 3) Go to menu
       router.push("/driver/menu");
     } catch (e2) {
       setErr(e2?.message || "Login failed");
@@ -87,15 +86,15 @@ export default function DriverLoginPage() {
     <main style={styles.page}>
       <div style={styles.card}>
         <h1 style={styles.h1}>Driver login</h1>
-        <p style={styles.sub}>Sign in with your driver email and password</p>
+        <p style={styles.sub}>Sign in with your driver login code and password</p>
 
         <form onSubmit={onSubmit} style={{ marginTop: 14 }}>
-          <label style={styles.label}>Email</label>
+          <label style={styles.label}>Driver login code</label>
           <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            value={loginCode}
+            onChange={(e) => setLoginCode(e.target.value)}
             autoComplete="username"
-            placeholder="driver@cox-skips.co.uk"
+            placeholder="aburnell"
             style={styles.input}
           />
 
