@@ -41,6 +41,7 @@ const NAV_SECTIONS = [
       { href: "/app/drivers", label: "Drivers", match: ["/app/drivers"] },
       { href: "/app/drivers/run", label: "Driver Runs", match: ["/app/drivers/run"] },
       { href: "/app/vehicles", label: "Vehicles", match: ["/app/vehicles", "/app/vehicles/[id]"] },
+      { href: "/app/settings/vehicles", label: "Vehicle Alerts", match: ["/app/settings/vehicles"] },
     ],
   },
 
@@ -86,7 +87,6 @@ const NAV_SECTIONS = [
         label: "Skip Hire Extras",
         match: ["/app/settings/skip-hire-extras"],
       },
-      { href: "/app/settings/vehicles", label: "Vehicle Settings", match: ["/app/settings/vehicles"] },
       { href: "/app/settings/waste", label: "Waste Settings", match: ["/app/settings/waste"] },
     ],
   },
@@ -192,6 +192,7 @@ const styles = {
     flex: 1,
     overflowY: "auto",
     padding: 18,
+    paddingBottom: 12,
   },
 
   logo: {
@@ -261,6 +262,7 @@ const styles = {
   userSection: {
     borderTop: "1px solid var(--border)",
     padding: 12,
+    background: "var(--surface)",
   },
 
   userCard: {
@@ -275,6 +277,7 @@ const styles = {
   userEmail: {
     fontSize: 12,
     color: "var(--text-muted)",
+    wordBreak: "break-word",
   },
 
   logout: {
