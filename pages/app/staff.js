@@ -27,7 +27,6 @@ export default function StaffPage() {
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("");
-  const [isDriver, setIsDriver] = useState(false);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [notes, setNotes] = useState("");
@@ -47,7 +46,6 @@ export default function StaffPage() {
     phone: "",
     email: "",
     role: "",
-    is_driver: false,
     start_date: "",
     end_date: "",
     notes: "",
@@ -58,7 +56,6 @@ export default function StaffPage() {
   const [editForm, setEditForm] = useState(emptyEditForm);
   const [editing, setEditing] = useState(false);
 
-  // Load staff for this subscriber
   useEffect(() => {
     async function loadStaff() {
       if (checking) return;
@@ -91,7 +88,6 @@ export default function StaffPage() {
           phone,
           email,
           role,
-          is_driver,
           start_date,
           end_date,
           notes,
@@ -118,7 +114,6 @@ export default function StaffPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, authError, subscriberId]);
 
-  // ADD staff member
   async function handleAddStaff(e) {
     e.preventDefault();
     setErrorMsg("");
@@ -153,7 +148,6 @@ export default function StaffPage() {
           phone: phone.trim() || null,
           email: email.trim() || null,
           role: role.trim() || null,
-          is_driver: isDriver,
           start_date: startDate || null,
           end_date: endDate || null,
           notes: notes.trim() || null,
@@ -177,7 +171,6 @@ export default function StaffPage() {
     );
     setStaff(updated);
 
-    // Reset form
     setFullName("");
     setDob("");
     setAddressLine1("");
@@ -188,7 +181,6 @@ export default function StaffPage() {
     setPhone("");
     setEmail("");
     setRole("");
-    setIsDriver(false);
     setStartDate("");
     setEndDate("");
     setNotes("");
@@ -198,7 +190,6 @@ export default function StaffPage() {
     setSuccessMsg("Staff member added ✓");
   }
 
-  // Start editing
   function startEditStaff(member) {
     setErrorMsg("");
     setSuccessMsg("");
@@ -215,7 +206,6 @@ export default function StaffPage() {
       phone: member.phone || "",
       email: member.email || "",
       role: member.role || "",
-      is_driver: !!member.is_driver,
       start_date: member.start_date || "",
       end_date: member.end_date || "",
       notes: member.notes || "",
@@ -234,7 +224,6 @@ export default function StaffPage() {
     setEditForm(emptyEditForm);
   }
 
-  // UPDATE staff member
   async function handleUpdateStaff(e) {
     e.preventDefault();
     if (!editForm.id) return;
@@ -267,7 +256,6 @@ export default function StaffPage() {
         phone: editForm.phone.trim() || null,
         email: editForm.email.trim() || null,
         role: editForm.role.trim() || null,
-        is_driver: editForm.is_driver,
         start_date: editForm.start_date || null,
         end_date: editForm.end_date || null,
         notes: editForm.notes.trim() || null,
@@ -296,7 +284,6 @@ export default function StaffPage() {
     cancelEdit();
   }
 
-  // DELETE staff
   async function handleDeleteStaff(member) {
     const ok = window.confirm(
       `Delete staff member "${member.full_name}"? This cannot be undone.`
@@ -390,7 +377,6 @@ export default function StaffPage() {
         </div>
       )}
 
-      {/* Add staff form */}
       <form
         onSubmit={handleAddStaff}
         style={{
@@ -529,17 +515,6 @@ export default function StaffPage() {
             </label>
           </div>
 
-          <div style={{ gridColumn: "1 / -1", marginTop: 4 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={isDriver}
-                onChange={(e) => setIsDriver(e.target.checked)}
-              />
-              This person is a driver (used in scheduler / driver lists)
-            </label>
-          </div>
-
           <div style={{ gridColumn: "1 / -1" }}>
             <label>
               Address line 1
@@ -636,7 +611,6 @@ export default function StaffPage() {
         </button>
       </form>
 
-      {/* Edit staff form */}
       {editing && (
         <form
           onSubmit={handleUpdateStaff}
@@ -802,22 +776,6 @@ export default function StaffPage() {
               </label>
             </div>
 
-            <div style={{ gridColumn: "1 / -1", marginTop: 4 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={editForm.is_driver}
-                  onChange={(e) =>
-                    setEditForm((f) => ({
-                      ...f,
-                      is_driver: e.target.checked,
-                    }))
-                  }
-                />
-                This person is a driver (used in scheduler / driver lists)
-              </label>
-            </div>
-
             <div style={{ gridColumn: "1 / -1" }}>
               <label>
                 Address line 1
@@ -954,7 +912,6 @@ export default function StaffPage() {
         </form>
       )}
 
-      {/* Staff table */}
       <h2>Existing staff</h2>
       {staff.length === 0 ? (
         <p>No staff members found yet.</p>
@@ -971,7 +928,6 @@ export default function StaffPage() {
               <tr>
                 <th style={thStyle}>Name</th>
                 <th style={thStyle}>Role</th>
-                <th style={thStyle}>Driver?</th>
                 <th style={thStyle}>Phone</th>
                 <th style={thStyle}>Email</th>
                 <th style={thStyle}>Start date</th>
@@ -988,7 +944,6 @@ export default function StaffPage() {
                 <tr key={m.id}>
                   <td style={tdStyle}>{m.full_name}</td>
                   <td style={tdStyle}>{m.role || ""}</td>
-                  <td style={tdStyle}>{m.is_driver ? "Yes" : "No"}</td>
                   <td style={tdStyle}>{m.phone || ""}</td>
                   <td style={tdStyle}>{m.email || ""}</td>
                   <td style={tdStyle}>{m.start_date || ""}</td>
@@ -1038,7 +993,6 @@ export default function StaffPage() {
   );
 }
 
-// Shared styles
 const thStyle = {
   textAlign: "left",
   borderBottom: "1px solid #ddd",
