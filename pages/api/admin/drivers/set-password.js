@@ -10,7 +10,6 @@ export default async function handler(req, res) {
 
   const admin = getSupabaseAdmin();
 
-  // Office auth (Bearer token)
   const authHeader = String(req.headers.authorization || "");
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
   if (!token) return bad(res, "Missing auth token", 401);
@@ -28,7 +27,6 @@ export default async function handler(req, res) {
   if (!subId) return bad(res, "Missing subscriber_id");
   if (pw.length < 6) return bad(res, "Password must be at least 6 characters");
 
-  // Load driver (must belong to subscriber)
   const { data: driver, error: drvErr } = await admin
     .from("drivers")
     .select("id, subscriber_id, email")
@@ -42,25 +40,24 @@ export default async function handler(req, res) {
 
   const email = String(driver.email).trim().toLowerCase();
 
-  // Try to find existing auth user
   let authUserId = null;
 
   const { data: existingUser, error: findErr } = await admin.auth.admin.getUserByEmail(email);
-  if (findErr && !findErr.message.includes("User not found")) {
+  if (findErr && !String(findErr.message || "").includes("User not found")) {
     return bad(res, "Auth lookup failed", 500);
   }
 
   if (existingUser?.user?.id) {
-    // Update password
     authUserId = existingUser.user.id;
 
     const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
+      email,
       password: pw,
+      email_confirm: true,
     });
 
     if (updErr) return bad(res, updErr.message || "Failed to update password", 500);
   } else {
-    // Create auth user
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
       email,
       password: pw,
@@ -74,7 +71,6 @@ export default async function handler(req, res) {
     authUserId = created.user.id;
   }
 
-  // Update driver row for UI tracking only
   const { error: upErr } = await admin
     .from("drivers")
     .update({
