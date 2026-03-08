@@ -94,6 +94,13 @@ export default async function handler(req, res) {
         email,
         password: pw,
         email_confirm: true,
+        user_metadata: {
+          role: "driver",
+          driver_id: driverId,
+          subscriber_id: subId,
+          login_code: loginCode,
+          name: driver.name || "",
+        },
       });
 
       if (updErr) {
@@ -128,7 +135,6 @@ export default async function handler(req, res) {
           subscriber_id: subId,
           role: "driver",
           driver_id: driverId,
-          updated_at: new Date().toISOString(),
         },
         { onConflict: "id" }
       );
