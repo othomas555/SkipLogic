@@ -28,15 +28,8 @@ export default function PostcodesServedPage() {
   const [savingZone, setSavingZone] = useState(false);
   const [savingCell, setSavingCell] = useState(false);
 
-  // Debug
-  console.log("PostcodesServedPage render", {
-    checking,
-    userEmail: user?.email,
-    subscriberId,
-  });
-
   useEffect(() => {
-    if (checking) return; // still checking auth
+    if (checking) return;
 
     if (!user || !subscriberId) {
       setLoading(false);
@@ -48,7 +41,6 @@ export default function PostcodesServedPage() {
       setErrorMsg("");
 
       try {
-        // 1) Load skip types
         const { data: skipTypesData, error: stError } = await supabase
           .from("skip_types")
           .select("id, name")
@@ -60,8 +52,6 @@ export default function PostcodesServedPage() {
           throw new Error("Could not load skip types");
         }
 
-        // 2) Load postcode zones + their prices
-        // Assumes default FK relation name "postcode_zone_prices"
         const { data: zonesData, error: zError } = await supabase
           .from("postcode_zones")
           .select(
@@ -205,8 +195,6 @@ export default function PostcodesServedPage() {
     const trimmed = String(value ?? "").trim();
 
     if (trimmed === "") {
-      // For now, don't allow blank (deleting) via UI.
-      // Just don't save anything.
       return;
     }
 
@@ -237,7 +225,6 @@ export default function PostcodesServedPage() {
         throw new Error(error.message || "Could not save price");
       }
 
-      // Update local state
       setZones((prev) =>
         prev.map((z) => {
           if (z.id !== zoneId) return z;
@@ -260,14 +247,15 @@ export default function PostcodesServedPage() {
 
   return (
     <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "20px" }}>
-      <h1>Postcodes Served</h1>
+      <h1>Postcodes & Prices</h1>
+
       <p>
         Signed in as <strong>{user.email}</strong>
       </p>
+
       <p>
-        Configure which postcode areas you serve and the price per skip type.
-        Most specific pattern wins (e.g. CF32 7A* overrides CF32 7* which
-        overrides CF32).
+        Configure which postcode areas you serve and the price per skip type. All prices include VAT.
+        Most specific pattern wins (e.g. CF32 7A* overrides CF32 7* which overrides CF32).
       </p>
 
       <button
@@ -295,7 +283,6 @@ export default function PostcodesServedPage() {
         <div>Loading postcode areas…</div>
       ) : (
         <>
-          {/* Add postcode area form */}
           <div
             style={{
               margin: "20px 0",
@@ -319,6 +306,7 @@ export default function PostcodesServedPage() {
                   />
                 </label>
               </div>
+
               <div style={{ marginBottom: "8px" }}>
                 <label>
                   Label (optional, e.g. Porthcawl):{" "}
@@ -331,13 +319,13 @@ export default function PostcodesServedPage() {
                   />
                 </label>
               </div>
+
               <button type="submit" disabled={savingZone}>
                 {savingZone ? "Saving…" : "Add postcode area"}
               </button>
             </form>
           </div>
 
-          {/* Pricing grid */}
           <div style={{ overflowX: "auto" }}>
             <table
               style={{
@@ -361,6 +349,7 @@ export default function PostcodesServedPage() {
                   >
                     Pattern
                   </th>
+
                   <th
                     style={{
                       borderBottom: "1px solid #ccc",
@@ -370,6 +359,7 @@ export default function PostcodesServedPage() {
                   >
                     Label
                   </th>
+
                   {skipTypes.map((st) => (
                     <th
                       key={st.id}
@@ -384,6 +374,7 @@ export default function PostcodesServedPage() {
                   ))}
                 </tr>
               </thead>
+
               <tbody>
                 {zones.length === 0 ? (
                   <tr>
@@ -409,6 +400,7 @@ export default function PostcodesServedPage() {
                       >
                         <strong>{z.pattern_input}</strong>
                       </td>
+
                       <td
                         style={{
                           borderBottom: "1px solid #eee",
@@ -417,6 +409,7 @@ export default function PostcodesServedPage() {
                       >
                         {z.label || ""}
                       </td>
+
                       {skipTypes.map((st) => {
                         const currentPrice = z.pricesBySkipType[st.id] ?? "";
                         return (
@@ -434,11 +427,7 @@ export default function PostcodesServedPage() {
                               style={{ width: "90px", textAlign: "right" }}
                               defaultValue={currentPrice}
                               onBlur={(e) =>
-                                handlePriceBlur(
-                                  z.id,
-                                  st.id,
-                                  e.target.value
-                                )
+                                handlePriceBlur(z.id, st.id, e.target.value)
                               }
                             />
                           </td>
