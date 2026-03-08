@@ -40,7 +40,6 @@ export default function DriversPage() {
   const [showInactive, setShowInactive] = useState(false);
   const [drivers, setDrivers] = useState([]);
 
-  // Add driver form (matches real schema)
   const [newName, setNewName] = useState("");
   const [newCallsign, setNewCallsign] = useState("");
   const [newPhone, setNewPhone] = useState("");
@@ -48,11 +47,8 @@ export default function DriversPage() {
   const [newLicenceNumber, setNewLicenceNumber] = useState("");
   const [newNotes, setNewNotes] = useState("");
 
-  // Inline edit state per driver: { [id]: {field: value, ...} }
   const [edits, setEdits] = useState({});
-
-  // Password UI state per driver
-  const [pwEdits, setPwEdits] = useState({}); // { [driverId]: { pw1: "", pw2: "" } }
+  const [pwEdits, setPwEdits] = useState({});
 
   async function loadDrivers() {
     if (checking) return;
@@ -108,7 +104,6 @@ export default function DriversPage() {
     const rows = Array.isArray(data) ? data : [];
     setDrivers(rows);
 
-    // Seed edits with current values
     const nextEdits = {};
     const nextPw = {};
     for (const d of rows) {
@@ -178,7 +173,7 @@ export default function DriversPage() {
       name: toStr(newName),
       callsign: toStr(newCallsign) || null,
       phone: toStr(newPhone) || null,
-      email: toStr(newEmail) || null,
+      email: toStr(newEmail).toLowerCase() || null,
       licence_number: toStr(newLicenceNumber) || null,
       notes: toStr(newNotes) || null,
       is_active: true,
@@ -222,11 +217,13 @@ export default function DriversPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
+    const email = toStr(row.email).toLowerCase();
+
     const patch = {
       name: toStr(row.name) || null,
       callsign: toStr(row.callsign) || null,
       phone: toStr(row.phone) || null,
-      email: toStr(row.email) || null,
+      email: email || null,
       licence_number: toStr(row.licence_number) || null,
       licence_check_due: row.licence_check_due || null,
       driver_card_number: toStr(row.driver_card_number) || null,
@@ -350,7 +347,6 @@ export default function DriversPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
-    // 1) Deactivate
     const { error: dErr } = await supabase
       .from("drivers")
       .update({ is_active: false, updated_at: new Date().toISOString() })
@@ -364,7 +360,6 @@ export default function DriversPage() {
       return;
     }
 
-    // 2) Unassign from future jobs (scheduled_date >= today UTC, not collected)
     const today = ymdTodayUTC();
     const { error: jErr } = await supabase
       .from("jobs")
@@ -566,7 +561,7 @@ export default function DriversPage() {
                     </label>
 
                     <label style={labelStyle}>
-                      Email
+                      Driver login email *
                       <input value={row.email ?? ""} onChange={(e) => setEdit(d.id, "email", e.target.value)} style={inputStyle} />
                     </label>
 
@@ -625,8 +620,13 @@ export default function DriversPage() {
                     </label>
 
                     <label style={labelStyle}>
-                      Staff ID (optional)
-                      <input value={row.staff_id ?? ""} onChange={(e) => setEdit(d.id, "staff_id", e.target.value)} style={inputStyle} />
+                      Driver code (optional)
+                      <input
+                        value={row.staff_id ?? ""}
+                        onChange={(e) => setEdit(d.id, "staff_id", e.target.value)}
+                        style={inputStyle}
+                        placeholder="e.g. andrew1"
+                      />
                     </label>
 
                     <label style={{ ...labelStyle, gridColumn: "1 / -1" }}>
@@ -634,7 +634,6 @@ export default function DriversPage() {
                       <textarea value={row.notes ?? ""} onChange={(e) => setEdit(d.id, "notes", e.target.value)} style={{ ...inputStyle, minHeight: 70 }} />
                     </label>
 
-                    {/* Driver password */}
                     <div style={{ gridColumn: "1 / -1", borderTop: "1px solid #eee", paddingTop: 10 }}>
                       <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Driver portal password</div>
 
@@ -668,8 +667,9 @@ export default function DriversPage() {
                         </div>
                       </div>
 
-                      <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
-                        Drivers will log in at <b>/driver/run</b> after signing in with email + password.
+                      <div style={{ marginTop: 8, color: "#666", fontSize: 12, lineHeight: 1.5 }}>
+                        Drivers sign in with <b>email + password</b>.<br />
+                        Driver code is optional and is for your own internal reference only.
                       </div>
                     </div>
                   </div>
