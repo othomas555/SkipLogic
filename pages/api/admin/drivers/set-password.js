@@ -5,6 +5,17 @@ function bad(res, msg, code = 400) {
   return res.status(code).json({ ok: false, error: msg });
 }
 
+function normaliseLoginCode(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function buildDriverAuthEmail(loginCode) {
+  return `${loginCode}@drivers.skiplogic.local`;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return bad(res, "Method not allowed", 405);
 
@@ -29,16 +40,18 @@ export default async function handler(req, res) {
 
   const { data: driver, error: drvErr } = await admin
     .from("drivers")
-    .select("id, subscriber_id, email")
+    .select("id, subscriber_id, staff_id")
     .eq("id", driverId)
     .maybeSingle();
 
   if (drvErr) return bad(res, "Could not load driver", 500);
   if (!driver) return bad(res, "Driver not found", 404);
   if (String(driver.subscriber_id) !== subId) return bad(res, "Forbidden", 403);
-  if (!driver.email) return bad(res, "Driver has no email set");
 
-  const email = String(driver.email).trim().toLowerCase();
+  const loginCode = normaliseLoginCode(driver.staff_id);
+  if (!loginCode) return bad(res, "Driver login code is required");
+
+  const email = buildDriverAuthEmail(loginCode);
 
   let authUserId = null;
 
