@@ -16,84 +16,146 @@ function buildDriverAuthEmail(loginCode) {
   return `${loginCode}@drivers.skiplogic.local`;
 }
 
+async function findAuthUserByEmail(admin, email) {
+  let page = 1;
+  const perPage = 200;
+
+  while (true) {
+    const { data, error } = await admin.auth.admin.listUsers({
+      page,
+      perPage,
+    });
+
+    if (error) throw error;
+
+    const users = Array.isArray(data?.users) ? data.users : [];
+    const found = users.find(
+      (u) => String(u.email || "").trim().toLowerCase() === email
+    );
+
+    if (found) return found;
+    if (users.length < perPage) return null;
+
+    page += 1;
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return bad(res, "Method not allowed", 405);
 
-  const admin = getSupabaseAdmin();
+  try {
+    const admin = getSupabaseAdmin();
 
-  const authHeader = String(req.headers.authorization || "");
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  if (!token) return bad(res, "Missing auth token", 401);
+    const authHeader = String(req.headers.authorization || "");
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : "";
 
-  const { data: userData, error: userErr } = await admin.auth.getUser(token);
-  const officeUser = userData?.user;
-  if (userErr || !officeUser) return bad(res, "Invalid auth token", 401);
+    if (!token) return bad(res, "Missing auth token", 401);
 
-  const { driver_id, password, subscriber_id } = req.body || {};
-  const driverId = String(driver_id || "").trim();
-  const pw = String(password || "");
-  const subId = String(subscriber_id || "").trim();
+    const { data: userData, error: userErr } = await admin.auth.getUser(token);
+    const officeUser = userData?.user;
 
-  if (!driverId) return bad(res, "Missing driver_id");
-  if (!subId) return bad(res, "Missing subscriber_id");
-  if (pw.length < 6) return bad(res, "Password must be at least 6 characters");
+    if (userErr || !officeUser) return bad(res, "Invalid auth token", 401);
 
-  const { data: driver, error: drvErr } = await admin
-    .from("drivers")
-    .select("id, subscriber_id, staff_id")
-    .eq("id", driverId)
-    .maybeSingle();
+    const { driver_id, password, subscriber_id } = req.body || {};
+    const driverId = String(driver_id || "").trim();
+    const pw = String(password || "");
+    const subId = String(subscriber_id || "").trim();
 
-  if (drvErr) return bad(res, "Could not load driver", 500);
-  if (!driver) return bad(res, "Driver not found", 404);
-  if (String(driver.subscriber_id) !== subId) return bad(res, "Forbidden", 403);
+    if (!driverId) return bad(res, "Missing driver_id");
+    if (!subId) return bad(res, "Missing subscriber_id");
+    if (pw.length < 6) return bad(res, "Password must be at least 6 characters");
 
-  const loginCode = normaliseLoginCode(driver.staff_id);
-  if (!loginCode) return bad(res, "Driver login code is required");
+    const { data: driver, error: drvErr } = await admin
+      .from("drivers")
+      .select("id, subscriber_id, staff_id, name, is_active")
+      .eq("id", driverId)
+      .maybeSingle();
 
-  const email = buildDriverAuthEmail(loginCode);
+    if (drvErr) return bad(res, drvErr.message || "Could not load driver", 500);
+    if (!driver) return bad(res, "Driver not found", 404);
+    if (String(driver.subscriber_id) !== subId) return bad(res, "Forbidden", 403);
+    if (driver.is_active === false) return bad(res, "Driver is inactive", 400);
 
-  let authUserId = null;
+    const loginCode = normaliseLoginCode(driver.staff_id);
+    if (!loginCode) return bad(res, "Driver login code is required");
 
-  const { data: existingUser, error: findErr } = await admin.auth.admin.getUserByEmail(email);
-  if (findErr && !String(findErr.message || "").includes("User not found")) {
-    return bad(res, "Auth lookup failed", 500);
-  }
+    const email = buildDriverAuthEmail(loginCode);
 
-  if (existingUser?.user?.id) {
-    authUserId = existingUser.user.id;
+    let authUserId = null;
 
-    const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
-      email,
-      password: pw,
-      email_confirm: true,
-    });
+    const existingUser = await findAuthUserByEmail(admin, email);
 
-    if (updErr) return bad(res, updErr.message || "Failed to update password", 500);
-  } else {
-    const { data: created, error: createErr } = await admin.auth.admin.createUser({
-      email,
-      password: pw,
-      email_confirm: true,
-    });
+    if (existingUser?.id) {
+      authUserId = existingUser.id;
 
-    if (createErr || !created?.user?.id) {
-      return bad(res, createErr?.message || "Failed to create auth user", 500);
+      const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
+        email,
+        password: pw,
+        email_confirm: true,
+      });
+
+      if (updErr) {
+        return bad(res, updErr.message || "Failed to update password", 500);
+      }
+    } else {
+      const { data: created, error: createErr } = await admin.auth.admin.createUser({
+        email,
+        password: pw,
+        email_confirm: true,
+        user_metadata: {
+          role: "driver",
+          driver_id: driverId,
+          subscriber_id: subId,
+          login_code: loginCode,
+          name: driver.name || "",
+        },
+      });
+
+      if (createErr || !created?.user?.id) {
+        return bad(res, createErr?.message || "Failed to create auth user", 500);
+      }
+
+      authUserId = created.user.id;
     }
 
-    authUserId = created.user.id;
+    const { error: profileErr } = await admin
+      .from("profiles")
+      .upsert(
+        {
+          id: authUserId,
+          subscriber_id: subId,
+          role: "driver",
+          driver_id: driverId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "id" }
+      );
+
+    if (profileErr) {
+      return bad(res, profileErr.message || "Password set but profile link failed", 500);
+    }
+
+    const { error: upErr } = await admin
+      .from("drivers")
+      .update({
+        password_set_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", driverId)
+      .eq("subscriber_id", subId);
+
+    if (upErr) {
+      return bad(res, upErr.message || "Password set but driver update failed", 500);
+    }
+
+    return res.json({
+      ok: true,
+      login_code: loginCode,
+    });
+  } catch (e) {
+    console.error("set-password error:", e);
+    return bad(res, e?.message || "Unexpected server error", 500);
   }
-
-  const { error: upErr } = await admin
-    .from("drivers")
-    .update({
-      password_set_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", driverId)
-    .eq("subscriber_id", subId);
-
-  if (upErr) return bad(res, "Password set but driver update failed", 500);
-
-  return res.json({ ok: true });
 }
