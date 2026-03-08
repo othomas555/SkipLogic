@@ -15,7 +15,6 @@ const NAV_SECTIONS = [
       { href: "/app/jobs/book", label: "Book Job", match: ["/app/jobs/book"] },
       { href: "/app/jobs/book-swap", label: "Book Swap", match: ["/app/jobs/book-swap"] },
       { href: "/app/jobs/scheduler", label: "Scheduler", match: ["/app/jobs/scheduler"] },
-      { href: "/app/jobs/day-planner", label: "Day Planner", match: ["/app/jobs/day-planner"] },
     ],
   },
 
@@ -159,35 +158,20 @@ export default function AppSidebar({ profile }) {
 }
 
 function SidebarLink({ href, label, router, match = [] }) {
-  const active = isActiveRoute(router, href, match);
+  const active = router.pathname === href || match.includes(router.pathname);
 
   return (
-    <Link href={href} style={styles.linkWrap}>
+    <Link href={href} style={{ textDecoration: "none" }}>
       <div
         style={{
           ...styles.link,
           ...(active ? styles.linkActive : {}),
         }}
       >
-        <span>{label}</span>
+        {label}
       </div>
     </Link>
   );
-}
-
-function isActiveRoute(router, href, match = []) {
-  const path = router.pathname || "";
-  const asPath = (router.asPath || "").split("?")[0];
-
-  if (path === href || asPath === href) return true;
-
-  for (const candidate of match) {
-    if (path === candidate || asPath === candidate) return true;
-  }
-
-  if (href !== "/app" && asPath.startsWith(`${href}/`)) return true;
-
-  return false;
 }
 
 const styles = {
@@ -206,41 +190,32 @@ const styles = {
 
   top: {
     flex: 1,
-    minHeight: 0,
     overflowY: "auto",
     padding: 18,
-    paddingBottom: 12,
   },
 
   logo: {
     display: "flex",
     alignItems: "center",
     gap: 10,
-    marginBottom: 18,
-    paddingBottom: 14,
-    borderBottom: "1px solid var(--border)",
+    marginBottom: 24,
   },
 
   logoMark: {
-    width: 34,
-    height: 34,
+    width: 32,
+    height: 32,
     borderRadius: 10,
     background: "linear-gradient(135deg, var(--brand-mint), var(--brand-sky))",
-    flex: "0 0 auto",
   },
 
   logoText: {
     fontWeight: 900,
     fontSize: 16,
-    letterSpacing: "-0.01em",
-    color: "var(--text)",
-    lineHeight: 1.1,
   },
 
   logoSub: {
     fontSize: 12,
     color: "var(--text-muted)",
-    marginTop: 2,
   },
 
   nav: {
@@ -270,62 +245,45 @@ const styles = {
     gap: 4,
   },
 
-  linkWrap: {
-    textDecoration: "none",
-  },
-
   link: {
     padding: "10px 12px",
     borderRadius: 10,
     fontSize: 14,
     color: "var(--text)",
     cursor: "pointer",
-    border: "1px solid transparent",
-    transition: "all 0.15s ease",
   },
 
   linkActive: {
     background: "var(--surface-2)",
     fontWeight: 700,
-    border: "1px solid var(--border)",
-    boxShadow: "var(--shadow-1)",
   },
 
   userSection: {
-    flexShrink: 0,
     borderTop: "1px solid var(--border)",
     padding: 12,
-    background: "var(--surface)",
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
   },
 
   userCard: {
-    minWidth: 0,
+    marginBottom: 10,
   },
 
   userName: {
     fontSize: 14,
     fontWeight: 700,
-    color: "var(--text)",
   },
 
   userEmail: {
     fontSize: 12,
     color: "var(--text-muted)",
-    marginTop: 3,
-    wordBreak: "break-word",
   },
 
   logout: {
     width: "100%",
-    padding: "9px 10px",
+    padding: "8px 10px",
     borderRadius: 8,
     border: "1px solid var(--border)",
     background: "var(--surface)",
     cursor: "pointer",
     fontSize: 13,
-    color: "var(--text)",
   },
 };
