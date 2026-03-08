@@ -176,6 +176,8 @@ export default function SchedulerPage() {
   const [customers, setCustomers] = useState([]);
   const [skipTypes, setSkipTypes] = useState([]);
   const [jobs, setJobs] = useState([]);
+  const [driverRuns, setDriverRuns] = useState([]);
+  const [hasLayoutEdits, setHasLayoutEdits] = useState(false);
 
   const [rolling, setRolling] = useState(false);
   const [savingRuns, setSavingRuns] = useState(false);
@@ -208,6 +210,12 @@ export default function SchedulerPage() {
     for (const s of skipTypes || []) m[String(s.id)] = s;
     return m;
   }, [skipTypes]);
+
+  const jobById = useMemo(() => {
+    const m = {};
+    for (const j of jobs || []) m[String(j.id)] = j;
+    return m;
+  }, [jobs]);
 
   async function loadAll() {
     if (!subscriberId) return;
@@ -288,6 +296,8 @@ export default function SchedulerPage() {
         throw new Error("Failed to load saved runs");
       }
 
+      setDriverRuns(runRows || []);
+
       const persistedExtras = {};
       for (const row of runRows || []) {
         const driverId = String(row.driver_id || "");
@@ -312,6 +322,7 @@ export default function SchedulerPage() {
       }
 
       setExtrasByDriverId(persistedExtras);
+      setHasLayoutEdits(false);
       setLoading(false);
     } catch (e) {
       console.error(e);
@@ -342,13 +353,116 @@ export default function SchedulerPage() {
     extrasByDriverId,
     jobs,
     drivers,
+    driverRuns,
+    hasLayoutEdits,
   ]);
 
   const cards = useMemo(() => groupIntoCards(jobs, date), [jobs, date]);
 
+  const usePersistedRuns = useMemo(() => {
+    return !hasLayoutEdits && Array.isArray(driverRuns) && driverRuns.length > 0;
+  }, [hasLayoutEdits, driverRuns]);
+
+  function buildSwapCardFromRunItem(item) {
+    const collect =
+      jobById[String(item?.collect_job_id || "")] ||
+      (item?.swap_group_id
+        ? jobs.find(
+            (j) =>
+              String(j.swap_group_id || "") === String(item.swap_group_id) &&
+              String(j.swap_role || "").toLowerCase() === "collect"
+          )
+        : null) ||
+      null;
+
+    const deliver =
+      jobById[String(item?.deliver_job_id || "")] ||
+      (item?.swap_group_id
+        ? jobs.find(
+            (j) =>
+              String(j.swap_group_id || "") === String(item.swap_group_id) &&
+              String(j.swap_role || "").toLowerCase() === "deliver"
+          )
+        : null) ||
+      null;
+
+    if (!collect && !deliver) return null;
+
+    return {
+      type: "swap",
+      swap_group_id:
+        item?.swap_group_id || collect?.swap_group_id || deliver?.swap_group_id || null,
+      collect,
+      deliver,
+      assigned_driver_id: collect?.assigned_driver_id || deliver?.assigned_driver_id || null,
+      driver_run_group:
+        Number.isFinite(Number(item?.group_order))
+          ? Number(item.group_order)
+          : collect?.driver_run_group ?? deliver?.driver_run_group ?? null,
+    };
+  }
+
   const cardsByDriverId = useMemo(() => {
     const m = {};
     for (const d of drivers || []) m[String(d.id)] = [];
+
+    if (usePersistedRuns) {
+      for (const row of driverRuns || []) {
+        const driverId = String(row.driver_id || "");
+        if (!driverId) continue;
+        if (!m[driverId]) m[driverId] = [];
+
+        const items = Array.isArray(row.items) ? row.items : [];
+
+        items.forEach((item, idx) => {
+          const type = String(item?.type || "");
+
+          if (type === "job") {
+            const job = jobById[String(item?.job_id || "")];
+            if (!job) return;
+
+            m[driverId].push({
+              type: "job",
+              job: {
+                ...job,
+                assigned_driver_id: driverId,
+                driver_run_group:
+                  Number.isFinite(Number(item?.group_order))
+                    ? Number(item.group_order)
+                    : job.driver_run_group,
+              },
+              driver_run_group:
+                Number.isFinite(Number(item?.group_order))
+                  ? Number(item.group_order)
+                  : job.driver_run_group,
+            });
+            return;
+          }
+
+          if (type === "swap") {
+            const swapCard = buildSwapCardFromRunItem(item);
+            if (!swapCard) return;
+            m[driverId].push(swapCard);
+            return;
+          }
+
+          if (type === "return_yard") {
+            m[driverId].push({
+              type: "block",
+              block_id: `saved-${driverId}-${row.run_number}-${idx}`,
+              block_type: "return_yard",
+              label: "Return to yard",
+              duration_mins: clampInt(item?.duration_mins ?? minsReturn, 0, 600),
+              driver_run_group: Number.isFinite(Number(item?.group_order))
+                ? Number(item.group_order)
+                : Number(`${row.run_number}999`),
+            });
+          }
+        });
+      }
+
+      return m;
+    }
 
     for (const c of cards) {
       const driverId =
@@ -378,15 +492,43 @@ export default function SchedulerPage() {
     }
 
     return m;
-  }, [cards, drivers, extrasByDriverId]);
+  }, [drivers, usePersistedRuns, driverRuns, jobById, jobs, cards, extrasByDriverId, minsReturn]);
 
   const unassignedCards = useMemo(() => {
+    if (!usePersistedRuns) {
+      return cards.filter((c) => {
+        const driverId =
+          c.type === "swap" ? (c.assigned_driver_id || "") : (c.job?.assigned_driver_id || "");
+        return !driverId;
+      });
+    }
+
+    const assignedJobIds = new Set();
+
+    for (const row of driverRuns || []) {
+      const items = Array.isArray(row.items) ? row.items : [];
+      items.forEach((item) => {
+        const type = String(item?.type || "");
+        if (type === "job" && item?.job_id) assignedJobIds.add(String(item.job_id));
+        if (type === "swap") {
+          if (item?.collect_job_id) assignedJobIds.add(String(item.collect_job_id));
+          if (item?.deliver_job_id) assignedJobIds.add(String(item.deliver_job_id));
+        }
+      });
+    }
+
     return cards.filter((c) => {
-      const driverId =
-        c.type === "swap" ? (c.assigned_driver_id || "") : (c.job?.assigned_driver_id || "");
-      return !driverId;
+      if (c.type === "job") {
+        return !assignedJobIds.has(String(c.job?.id || ""));
+      }
+      if (c.type === "swap") {
+        const collectId = String(c.collect?.id || "");
+        const deliverId = String(c.deliver?.id || "");
+        return !assignedJobIds.has(collectId) && !assignedJobIds.has(deliverId);
+      }
+      return false;
     });
-  }, [cards]);
+  }, [cards, usePersistedRuns, driverRuns]);
 
   function driverLabel(d) {
     return d?.name || d?.email || "Driver";
@@ -436,11 +578,22 @@ export default function SchedulerPage() {
     return max + 1;
   }
 
+  function applyJobPatchLocal(jobIds, patch) {
+    const idSet = new Set((jobIds || []).filter(Boolean).map(String));
+    setJobs((prev) =>
+      (prev || []).map((j) => {
+        if (!idSet.has(String(j.id))) return j;
+        return { ...j, ...patch };
+      })
+    );
+  }
+
   async function assignCardToDriver(card, driverId) {
     if (!subscriberId) return;
     setErr("");
 
     const group = nextRunGroupForDriver(driverId);
+    setHasLayoutEdits(true);
 
     try {
       if (card.type === "swap") {
@@ -451,6 +604,9 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .in("id", ids);
         if (error) throw new Error("Failed to assign swap");
+
+        applyJobPatchLocal(ids, { assigned_driver_id: driverId, driver_run_group: group });
+        return;
       } else if (card.type === "job") {
         const id = String(card.job?.id || "");
         if (!id) return;
@@ -460,6 +616,9 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .eq("id", id);
         if (error) throw new Error("Failed to assign job");
+
+        applyJobPatchLocal([id], { assigned_driver_id: driverId, driver_run_group: group });
+        return;
       } else if (card.type === "block") {
         setExtrasByDriverId((prev) => {
           const next = { ...(prev || {}) };
@@ -470,8 +629,6 @@ export default function SchedulerPage() {
         });
         return;
       }
-
-      await loadAll();
     } catch (e) {
       console.error(e);
       setErr(e?.message || "Failed to assign");
@@ -481,6 +638,7 @@ export default function SchedulerPage() {
   async function unassignCard(card, driverIdHint = null) {
     if (!subscriberId) return;
     setErr("");
+    setHasLayoutEdits(true);
 
     try {
       if (card.type === "swap") {
@@ -491,7 +649,8 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .in("id", ids);
         if (error) throw new Error("Failed to unassign swap");
-        await loadAll();
+
+        applyJobPatchLocal(ids, { assigned_driver_id: null, driver_run_group: null });
         return;
       }
 
@@ -504,12 +663,13 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .eq("id", id);
         if (error) throw new Error("Failed to unassign job");
-        await loadAll();
+
+        applyJobPatchLocal([id], { assigned_driver_id: null, driver_run_group: null });
         return;
       }
 
       if (card.type === "block") {
-        const driverId = String(driverIdHint || "");
+        const driverId = String(driverIdHint || card._driverId || "");
         if (!driverId) return;
         setExtrasByDriverId((prev) => {
           const next = { ...(prev || {}) };
@@ -541,6 +701,8 @@ export default function SchedulerPage() {
     const ag = Number(a.driver_run_group ?? a.job?.driver_run_group ?? 0);
     const bg = Number(b.driver_run_group ?? b.job?.driver_run_group ?? 0);
 
+    setHasLayoutEdits(true);
+
     try {
       if (a.type === "block" || b.type === "block") {
         setExtrasByDriverId((prev) => {
@@ -563,35 +725,44 @@ export default function SchedulerPage() {
         });
 
         if (a.type === "job") {
-          await supabase
+          const { error } = await supabase
             .from("jobs")
             .update({ driver_run_group: bg })
             .eq("subscriber_id", subscriberId)
             .eq("id", a.job.id);
+          if (error) throw error;
+          applyJobPatchLocal([a.job.id], { driver_run_group: bg });
         }
         if (a.type === "swap") {
-          await supabase
+          const ids = [a.collect?.id, a.deliver?.id].filter(Boolean);
+          const { error } = await supabase
             .from("jobs")
             .update({ driver_run_group: bg })
             .eq("subscriber_id", subscriberId)
-            .in("id", [a.collect?.id, a.deliver?.id].filter(Boolean));
+            .in("id", ids);
+          if (error) throw error;
+          applyJobPatchLocal(ids, { driver_run_group: bg });
         }
         if (b.type === "job") {
-          await supabase
+          const { error } = await supabase
             .from("jobs")
             .update({ driver_run_group: ag })
             .eq("subscriber_id", subscriberId)
             .eq("id", b.job.id);
+          if (error) throw error;
+          applyJobPatchLocal([b.job.id], { driver_run_group: ag });
         }
         if (b.type === "swap") {
-          await supabase
+          const ids = [b.collect?.id, b.deliver?.id].filter(Boolean);
+          const { error } = await supabase
             .from("jobs")
             .update({ driver_run_group: ag })
             .eq("subscriber_id", subscriberId)
-            .in("id", [b.collect?.id, b.deliver?.id].filter(Boolean));
+            .in("id", ids);
+          if (error) throw error;
+          applyJobPatchLocal(ids, { driver_run_group: ag });
         }
 
-        await loadAll();
         return;
       }
 
@@ -602,6 +773,7 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .eq("id", a.job.id);
         if (error) throw error;
+        applyJobPatchLocal([a.job.id], { driver_run_group: bg });
       } else if (a.type === "swap") {
         const ids = [a.collect?.id, a.deliver?.id].filter(Boolean);
         const { error } = await supabase
@@ -610,6 +782,7 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .in("id", ids);
         if (error) throw error;
+        applyJobPatchLocal(ids, { driver_run_group: bg });
       }
 
       if (b.type === "job") {
@@ -619,6 +792,7 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .eq("id", b.job.id);
         if (error) throw error;
+        applyJobPatchLocal([b.job.id], { driver_run_group: ag });
       } else if (b.type === "swap") {
         const ids = [b.collect?.id, b.deliver?.id].filter(Boolean);
         const { error } = await supabase
@@ -627,9 +801,8 @@ export default function SchedulerPage() {
           .eq("subscriber_id", subscriberId)
           .in("id", ids);
         if (error) throw error;
+        applyJobPatchLocal(ids, { driver_run_group: ag });
       }
-
-      await loadAll();
     } catch (e) {
       console.error(e);
       setErr(e?.message || "Failed to reorder");
@@ -788,7 +961,12 @@ export default function SchedulerPage() {
               swap_group_id: item.swap_group_id || null,
               collect_job_id: item.collect?.id || null,
               deliver_job_id: item.deliver?.id || null,
-              group_order: Number(item.driver_run_group ?? item.collect?.driver_run_group ?? item.deliver?.driver_run_group ?? 0),
+              group_order: Number(
+                item.driver_run_group ??
+                item.collect?.driver_run_group ??
+                item.deliver?.driver_run_group ??
+                0
+              ),
             });
             continue;
           }
