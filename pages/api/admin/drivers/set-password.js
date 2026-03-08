@@ -132,6 +132,7 @@ export default async function handler(req, res) {
       .upsert(
         {
           id: authUserId,
+          email,
           subscriber_id: subId,
           role: "driver",
           driver_id: driverId,
