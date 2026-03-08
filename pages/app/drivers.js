@@ -272,11 +272,7 @@ export default function DriversPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
-    if (!driver.email) {
-      setErrorMsg("Driver must have an email set before you can set a password.");
-      return;
-    }
-
+    
     if (pw1.length < 6) {
       setErrorMsg("Password must be at least 6 characters.");
       return;
