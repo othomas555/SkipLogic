@@ -47,7 +47,7 @@ const NAV_SECTIONS = [
   {
     title: "Operations",
     items: [
-      { href: "/app/postcodes-served", label: "Postcodes Served", match: ["/app/postcodes-served"] },
+      { href: "/app/postcodes-served", label: "Postcodes & Prices", match: ["/app/postcodes-served"] },
       { href: "/app/skip-types", label: "Skip Types", match: ["/app/skip-types"] },
       { href: "/app/import/bookings", label: "Import Bookings", match: ["/app/import/bookings"] },
     ],
