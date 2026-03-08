@@ -775,26 +775,37 @@ export default function SchedulerPage() {
           runs.push(currentRun);
         }
 
-        await supabase
+        const { error: deleteError } = await supabase
           .from("driver_runs")
           .delete()
           .eq("subscriber_id", subscriberId)
           .eq("driver_id", driverId)
           .eq("run_date", date);
 
+        if (deleteError) {
+          console.error("Error deleting existing driver runs:", deleteError);
+          throw new Error(deleteError.message || "Failed to clear existing runs");
+        }
+
         for (let i = 0; i < runs.length; i += 1) {
-          const { error } = await supabase.from("driver_runs").insert({
+          const payload = {
             subscriber_id: subscriberId,
             driver_id: driverId,
             run_date: date,
             run_number: i + 1,
             status: "planned",
             items: runs[i],
-          });
+          };
 
-          if (error) {
-            console.error("Error saving driver run:", error);
-            throw new Error(error.message || "Failed to save driver runs");
+          const { error: upsertError } = await supabase
+            .from("driver_runs")
+            .upsert(payload, {
+              onConflict: "subscriber_id,driver_id,run_date,run_number",
+            });
+
+          if (upsertError) {
+            console.error("Error saving driver run:", upsertError);
+            throw new Error(upsertError.message || "Failed to save driver runs");
           }
         }
       }
