@@ -76,62 +76,57 @@ function isWorkToDo(job, selectedDate) {
   }
 
   if (job.delivery_actual_date) return false;
-  if (status === "delivered" || status === "completed") return false;
+  if (status === "delivered" || status === "collected" || status === "completed") return false;
   return String(job.scheduled_date || "") === String(selectedDate);
 }
 
-function jobRunDate(job) {
-  if (!job) return "";
-  return job.swap_role === "collect" ? job.collection_date || "" : job.scheduled_date || "";
-}
-
 function cardKey(card) {
-  if (!card) return "card:unknown";
-  if (card.type === "swap") return `swap:${card.swap_group_id}`;
-  if (card.type === "job") return `job:${card.job?.id}`;
-  if (card.type === "block") return `block:${card.block_id}`;
-  return "card:unknown";
+  if (!card) return "";
+  if (card.type === "swap") {
+    return `swap:${card.swap_group_id || card.collect?.id || card.deliver?.id || ""}`;
+  }
+  if (card.type === "job") return `job:${card.job?.id || ""}`;
+  if (card.type === "block") return `block:${card.block_id || ""}`;
+  return "";
 }
 
 function groupIntoCards(jobs, selectedDate) {
+  const bySwapGroup = {};
   const used = new Set();
   const cards = [];
 
-  const bySwap = new Map();
   for (const j of jobs || []) {
-    if (!j?.swap_group_id) continue;
-    if (String(jobRunDate(j)) !== String(selectedDate)) continue;
     if (!isWorkToDo(j, selectedDate)) continue;
 
-    const key = String(j.swap_group_id);
-    if (!bySwap.has(key)) bySwap.set(key, []);
-    bySwap.get(key).push(j);
+    if (j.swap_group_id) {
+      const key = String(j.swap_group_id);
+      if (!bySwapGroup[key]) bySwapGroup[key] = [];
+      bySwapGroup[key].push(j);
+      continue;
+    }
+
+    cards.push({ type: "job", job: j });
   }
 
-  for (const [swapId, arr] of bySwap.entries()) {
-    const collect = arr.find((x) => x.swap_role === "collect") || null;
-    const deliver = arr.find((x) => x.swap_role === "deliver") || null;
+  for (const key of Object.keys(bySwapGroup)) {
+    const arr = bySwapGroup[key];
+    const collect = arr.find((x) => String(x.swap_role || "").toLowerCase() === "collect") || null;
+    const deliver = arr.find((x) => String(x.swap_role || "").toLowerCase() === "deliver") || null;
 
-    if (collect && deliver) {
-      used.add(String(collect.id));
-      used.add(String(deliver.id));
+    if (collect || deliver) {
+      used.add(key);
       cards.push({
         type: "swap",
-        swap_group_id: swapId,
-        driver_run_group: collect.driver_run_group ?? deliver.driver_run_group ?? null,
-        assigned_driver_id: collect.assigned_driver_id ?? deliver.assigned_driver_id ?? null,
+        swap_group_id: key,
         collect,
         deliver,
+        assigned_driver_id: collect?.assigned_driver_id || deliver?.assigned_driver_id || null,
+        driver_run_group:
+          collect?.driver_run_group ?? deliver?.driver_run_group ?? null,
       });
+    } else {
+      for (const j of arr) cards.push({ type: "job", job: j });
     }
-  }
-
-  for (const j of jobs || []) {
-    if (!j?.id) continue;
-    if (used.has(String(j.id))) continue;
-    if (String(jobRunDate(j)) !== String(selectedDate)) continue;
-    if (!isWorkToDo(j, selectedDate)) continue;
-    cards.push({ type: "job", job: j });
   }
 
   cards.sort((a, b) => {
@@ -139,32 +134,19 @@ function groupIntoCards(jobs, selectedDate) {
     const bg = Number(b.driver_run_group ?? b.job?.driver_run_group ?? 999999);
     if (ag !== bg) return ag - bg;
 
-    const an = String(a.job?.job_number ?? a.collect?.job_number ?? "");
-    const bn = String(b.job?.job_number ?? b.collect?.job_number ?? "");
+    const an = String(a.job?.job_number ?? a.collect?.job_number ?? a.deliver?.job_number ?? "");
+    const bn = String(b.job?.job_number ?? b.collect?.job_number ?? b.deliver?.job_number ?? "");
     return an.localeCompare(bn);
   });
 
   return cards;
 }
 
-function postcodeForCard(card) {
-  if (!card) return "";
-  if (card.type === "swap") {
-    return normalisePostcode(card.deliver?.site_postcode || card.collect?.site_postcode || "");
-  }
-  if (card.type === "job") {
-    return normalisePostcode(card.job?.site_postcode || "");
-  }
-  return "";
-}
-
 export default function SchedulerPage() {
-  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
   const router = useRouter();
+  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
 
-  const [date, setDate] = useState(() => ymdTodayLocal());
-  const prevDate = useMemo(() => ymdAddDays(date, -1), [date]);
-
+  const [date, setDate] = useState(ymdTodayLocal());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
@@ -175,30 +157,21 @@ export default function SchedulerPage() {
 
   const [rolling, setRolling] = useState(false);
 
-  // Planning inputs
-  const [yardPostcode, setYardPostcode] = useState("CF33 6BN");
-  const [startTime, setStartTime] = useState("08:00");
-  const [minsVehicleChecks, setMinsVehicleChecks] = useState(15);
-  const [minsDelivery, setMinsDelivery] = useState(12);     // ON-SITE
-  const [minsCollection, setMinsCollection] = useState(10); // ON-SITE
-  const [minsSwap, setMinsSwap] = useState(18);             // ON-SITE at stop
-  const [minsReturn, setMinsReturn] = useState(15);         // Yard admin time once back
-  const [minsBreak, setMinsBreak] = useState(30);
+  const [yardPostcode, setYardPostcode] = useState("");
+  const [startTime, setStartTime] = useState("07:30");
+  const [minsVehicleChecks, setMinsVehicleChecks] = useState(10);
+  const [minsDelivery, setMinsDelivery] = useState(12);
+  const [minsCollection, setMinsCollection] = useState(10);
+  const [minsSwap, setMinsSwap] = useState(18);
+  const [minsReturn, setMinsReturn] = useState(15);
+  const [minsBreak, setMinsBreak] = useState(0);
 
-  // Local blocks placed on runs
   const [extrasByDriverId, setExtrasByDriverId] = useState({});
-
-  // Frozen computed timings (only populated when you click Get timings)
-  // structure:
-  // {
-  //   computedAt: ISO,
-  //   yardPostcode, startTime,
-  //   perDriver: { [driverId]: { [cardKey]: { arriveMin, departMin, travelMins, fromPc, toPc } } },
-  //   perJobId: { [jobId]: { arrive, depart, travelMins, driverId, job_number, type, address, postcode } }
-  // }
   const [computed, setComputed] = useState(null);
   const [computing, setComputing] = useState(false);
   const [sending, setSending] = useState(false);
+
+  const prevDate = useMemo(() => ymdAddDays(date, -1), [date]);
 
   const customerById = useMemo(() => {
     const m = {};
@@ -214,7 +187,6 @@ export default function SchedulerPage() {
 
   async function loadAll() {
     if (!subscriberId) return;
-
     setErr("");
     setLoading(true);
 
@@ -230,7 +202,7 @@ export default function SchedulerPage() {
       try {
         const { data: cRows, error: cErr } = await supabase
           .from("customers")
-          .select("id, first_name, last_name, company_name, phone, mobile, telephone, email")
+          .select("id, first_name, last_name, company_name, phone, email")
           .eq("subscriber_id", subscriberId);
         if (cErr) throw cErr;
         setCustomers(cRows || []);
@@ -293,7 +265,6 @@ export default function SchedulerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, subscriberId, date]);
 
-  // If the plan changes, clear computed timings so you must re-run Get timings
   useEffect(() => {
     setComputed(null);
   }, [
@@ -364,24 +335,33 @@ export default function SchedulerPage() {
     if (!c) return "—";
     const base = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
     if (c.company_name) return `${c.company_name}${base ? ` – ${base}` : ""}`;
-    return base || "—";
+    return base || c.email || "—";
   }
 
   function customerPhone(customerId) {
     const c = customerById[String(customerId)];
-    if (!c) return "";
-    return c.phone || c.mobile || c.telephone || "";
+    return c?.phone || "";
   }
 
   function customerEmail(customerId) {
     const c = customerById[String(customerId)];
-    if (!c) return "";
-    return c.email || "";
+    return c?.email || "";
   }
 
   function skipLabel(skipTypeId) {
     const s = skipTypeById[String(skipTypeId)];
-    return s?.name || "—";
+    return s?.name || "Skip";
+  }
+
+  function openJob(card) {
+    if (card?.type === "job" && card.job?.id) {
+      router.push(`/app/jobs/${card.job.id}`);
+      return;
+    }
+    if (card?.type === "swap") {
+      const id = card.deliver?.id || card.collect?.id;
+      if (id) router.push(`/app/jobs/${id}`);
+    }
   }
 
   function nextRunGroupForDriver(driverId) {
@@ -485,92 +465,113 @@ export default function SchedulerPage() {
     }
   }
 
-  function onDragStart(e, card) {
-    try {
-      e.dataTransfer.setData(
-        "application/json",
-        JSON.stringify({
-          type: card.type,
-          swap_group_id: card.swap_group_id || null,
-          job_id: card.job?.id || null,
-          collect_id: card.collect?.id || null,
-          deliver_id: card.deliver?.id || null,
-          block_id: card.block_id || null,
-          block_type: card.block_type || null,
-          label: card.label || null,
-          duration_mins: card.duration_mins || null,
-        })
-      );
-      e.dataTransfer.effectAllowed = "move";
-    } catch {}
-  }
+  async function moveCardWithinDriver(card, driverId, dir) {
+    const driverKey = String(driverId);
+    const list = [...(cardsByDriverId[driverKey] || [])];
+    const idx = list.findIndex((x) => cardKey(x) === cardKey(card));
+    if (idx < 0) return;
 
-  async function onDropToDriver(e, driverId) {
-    e.preventDefault();
-    const raw = e.dataTransfer.getData("application/json");
-    if (!raw) return;
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= list.length) return;
+
+    const a = list[idx];
+    const b = list[swapIdx];
+
+    const ag = Number(a.driver_run_group ?? a.job?.driver_run_group ?? 0);
+    const bg = Number(b.driver_run_group ?? b.job?.driver_run_group ?? 0);
 
     try {
-      const payload = JSON.parse(raw);
+      if (a.type === "block" || b.type === "block") {
+        setExtrasByDriverId((prev) => {
+          const next = { ...(prev || {}) };
+          const arr = [...(next[driverKey] || [])];
+          const aBlock = a.type === "block" ? a : null;
+          const bBlock = b.type === "block" ? b : null;
 
-      if (payload.type === "swap") {
-        const card = cards.find(
-          (c) => c.type === "swap" && String(c.swap_group_id) === String(payload.swap_group_id)
-        );
-        if (card) await assignCardToDriver(card, driverId);
+          for (let i = 0; i < arr.length; i += 1) {
+            if (aBlock && String(arr[i].block_id) === String(aBlock.block_id)) {
+              arr[i] = { ...arr[i], driver_run_group: bg };
+            }
+            if (bBlock && String(arr[i].block_id) === String(bBlock.block_id)) {
+              arr[i] = { ...arr[i], driver_run_group: ag };
+            }
+          }
+          next[driverKey] = arr;
+          return next;
+        });
+
+        if (a.type === "job") {
+          await supabase
+            .from("jobs")
+            .update({ driver_run_group: bg })
+            .eq("subscriber_id", subscriberId)
+            .eq("id", a.job.id);
+        }
+        if (a.type === "swap") {
+          await supabase
+            .from("jobs")
+            .update({ driver_run_group: bg })
+            .eq("subscriber_id", subscriberId)
+            .in("id", [a.collect?.id, a.deliver?.id].filter(Boolean));
+        }
+        if (b.type === "job") {
+          await supabase
+            .from("jobs")
+            .update({ driver_run_group: ag })
+            .eq("subscriber_id", subscriberId)
+            .eq("id", b.job.id);
+        }
+        if (b.type === "swap") {
+          await supabase
+            .from("jobs")
+            .update({ driver_run_group: ag })
+            .eq("subscriber_id", subscriberId)
+            .in("id", [b.collect?.id, b.deliver?.id].filter(Boolean));
+        }
+
+        await loadAll();
         return;
       }
 
-      if (payload.type === "job") {
-        const card = cards.find(
-          (c) => c.type === "job" && String(c.job?.id) === String(payload.job_id)
-        );
-        if (card) await assignCardToDriver(card, driverId);
-        return;
+      if (a.type === "job") {
+        const { error } = await supabase
+          .from("jobs")
+          .update({ driver_run_group: bg })
+          .eq("subscriber_id", subscriberId)
+          .eq("id", a.job.id);
+        if (error) throw error;
+      } else if (a.type === "swap") {
+        const ids = [a.collect?.id, a.deliver?.id].filter(Boolean);
+        const { error } = await supabase
+          .from("jobs")
+          .update({ driver_run_group: bg })
+          .eq("subscriber_id", subscriberId)
+          .in("id", ids);
+        if (error) throw error;
       }
 
-      if (payload.type === "block") {
-        const block = {
-          type: "block",
-          block_id: payload.block_id || `blk_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-          block_type: payload.block_type || "block",
-          label: payload.label || "Block",
-          duration_mins: clampInt(payload.duration_mins, 0, 600),
-          driver_run_group: null,
-        };
-        await assignCardToDriver(block, driverId);
-      }
-    } catch {}
-  }
-
-  async function onDropToUnassigned(e) {
-    e.preventDefault();
-    const raw = e.dataTransfer.getData("application/json");
-    if (!raw) return;
-
-    try {
-      const payload = JSON.parse(raw);
-
-      if (payload.type === "swap") {
-        const card = cards.find(
-          (c) => c.type === "swap" && String(c.swap_group_id) === String(payload.swap_group_id)
-        );
-        if (card) await unassignCard(card);
-        return;
+      if (b.type === "job") {
+        const { error } = await supabase
+          .from("jobs")
+          .update({ driver_run_group: ag })
+          .eq("subscriber_id", subscriberId)
+          .eq("id", b.job.id);
+        if (error) throw error;
+      } else if (b.type === "swap") {
+        const ids = [b.collect?.id, b.deliver?.id].filter(Boolean);
+        const { error } = await supabase
+          .from("jobs")
+          .update({ driver_run_group: ag })
+          .eq("subscriber_id", subscriberId)
+          .in("id", ids);
+        if (error) throw error;
       }
 
-      if (payload.type === "job") {
-        const card = cards.find(
-          (c) => c.type === "job" && String(c.job?.id) === String(payload.job_id)
-        );
-        if (card) await unassignCard(card);
-      }
-    } catch {}
-  }
-
-  function openJob(jobId) {
-    if (!jobId) return;
-    router.push(`/app/jobs/${jobId}`);
+      await loadAll();
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to reorder");
+    }
   }
 
   async function markComplete(card) {
@@ -578,64 +579,47 @@ export default function SchedulerPage() {
     setErr("");
 
     try {
-      if (card.type === "swap") {
-        const collectId = card.collect?.id;
-        const deliverId = card.deliver?.id;
+      if (card.type === "job") {
+        const j = card.job;
+        const payload =
+          String(j.collection_date || "") === String(date)
+            ? { collection_actual_date: date, job_status: "collected" }
+            : { delivery_actual_date: date, job_status: "delivered" };
 
+        const { error } = await supabase
+          .from("jobs")
+          .update(payload)
+          .eq("subscriber_id", subscriberId)
+          .eq("id", j.id);
+        if (error) throw error;
+      } else if (card.type === "swap") {
         const updates = [];
-        if (collectId) {
+
+        if (card.collect?.id) {
           updates.push(
             supabase
               .from("jobs")
               .update({ collection_actual_date: date, job_status: "collected" })
               .eq("subscriber_id", subscriberId)
-              .eq("id", collectId)
+              .eq("id", card.collect.id)
           );
         }
-        if (deliverId) {
+        if (card.deliver?.id) {
           updates.push(
             supabase
               .from("jobs")
               .update({ delivery_actual_date: date, job_status: "delivered" })
               .eq("subscriber_id", subscriberId)
-              .eq("id", deliverId)
+              .eq("id", card.deliver.id)
           );
         }
 
         const results = await Promise.all(updates);
-        for (const r of results) if (r?.error) throw new Error("Failed to mark swap complete");
-        await loadAll();
-        return;
+        const fail = results.find((r) => r.error);
+        if (fail?.error) throw fail.error;
       }
 
-      if (card.type === "job") {
-        const j = card.job;
-        if (!j?.id) return;
-
-        if (j.swap_role === "collect") {
-          const { error } = await supabase
-            .from("jobs")
-            .update({ collection_actual_date: date, job_status: "collected" })
-            .eq("subscriber_id", subscriberId)
-            .eq("id", j.id);
-          if (error) throw new Error("Failed to mark collection complete");
-        } else {
-          const { error } = await supabase
-            .from("jobs")
-            .update({ delivery_actual_date: date, job_status: "delivered" })
-            .eq("subscriber_id", subscriberId)
-            .eq("id", j.id);
-          if (error) throw new Error("Failed to mark delivery complete");
-        }
-
-        await loadAll();
-        return;
-      }
-
-      if (card.type === "block") {
-        const driverId = String(card._driverId || "");
-        if (driverId) await unassignCard(card, driverId);
-      }
+      await loadAll();
     } catch (e) {
       console.error(e);
       setErr(e?.message || "Failed to mark complete");
@@ -644,134 +628,153 @@ export default function SchedulerPage() {
 
   async function rollForwardFromYesterday() {
     if (!subscriberId) return;
-
     setErr("");
     setRolling(true);
 
     try {
-      const { data: prevJobs, error: prevErr } = await supabase
+      const { data: yRows, error: yErr } = await supabase
         .from("jobs")
-        .select("id,scheduled_date,collection_date,delivery_actual_date,collection_actual_date,job_status,swap_role")
+        .select(
+          [
+            "id",
+            "job_status",
+            "scheduled_date",
+            "collection_date",
+            "delivery_actual_date",
+            "collection_actual_date",
+            "assigned_driver_id",
+            "driver_run_group",
+            "swap_group_id",
+            "swap_role",
+          ].join(",")
+        )
         .eq("subscriber_id", subscriberId)
         .or(`scheduled_date.eq.${prevDate},collection_date.eq.${prevDate}`);
+      if (yErr) throw new Error("Failed to load previous day jobs");
 
-      if (prevErr) throw new Error("Failed to load yesterday's jobs");
+      const rows = (yRows || []).filter((j) => {
+        const status = String(j.job_status || "");
 
-      const candidates = (prevJobs || []).filter((j) => isWorkToDo(j, prevDate));
-      if (!candidates.length) {
-        setRolling(false);
-        return;
-      }
+        if (String(j.collection_date || "") === String(prevDate)) {
+          if (j.collection_actual_date) return false;
+          if (status === "collected" || status === "completed") return false;
+          return true;
+        }
 
-      const deliveryIds = candidates
-        .filter((j) => j.swap_role !== "collect" && String(j.scheduled_date || "") === String(prevDate))
-        .map((j) => j.id);
+        if (String(j.scheduled_date || "") === String(prevDate)) {
+          if (j.delivery_actual_date) return false;
+          if (status === "delivered" || status === "collected" || status === "completed") return false;
+          return true;
+        }
 
-      const collectionIds = candidates
-        .filter((j) => j.swap_role === "collect" && String(j.collection_date || "") === String(prevDate))
-        .map((j) => j.id);
+        return false;
+      });
 
-      if (deliveryIds.length) {
+      for (const j of rows) {
+        const patch = {};
+        if (String(j.collection_date || "") === String(prevDate) && !j.collection_actual_date) {
+          patch.collection_date = date;
+        }
+        if (String(j.scheduled_date || "") === String(prevDate) && !j.delivery_actual_date) {
+          patch.scheduled_date = date;
+        }
+        if (!Object.keys(patch).length) continue;
+
         const { error } = await supabase
           .from("jobs")
-          .update({ scheduled_date: date })
+          .update(patch)
           .eq("subscriber_id", subscriberId)
-          .in("id", deliveryIds);
-        if (error) throw new Error("Failed to roll deliveries forward");
+          .eq("id", j.id);
+        if (error) throw error;
       }
 
-      if (collectionIds.length) {
-        const { error } = await supabase
-          .from("jobs")
-          .update({ collection_date: date })
-          .eq("subscriber_id", subscriberId)
-          .in("id", collectionIds);
-        if (error) throw new Error("Failed to roll collections forward");
-      }
-
-      await loadAll();
       setRolling(false);
+      await loadAll();
     } catch (e) {
       console.error(e);
-      setErr(e?.message || "Failed to roll jobs forward");
+      setErr(e?.message || "Failed to roll forward");
       setRolling(false);
     }
   }
 
-  const toolboxBlocks = useMemo(() => {
-    return [
-      { type: "block", block_id: "tool_vehicle_checks", block_type: "vehicle_checks", label: "Vehicle checks", duration_mins: clampInt(minsVehicleChecks, 0, 600) },
-      { type: "block", block_id: "tool_break", block_type: "break", label: "Break", duration_mins: clampInt(minsBreak, 0, 600) },
-      { type: "block", block_id: "tool_return", block_type: "return_yard", label: "Return to yard", duration_mins: clampInt(minsReturn, 0, 600) },
-    ];
-  }, [minsVehicleChecks, minsBreak, minsReturn]);
-
-  function onSiteMinsForCard(card) {
-    if (!card) return 0;
-    if (card.type === "block") return clampInt(card.duration_mins, 0, 600);
-    if (card.type === "swap") return clampInt(minsSwap, 0, 600);
-    if (card.type === "job") {
-      const j = card.job;
-      if (j?.swap_role === "collect") return clampInt(minsCollection, 0, 600);
-      return clampInt(minsDelivery, 0, 600);
-    }
-    return 0;
+  function onDragStart(e, card) {
+    e.dataTransfer.setData("text/plain", JSON.stringify(card));
   }
 
-  // -------------------------
-  // GET TIMINGS (manual button)
-  // -------------------------
+  async function onDropToDriver(e, driverId) {
+    e.preventDefault();
+    try {
+      const raw = e.dataTransfer.getData("text/plain");
+      if (!raw) return;
+      const card = JSON.parse(raw);
+      await assignCardToDriver(card, driverId);
+    } catch (e2) {
+      console.error(e2);
+      setErr("Drop failed");
+    }
+  }
+
+  async function onDropToUnassigned(e) {
+    e.preventDefault();
+    try {
+      const raw = e.dataTransfer.getData("text/plain");
+      if (!raw) return;
+      const card = JSON.parse(raw);
+      await unassignCard(card);
+    } catch (e2) {
+      console.error(e2);
+      setErr("Drop failed");
+    }
+  }
+
   async function getTimings() {
+    if (!subscriberId) return;
     setErr("");
     setComputing(true);
 
     try {
-      const yard = normalisePostcode(yardPostcode);
-      if (!yard) throw new Error("Enter a yard postcode first.");
+      const allStops = [];
+      const driverPlans = {};
 
-      // Build all required travel pairs for ALL driver lanes in one batch
-      const pairs = [];
-      const seen = new Set();
-
-      const addPair = (from, to) => {
-        const f = normalisePostcode(from);
-        const t = normalisePostcode(to);
-        if (!f || !t) return;
-        const key = `${f}→${t}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        pairs.push({ key, from: f, to: t });
-      };
-
-      // Build pairs by walking each driver lane
       for (const d of drivers || []) {
-        const list = (cardsByDriverId[String(d.id)] || []).map((c) =>
-          c?.type === "block" ? { ...c, _driverId: String(d.id) } : c
-        );
-
-        let lastPc = yard;
-        let hasStop = false;
+        const driverId = String(d.id);
+        const list = cardsByDriverId[driverId] || [];
+        driverPlans[driverId] = list;
 
         for (const item of list) {
-          if (item.type === "block") {
-            if (item.block_type === "return_yard" && hasStop) {
-              addPair(lastPc, yard);
-              lastPc = yard;
-              hasStop = false;
-            }
-            continue;
+          if (item.type === "block") continue;
+
+          if (item.type === "job") {
+            allStops.push({
+              key: `job:${item.job.id}`,
+              postcode: normalisePostcode(item.job.site_postcode || ""),
+            });
+          } else if (item.type === "swap") {
+            const pc = normalisePostcode(
+              item.deliver?.site_postcode || item.collect?.site_postcode || ""
+            );
+            allStops.push({
+              key: cardKey(item),
+              postcode: pc,
+            });
           }
-
-          const pc = postcodeForCard(item);
-          if (!pc) continue;
-
-          addPair(hasStop ? lastPc : yard, pc);
-          lastPc = pc;
-          hasStop = true;
         }
       }
 
-      // Fetch travel minutes (can be empty if no assigned jobs)
+      const uniquePostcodes = Array.from(
+        new Set(
+          [normalisePostcode(yardPostcode), ...allStops.map((s) => s.postcode)].filter(Boolean)
+        )
+      );
+
+      const pairs = [];
+      for (const from of uniquePostcodes) {
+        for (const to of uniquePostcodes) {
+          if (!from || !to || from === to) continue;
+          pairs.push({ key: `${from}→${to}`, from, to });
+        }
+      }
+
       let travelMinutes = {};
       if (pairs.length) {
         const resp = await fetch("/api/distance-matrix", {
@@ -780,26 +783,23 @@ export default function SchedulerPage() {
           body: JSON.stringify({ pairs }),
         });
         const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.error || "Distance Matrix failed");
-        travelMinutes = data?.travelMinutes || {};
+        if (!resp.ok) throw new Error(data?.error || "Distance matrix failed");
+        travelMinutes = data?.minutesByKey || {};
       }
 
-      // Now compute per-driver timeline and per-job timeline
+      const yard = normalisePostcode(yardPostcode);
+      const startMin = parseHmToMinutes(startTime);
+
       const perDriver = {};
       const perJobId = {};
 
-      const base = parseHmToMinutes(startTime);
-
       for (const d of drivers || []) {
         const driverId = String(d.id);
-        const list = (cardsByDriverId[driverId] || []).map((c) =>
-          c?.type === "block" ? { ...c, _driverId: driverId } : c
-        );
+        const list = driverPlans[driverId] || [];
 
-        let t = base;
+        let t = startMin + clampInt(minsVehicleChecks, 0, 600);
         let lastPc = yard;
         let hasStop = false;
-
         const lane = {};
 
         for (const item of list) {
@@ -812,44 +812,89 @@ export default function SchedulerPage() {
               const tk = `${normalisePostcode(lastPc)}→${yard}`;
               const travelMins = Number(travelMinutes[tk] || 0);
               const arriveMin = t + (Number.isFinite(travelMins) ? travelMins : 0);
-              const departMin = arriveMin + onSiteMinsForCard(item);
-              lane[key] = { arriveMin, departMin, travelMins: Number.isFinite(travelMins) ? travelMins : 0, fromPc: lastPc, toPc: yard, kind: "return_yard" };
-              t = departMin;
+              const departMin =
+                arriveMin +
+                clampInt(
+                  item.duration_mins || minsReturn,
+                  0,
+                  600
+                );
+
+              lane[key] = {
+                type: "block",
+                block_type: bt,
+                label: item.label || "Return yard",
+                arrive: minutesToHm(arriveMin),
+                depart: minutesToHm(departMin),
+                travel_mins: Math.round(travelMins || 0),
+              };
+
+              t = departMin + clampInt(minsBreak, 0, 600);
               lastPc = yard;
               hasStop = false;
-            } else {
-              const arriveMin = t;
-              const departMin = arriveMin + onSiteMinsForCard(item);
-              lane[key] = { arriveMin, departMin, travelMins: 0, fromPc: "", toPc: "", kind: bt };
-              t = departMin;
+              continue;
             }
+
+            const arriveMin = t;
+            const departMin = arriveMin + clampInt(item.duration_mins || 0, 0, 600);
+
+            lane[key] = {
+              type: "block",
+              block_type: bt,
+              label: item.label || "Block",
+              arrive: minutesToHm(arriveMin),
+              depart: minutesToHm(departMin),
+              travel_mins: 0,
+            };
+
+            t = departMin + clampInt(minsBreak, 0, 600);
             continue;
           }
 
-          const toPc = postcodeForCard(item);
-          const fromPc = hasStop ? lastPc : yard;
-          const tk = `${normalisePostcode(fromPc)}→${normalisePostcode(toPc)}`;
-          const travelMins = Number(travelMinutes[tk] || 0);
-          const travelOk = Number.isFinite(travelMins) ? travelMins : 0;
+          let pc = "";
+          let onSiteMins = 0;
 
-          const arriveMin = t + travelOk; // arrival
-          const departMin = arriveMin + onSiteMinsForCard(item); // ready to leave
-          lane[key] = { arriveMin, departMin, travelMins: travelOk, fromPc, toPc, kind: item.type };
-
-          t = departMin;
-          if (toPc) {
-            lastPc = toPc;
-            hasStop = true;
+          if (item.type === "job") {
+            pc = normalisePostcode(item.job.site_postcode || "");
+            const isCollection = String(item.job.collection_date || "") === String(date);
+            onSiteMins = clampInt(
+              isCollection ? minsCollection : minsDelivery,
+              0,
+              600
+            );
+          } else if (item.type === "swap") {
+            pc = normalisePostcode(
+              item.deliver?.site_postcode || item.collect?.site_postcode || ""
+            );
+            onSiteMins = clampInt(minsSwap, 0, 600);
           }
 
-          // Also store per-jobId for messaging
+          const tk = `${normalisePostcode(lastPc)}→${pc}`;
+          const travelOk = Number(travelMinutes[tk] || 0);
+          const arriveMin = t + (Number.isFinite(travelOk) ? travelOk : 0);
+          const departMin = arriveMin + onSiteMins;
+
+          lane[key] = {
+            type: item.type,
+            arrive: minutesToHm(arriveMin),
+            depart: minutesToHm(departMin),
+            travel_mins: Math.round(travelOk || 0),
+          };
+
+          t = departMin + clampInt(minsBreak, 0, 600);
+          lastPc = pc;
+          hasStop = true;
+
           if (item.type === "job") {
             const j = item.job;
             if (j?.id) {
               perJobId[String(j.id)] = {
                 job_id: String(j.id),
                 job_number: j.job_number || "",
-                type: j.swap_role === "collect" ? "collection" : "delivery",
+                type:
+                  String(j.collection_date || "") === String(date)
+                    ? "collection"
+                    : "delivery",
                 driver_id: driverId,
                 driver_name: driverLabel(d),
                 arrive: minutesToHm(arriveMin),
@@ -869,7 +914,6 @@ export default function SchedulerPage() {
             const pc = normalisePostcode(deliver?.site_postcode || collect?.site_postcode || "");
             const addr = buildAddress(deliver || collect);
 
-            // Both legs share the same stop window
             if (collect?.id) {
               perJobId[String(collect.id)] = {
                 job_id: String(collect.id),
@@ -929,9 +973,6 @@ export default function SchedulerPage() {
     }
   }
 
-  // -------------------------
-  // SEND MESSAGES (manual button)
-  // -------------------------
   async function sendMessages() {
     if (!computed?.perJobId) return;
     setErr("");
@@ -954,7 +995,6 @@ export default function SchedulerPage() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || "Send failed");
 
-      // For now we just show a success message. Actual sending is handled server-side.
       setSending(false);
       alert(`Sent/queued ${data?.queued || 0} message(s).`);
     } catch (e) {
@@ -1058,42 +1098,53 @@ export default function SchedulerPage() {
 
             <div style={timingCell}>
               <div style={timingLabel}>Start time</div>
-              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value || "08:00")} style={input} />
+              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={input} />
             </div>
 
-            <TimingInput label="Vehicle checks (mins)" value={minsVehicleChecks} onChange={setMinsVehicleChecks} />
-            <TimingInput label="Delivery on-site (mins)" value={minsDelivery} onChange={setMinsDelivery} />
-            <TimingInput label="Collection on-site (mins)" value={minsCollection} onChange={setMinsCollection} />
-            <TimingInput label="Swap on-site (mins)" value={minsSwap} onChange={setMinsSwap} />
-            <TimingInput label="Return yard admin (mins)" value={minsReturn} onChange={setMinsReturn} />
-            <TimingInput label="Break (mins)" value={minsBreak} onChange={setMinsBreak} />
-          </div>
+            <div style={timingCell}>
+              <div style={timingLabel}>Vehicle checks (mins)</div>
+              <input type="number" value={minsVehicleChecks} onChange={(e) => setMinsVehicleChecks(clampInt(e.target.value, 0, 600))} style={input} />
+            </div>
 
-          <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>Drag blocks into a driver lane:</div>
+            <div style={timingCell}>
+              <div style={timingLabel}>Delivery (mins)</div>
+              <input type="number" value={minsDelivery} onChange={(e) => setMinsDelivery(clampInt(e.target.value, 0, 600))} style={input} />
+            </div>
 
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              {toolboxBlocks.map((b) => (
-                <div
-                  key={b.block_id}
-                  draggable
-                  onDragStart={(e) => onDragStart(e, b)}
-                  style={toolBlockStyle(b.block_type)}
-                >
-                  <div style={{ fontWeight: 900 }}>{b.label}</div>
-                  <div style={{ fontSize: 12, color: "#555" }}>{b.duration_mins} mins</div>
-                </div>
-              ))}
+            <div style={timingCell}>
+              <div style={timingLabel}>Collection (mins)</div>
+              <input type="number" value={minsCollection} onChange={(e) => setMinsCollection(clampInt(e.target.value, 0, 600))} style={input} />
+            </div>
+
+            <div style={timingCell}>
+              <div style={timingLabel}>Swap (mins)</div>
+              <input type="number" value={minsSwap} onChange={(e) => setMinsSwap(clampInt(e.target.value, 0, 600))} style={input} />
+            </div>
+
+            <div style={timingCell}>
+              <div style={timingLabel}>Return yard (mins)</div>
+              <input type="number" value={minsReturn} onChange={(e) => setMinsReturn(clampInt(e.target.value, 0, 600))} style={input} />
+            </div>
+
+            <div style={timingCell}>
+              <div style={timingLabel}>Break after each stop (mins)</div>
+              <input type="number" value={minsBreak} onChange={(e) => setMinsBreak(clampInt(e.target.value, 0, 600))} style={input} />
             </div>
           </div>
         </div>
       </section>
 
       {loading ? (
-        <div style={cardStyle}>Loading…</div>
+        <div style={centerStyle}>
+          <p>Loading scheduler…</p>
+        </div>
       ) : (
-        <div style={grid}>
-          <section style={lane} onDragOver={(e) => e.preventDefault()} onDrop={onDropToUnassigned}>
+        <div style={boardWrap}>
+          <section
+            style={unassignedLane}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={onDropToUnassigned}
+          >
             <div style={laneHeader}>
               <div style={{ fontWeight: 900 }}>Unassigned</div>
               <div style={{ color: "#666", fontSize: 12 }}>{unassignedCards.length} item(s)</div>
@@ -1120,70 +1171,58 @@ export default function SchedulerPage() {
             </div>
           </section>
 
-          <section style={driversWrap}>
-            {(drivers || []).map((d) => {
-              const driverId = String(d.id);
-              const list = (cardsByDriverId[driverId] || []).map((c) =>
-                c?.type === "block" ? { ...c, _driverId: driverId } : c
-              );
+          <section style={driversScroller}>
+            <div style={driversRow}>
+              {(drivers || []).map((d) => {
+                const driverId = String(d.id);
+                const list = (cardsByDriverId[driverId] || []).map((c) =>
+                  c?.type === "block" ? { ...c, _driverId: driverId } : c
+                );
 
-              return (
-                <div
-                  key={d.id}
-                  style={lane}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => onDropToDriver(e, d.id)}
-                >
-                  <div style={laneHeader}>
-                    <div style={{ fontWeight: 900 }}>{driverLabel(d)}</div>
-                    <div style={{ color: "#666", fontSize: 12 }}>{list.length} item(s)</div>
-                  </div>
+                return (
+                  <div
+                    key={d.id}
+                    style={driverLane}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => onDropToDriver(e, d.id)}
+                  >
+                    <div style={laneHeader}>
+                      <div style={{ fontWeight: 900 }}>{driverLabel(d)}</div>
+                      <div style={{ color: "#666", fontSize: 12 }}>{list.length} item(s)</div>
+                    </div>
 
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {list.length ? list.map((c) => (
-                      <SchedulerCard
-                        key={cardKey(c)}
-                        card={c}
-                        customerLabel={customerLabel}
-                        customerPhone={customerPhone}
-                        skipLabel={skipLabel}
-                        fmtGBP={fmtGBP}
-                        onDragStart={onDragStart}
-                        onOpenJob={openJob}
-                        onComplete={markComplete}
-                        timing={timingFor(driverId, c)}
-                        onUnassign={() => {
-                          if (c.type === "block") return unassignCard(c, d.id);
-                          return unassignCard(c);
-                        }}
-                      />
-                    )) : (
-                      <div style={{ color: "#666", padding: 10 }}>Drop jobs here</div>
-                    )}
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {list.length ? list.map((c) => (
+                        <SchedulerCard
+                          key={cardKey(c)}
+                          card={c}
+                          customerLabel={customerLabel}
+                          customerPhone={customerPhone}
+                          skipLabel={skipLabel}
+                          fmtGBP={fmtGBP}
+                          onDragStart={onDragStart}
+                          onOpenJob={openJob}
+                          onComplete={markComplete}
+                          timing={timingFor(driverId, c)}
+                          onUnassign={() => {
+                            if (c.type === "block") return unassignCard(c, d.id);
+                            return unassignCard(c);
+                          }}
+                          onMoveUp={() => moveCardWithinDriver(c, d.id, -1)}
+                          onMoveDown={() => moveCardWithinDriver(c, d.id, 1)}
+                        />
+                      )) : (
+                        <div style={{ color: "#666", padding: 10 }}>Drop jobs here</div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </section>
         </div>
       )}
     </main>
-  );
-}
-
-function TimingInput({ label, value, onChange }) {
-  return (
-    <div style={timingCell}>
-      <div style={timingLabel}>{label}</div>
-      <input
-        type="number"
-        min={0}
-        max={600}
-        value={String(value)}
-        onChange={(e) => onChange(clampInt(e.target.value, 0, 600))}
-        style={input}
-      />
-    </div>
   );
 }
 
@@ -1198,192 +1237,134 @@ function SchedulerCard({
   onComplete,
   timing,
   onUnassign,
+  onMoveUp,
+  onMoveDown,
 }) {
-  if (!card) return null;
+  const isSwap = card.type === "swap";
+  const isJob = card.type === "job";
+  const isBlock = card.type === "block";
 
-  const timeLabel = timing ? `${minutesToHm(timing.arriveMin)}–${minutesToHm(timing.departMin)}` : null;
-  const travelLabel = timing && timing.travelMins > 0 ? `Travel: ${Math.round(timing.travelMins)} mins` : null;
+  let title = "";
+  let sub = "";
+  let meta = [];
+  let completeLabel = "Complete";
 
-  if (card.type === "block") {
-    const blockType = card.block_type || "block";
-    const style = { ...jobCardBase, ...shadeForBlock(blockType), cursor: "grab" };
-
-    return (
-      <div draggable onDragStart={(e) => onDragStart(e, card)} style={style} title="Drag to move (local only)">
-        <div style={topRow}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <span style={pillDark}>{(blockType || "BLOCK").toUpperCase().replace("_", " ")}</span>
-            <div style={{ fontWeight: 900 }}>{card.label || "Block"}</div>
-            {timeLabel ? <span style={timePill}>{timeLabel}</span> : null}
-          </div>
-
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button type="button" style={btnTiny} onClick={onUnassign} title="Remove block">✕</button>
-            <button type="button" style={btnTinyPrimary} onClick={() => onComplete(card)} title="Mark done (removes block)">Done</button>
-          </div>
-        </div>
-
-        {travelLabel ? <div style={{ marginTop: 6, fontSize: 12, color: "#444" }}>{travelLabel}</div> : null}
-        <div style={{ marginTop: 6, color: "#333", fontSize: 13 }}>
-          Duration: <b>{card.duration_mins || 0} mins</b>
-        </div>
-      </div>
-    );
+  if (isBlock) {
+    title = card.label || "Block";
+    sub = card.block_type || "block";
+    meta = [
+      card.duration_mins ? `${card.duration_mins} mins` : "",
+    ].filter(Boolean);
+  } else if (isSwap) {
+    const collect = card.collect;
+    const deliver = card.deliver;
+    title = `Swap ${deliver?.job_number || collect?.job_number || ""}`.trim();
+    sub = customerLabel(deliver?.customer_id || collect?.customer_id);
+    meta = [
+      buildAddress(deliver || collect),
+      skipLabel(deliver?.skip_type_id || collect?.skip_type_id),
+      fmtGBP(deliver?.price_inc_vat ?? collect?.price_inc_vat),
+    ].filter(Boolean);
+    completeLabel = "Complete swap";
+  } else if (isJob) {
+    const j = card.job;
+    const isCollection = !!j.collection_date && !j.delivery_actual_date && String(j.collection_date) === String(j.collection_date);
+    title = `${j.job_number || "Job"}${isCollection ? " · Collection" : " · Delivery"}`;
+    sub = customerLabel(j.customer_id);
+    meta = [
+      buildAddress(j),
+      skipLabel(j.skip_type_id),
+      j.payment_type ? `Pay: ${j.payment_type}` : "",
+      Number.isFinite(Number(j.price_inc_vat)) ? fmtGBP(j.price_inc_vat) : "",
+    ].filter(Boolean);
+    completeLabel = isCollection ? "Complete collection" : "Complete delivery";
   }
-
-  if (card.type === "swap") {
-    const c = card.collect;
-    const d = card.deliver;
-
-    const customerId = d?.customer_id || c?.customer_id;
-    const phone = customerPhone(customerId);
-    const addr = buildAddress(d || c);
-
-    const fromSkip = skipLabel(c?.skip_type_id);
-    const toSkip = skipLabel(d?.skip_type_id);
-
-    const clickId = d?.id || c?.id || null;
-
-    return (
-      <div
-        draggable
-        onDragStart={(e) => onDragStart(e, card)}
-        style={{ ...jobCardBase, ...shadeForType("swap") }}
-        title="Swap (drag to assign)"
-        onDoubleClick={() => clickId && onOpenJob(clickId)}
-      >
-        <div style={topRow}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <span style={pillSwap}>SWAP</span>
-            <div style={{ fontWeight: 900 }}>
-              {c?.job_number || "—"} ↔ {d?.job_number || "—"}
-            </div>
-            {timeLabel ? <span style={timePill}>{timeLabel}</span> : null}
-          </div>
-
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button type="button" style={btnTiny} onClick={(e) => { e.stopPropagation(); onUnassign(); }}>
-              Unassign
-            </button>
-            <button type="button" style={btnTinyPrimary} onClick={(e) => { e.stopPropagation(); onComplete(card); }}>
-              Complete
-            </button>
-          </div>
-        </div>
-
-        {travelLabel ? <div style={{ marginTop: 6, fontSize: 12, color: "#444" }}>{travelLabel}</div> : null}
-
-        <div style={metaRow}>
-          <div><b>Customer:</b> {customerLabel(customerId)}</div>
-          {phone ? <div><b>Tel:</b> {phone}</div> : <div style={{ color: "#888" }}><b>Tel:</b> —</div>}
-        </div>
-
-        <div style={addrRow}>{addr || "—"}</div>
-
-        <div style={metaRow}>
-          <div><b>Action:</b> Swap {fromSkip} → {toSkip}</div>
-          <div style={{ textAlign: "right" }}><b>{fmtGBP(d?.price_inc_vat)}</b></div>
-        </div>
-
-        <div style={footRow}>
-          <button type="button" style={btnLink} onClick={(e) => { e.stopPropagation(); clickId && onOpenJob(clickId); }}>
-            Open job
-          </button>
-          <div style={smallMuted}>group {String(card.driver_run_group ?? "—")}</div>
-        </div>
-      </div>
-    );
-  }
-
-  const j = card.job;
-  const addr = buildAddress(j);
-  const customerId = j?.customer_id;
-  const phone = customerPhone(customerId);
-
-  const isCollection = j?.swap_role === "collect";
-  const typeLabel = isCollection ? "COLLECTION" : "DELIVERY";
-  const actionLabel = isCollection ? `Collect: ${skipLabel(j?.skip_type_id)}` : `Deliver: ${skipLabel(j?.skip_type_id)}`;
 
   return (
     <div
+      style={cardStyle}
       draggable
       onDragStart={(e) => onDragStart(e, card)}
-      style={{ ...jobCardBase, ...shadeForType(isCollection ? "collection" : "delivery") }}
-      title="Drag to assign"
-      onDoubleClick={() => j?.id && onOpenJob(j.id)}
     >
-      <div style={topRow}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <span style={isCollection ? pillCollection : pillDelivery}>{typeLabel}</span>
-          <div style={{ fontWeight: 900 }}>{j?.job_number || "Job"}</div>
-          {timeLabel ? <span style={timePill}>{timeLabel}</span> : null}
+      <div style={cardTopRow}>
+        <div style={{ minWidth: 0 }}>
+          <div style={cardTitle}>{title || "Item"}</div>
+          <div style={cardSub}>{sub || "—"}</div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button type="button" style={btnTiny} onClick={(e) => { e.stopPropagation(); onUnassign(); }}>
-            Unassign
+        {!isBlock ? (
+          <button type="button" style={btnTiny} onClick={() => onOpenJob(card)}>
+            Open
           </button>
-          <button type="button" style={btnTinyPrimary} onClick={(e) => { e.stopPropagation(); onComplete(card); }}>
-            Complete
-          </button>
+        ) : null}
+      </div>
+
+      {timing ? (
+        <div style={timingPill}>
+          {timing.arrive} → {timing.depart}
+          {Number.isFinite(Number(timing.travel_mins)) ? ` · ${timing.travel_mins}m travel` : ""}
         </div>
-      </div>
+      ) : null}
 
-      {travelLabel ? <div style={{ marginTop: 6, fontSize: 12, color: "#444" }}>{travelLabel}</div> : null}
+      {customerPhone && !isBlock && (
+        <div style={phoneText}>
+          {isSwap
+            ? customerPhone(card.deliver?.customer_id || card.collect?.customer_id)
+            : customerPhone(card.job?.customer_id)}
+        </div>
+      )}
 
-      <div style={metaRow}>
-        <div><b>Customer:</b> {customerLabel(customerId)}</div>
-        {phone ? <div><b>Tel:</b> {phone}</div> : <div style={{ color: "#888" }}><b>Tel:</b> —</div>}
-      </div>
+      {meta.length ? (
+        <div style={metaList}>
+          {meta.map((m, i) => (
+            <div key={`${i}-${m}`} style={metaRow}>{m}</div>
+          ))}
+        </div>
+      ) : null}
 
-      <div style={addrRow}>{addr || "—"}</div>
+      {!isBlock && card.job?.notes ? (
+        <div style={notesBox}>{card.job.notes}</div>
+      ) : null}
 
-      <div style={metaRow}>
-        <div><b>Action:</b> {actionLabel}</div>
-        <div style={{ textAlign: "right" }}><b>{fmtGBP(j?.price_inc_vat)}</b></div>
-      </div>
-
-      <div style={footRow}>
-        <button type="button" style={btnLink} onClick={(e) => { e.stopPropagation(); j?.id && onOpenJob(j.id); }}>
-          Open job
-        </button>
-        <div style={smallMuted}>group {String(j?.driver_run_group ?? "—")}</div>
+      <div style={cardActions}>
+        <button type="button" style={btnTiny} onClick={onMoveUp}>↑</button>
+        <button type="button" style={btnTiny} onClick={onMoveDown}>↓</button>
+        <button type="button" style={btnTiny} onClick={onUnassign}>Unassign</button>
+        {!isBlock ? (
+          <button type="button" style={btnTinyPrimary} onClick={() => onComplete(card)}>
+            {completeLabel}
+          </button>
+        ) : null}
       </div>
     </div>
   );
 }
 
-/* ------------------ styles ------------------ */
-
 const pageStyle = {
-  minHeight: "100vh",
   padding: 16,
-  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#f6f6f6",
 };
 
 const centerStyle = {
-  minHeight: "100vh",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontFamily: "system-ui, sans-serif",
+  minHeight: "60vh",
+  display: "grid",
+  placeItems: "center",
 };
 
 const headerStyle = {
   display: "flex",
   justifyContent: "space-between",
+  gap: 16,
   alignItems: "flex-start",
-  gap: 12,
+  marginBottom: 14,
   flexWrap: "wrap",
-  marginBottom: 12,
 };
 
 const topControls = {
   display: "grid",
-  gridTemplateColumns: "1fr 1fr",
+  gridTemplateColumns: "1.2fr 1fr",
   gap: 12,
-  marginBottom: 12,
+  alignItems: "start",
+  marginBottom: 14,
 };
 
 const topControlsLeft = {
@@ -1404,34 +1385,62 @@ const topControlsRight = {
 
 const timingGrid = {
   display: "grid",
-  gridTemplateColumns: "repeat(4, minmax(160px, 1fr))",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
   gap: 10,
 };
 
-const timingCell = { display: "grid", gap: 6 };
+const timingCell = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+};
 
-const timingLabel = { fontSize: 12, color: "#666", fontWeight: 700 };
+const timingLabel = {
+  fontSize: 12,
+  color: "#555",
+};
 
-const grid = {
+const boardWrap = {
   display: "grid",
-  gridTemplateColumns: "360px 1fr",
+  gridTemplateColumns: "360px minmax(0, 1fr)",
   gap: 12,
   alignItems: "start",
 };
 
-const driversWrap = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-  gap: 12,
+const driversScroller = {
+  minWidth: 0,
+  overflowX: "auto",
+  overflowY: "hidden",
+  paddingBottom: 4,
 };
 
-const lane = {
+const driversRow = {
+  display: "flex",
+  gap: 12,
+  alignItems: "flex-start",
+  minWidth: "max-content",
+};
+
+const baseLane = {
   background: "#fff",
   border: "1px solid #eee",
   borderRadius: 12,
   padding: 12,
   boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
   minHeight: 120,
+};
+
+const unassignedLane = {
+  ...baseLane,
+  position: "sticky",
+  top: 0,
+};
+
+const driverLane = {
+  ...baseLane,
+  width: 380,
+  minWidth: 380,
+  maxWidth: 380,
 };
 
 const laneHeader = {
@@ -1446,162 +1455,142 @@ const cardStyle = {
   background: "#fff",
   borderRadius: 12,
   padding: 12,
-  border: "1px solid #eee",
+  border: "1px solid #e5e7eb",
+  boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+  display: "grid",
+  gap: 10,
 };
 
-const jobCardBase = {
-  border: "1px solid #e8e8e8",
-  borderRadius: 12,
-  padding: 12,
-  background: "#fff",
-  cursor: "grab",
-  userSelect: "none",
-};
-
-const topRow = {
+const cardTopRow = {
   display: "flex",
   justifyContent: "space-between",
-  gap: 10,
+  gap: 8,
   alignItems: "flex-start",
 };
 
-const metaRow = {
-  marginTop: 8,
+const cardTitle = {
+  fontSize: 14,
+  fontWeight: 800,
+  color: "#111827",
+  lineHeight: 1.3,
+};
+
+const cardSub = {
   fontSize: 13,
-  color: "#222",
-  display: "flex",
-  gap: 14,
-  flexWrap: "wrap",
-  justifyContent: "space-between",
+  color: "#4b5563",
+  marginTop: 4,
+  lineHeight: 1.35,
 };
 
-const addrRow = { marginTop: 6, color: "#444", fontSize: 13, lineHeight: 1.3 };
-
-const footRow = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 10,
-  alignItems: "center",
-  marginTop: 10,
+const metaList = {
+  display: "grid",
+  gap: 4,
 };
 
-const smallMuted = { color: "#777", fontSize: 12 };
+const metaRow = {
+  fontSize: 12,
+  color: "#4b5563",
+  lineHeight: 1.4,
+};
 
-const pillBase = {
-  display: "inline-block",
-  fontSize: 11,
-  padding: "3px 8px",
+const notesBox = {
+  fontSize: 12,
+  color: "#374151",
+  background: "#f9fafb",
+  border: "1px solid #e5e7eb",
+  borderRadius: 8,
+  padding: 8,
+  lineHeight: 1.4,
+};
+
+const timingPill = {
+  fontSize: 12,
+  color: "#0f172a",
+  background: "#eef6ff",
+  border: "1px solid #bfdbfe",
   borderRadius: 999,
-  border: "1px solid rgba(0,0,0,0.10)",
-  fontWeight: 900,
+  padding: "6px 10px",
+  width: "fit-content",
 };
 
-const pillDelivery = { ...pillBase, background: "rgba(0, 120, 255, 0.10)" };
-const pillCollection = { ...pillBase, background: "rgba(0, 180, 120, 0.12)" };
-const pillSwap = { ...pillBase, background: "rgba(255, 170, 0, 0.16)" };
-const pillDark = { ...pillBase, background: "rgba(0,0,0,0.06)" };
-const timePill = { ...pillBase, background: "rgba(0,0,0,0.05)", color: "#333" };
+const phoneText = {
+  fontSize: 12,
+  color: "#2563eb",
+};
+
+const cardActions = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+};
 
 const input = {
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid #ccc",
-  fontSize: 14,
-  background: "#fff",
   width: "100%",
-};
-
-const btnSecondary = {
-  padding: "10px 12px",
+  border: "1px solid #d1d5db",
   borderRadius: 10,
-  border: "1px solid #ddd",
+  padding: "10px 12px",
+  fontSize: 14,
+  outline: "none",
   background: "#fff",
-  cursor: "pointer",
-  fontWeight: 900,
 };
 
 const btnPrimary = {
-  padding: "10px 12px",
+  border: "none",
   borderRadius: 10,
-  border: "1px solid #111",
-  background: "#111",
+  padding: "10px 14px",
+  background: "#111827",
   color: "#fff",
+  fontWeight: 700,
   cursor: "pointer",
-  fontWeight: 900,
 };
 
 const btnPrimaryAlt = {
-  padding: "10px 12px",
+  border: "none",
   borderRadius: 10,
-  border: "1px solid #0b57d0",
-  background: "#0b57d0",
+  padding: "10px 14px",
+  background: "#2563eb",
   color: "#fff",
+  fontWeight: 700,
   cursor: "pointer",
-  fontWeight: 900,
+};
+
+const btnSecondary = {
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  padding: "10px 14px",
+  background: "#fff",
+  color: "#111827",
+  fontWeight: 700,
+  cursor: "pointer",
 };
 
 const btnTiny = {
-  padding: "6px 10px",
-  borderRadius: 10,
-  border: "1px solid #ddd",
+  border: "1px solid #d1d5db",
+  borderRadius: 8,
+  padding: "7px 10px",
   background: "#fff",
-  cursor: "pointer",
-  fontWeight: 900,
+  color: "#111827",
   fontSize: 12,
+  fontWeight: 700,
+  cursor: "pointer",
 };
 
 const btnTinyPrimary = {
-  padding: "6px 10px",
-  borderRadius: 10,
-  border: "1px solid #111",
-  background: "#111",
-  color: "#fff",
-  cursor: "pointer",
-  fontWeight: 900,
-  fontSize: 12,
-};
-
-const btnLink = {
-  padding: 0,
   border: "none",
-  background: "transparent",
-  color: "#0b57d0",
+  borderRadius: 8,
+  padding: "7px 10px",
+  background: "#111827",
+  color: "#fff",
+  fontSize: 12,
+  fontWeight: 700,
   cursor: "pointer",
-  fontWeight: 900,
 };
 
 const alertError = {
-  padding: 12,
-  borderRadius: 12,
-  border: "1px solid #f0b4b4",
-  background: "#fff5f5",
-  color: "#8a1f1f",
-  whiteSpace: "pre-wrap",
-  marginBottom: 12,
+  marginBottom: 14,
+  padding: "10px 12px",
+  background: "#fff1f2",
+  border: "1px solid #fecdd3",
+  color: "#9f1239",
+  borderRadius: 10,
 };
-
-function shadeForType(type) {
-  if (type === "delivery") return { borderLeft: "6px solid rgba(0, 120, 255, 0.80)", background: "rgba(0, 120, 255, 0.06)" };
-  if (type === "collection") return { borderLeft: "6px solid rgba(0, 180, 120, 0.85)", background: "rgba(0, 180, 120, 0.07)" };
-  if (type === "swap") return { borderLeft: "6px solid rgba(255, 170, 0, 0.90)", background: "rgba(255, 170, 0, 0.10)" };
-  return { borderLeft: "6px solid rgba(0,0,0,0.35)", background: "#fff" };
-}
-
-function shadeForBlock(blockType) {
-  if (blockType === "vehicle_checks") return { borderLeft: "6px solid rgba(120, 0, 255, 0.75)", background: "rgba(120, 0, 255, 0.06)" };
-  if (blockType === "break") return { borderLeft: "6px solid rgba(255, 0, 120, 0.75)", background: "rgba(255, 0, 120, 0.06)" };
-  if (blockType === "return_yard") return { borderLeft: "6px solid rgba(0, 0, 0, 0.65)", background: "rgba(0, 0, 0, 0.04)" };
-  return { borderLeft: "6px solid rgba(0,0,0,0.35)", background: "rgba(0,0,0,0.03)" };
-}
-
-function toolBlockStyle(blockType) {
-  const base = {
-    borderRadius: 12,
-    border: "1px solid #e8e8e8",
-    padding: "10px 12px",
-    minWidth: 170,
-    cursor: "grab",
-    background: "#fff",
-  };
-  return { ...base, ...shadeForBlock(blockType) };
-}
