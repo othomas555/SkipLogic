@@ -25,6 +25,8 @@ function Toast({ open, kind, title, message, onClose }) {
 
 export default function Login() {
   const router = useRouter();
+
+  const [loginCode, setLoginCode] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -43,11 +45,33 @@ export default function Login() {
     if (loading) return;
 
     setLoading(true);
+
     try {
+      if (isDriver) {
+        const res = await fetch("/api/driver/login", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            login_code: loginCode,
+            password,
+          }),
+        });
+
+        const data = await res.json();
+
+        if (!data.ok) throw new Error(data.error || "Login failed");
+
+        router.push("/driver");
+        return;
+      }
+
       const { error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
+
       if (error) throw error;
 
       router.push("/app");
@@ -116,49 +140,6 @@ export default function Login() {
                   ? "Sign in to view your runs, update job status and keep the office informed."
                   : "Sign in to manage jobs, scheduling, drivers, billing and compliance."}
               </p>
-
-              <div className={styles.featurePanel}>
-                <div className={styles.featureTop}>
-                  <div className={styles.featureTitle}>{isDriver ? "For drivers" : "Quick tips"}</div>
-                  <span className="sl-chip">
-                    <span className="sl-chipDot" />
-                    Ops-first
-                  </span>
-                </div>
-
-                <div className={styles.featureBody}>
-                  <div className={styles.row}>
-                    <div className={styles.iconBox}>{isDriver ? "🚚" : "⚡"}</div>
-                    <div>
-                      <div className={styles.rowTitle}>{isDriver ? "Daily runs" : "Fast navigation"}</div>
-                      <div className={styles.rowSub}>
-                        {isDriver
-                          ? "Check your assigned jobs and work through the day clearly."
-                          : "Use the left sidebar inside the app."}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className={styles.row}>
-                    <div className={styles.iconBox}>{isDriver ? "📍" : "🔔"}</div>
-                    <div>
-                      <div className={styles.rowTitle}>{isDriver ? "Status updates" : "Notifications"}</div>
-                      <div className={styles.rowSub}>
-                        {isDriver
-                          ? "Keep collections, deliveries and timing updates moving."
-                          : "Timing messages and alerts keep you ahead."}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className={styles.smallPrint}>
-                <span className={styles.dot} />
-                {isDriver
-                  ? "Your office must set your account up before you can sign in."
-                  : "If you’ve just signed up, check your email to confirm first."}
-              </div>
             </section>
 
             <section className={styles.right}>
@@ -168,23 +149,34 @@ export default function Login() {
                   <h2 className={styles.h2}>{isDriver ? "Access your driver account" : "Access your workspace"}</h2>
                   <p className={styles.sub}>
                     {isDriver
-                      ? "Use the email and password the office created for you."
+                      ? "Use the driver login code and password given to you by the office."
                       : "Use the email and password you registered with."}
                   </p>
                 </div>
 
                 <form className={styles.form} onSubmit={onSubmit}>
-                  <label className={styles.label}>
-                    Email
-                    <input
-                      className="sl-input"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder={isDriver ? "driver@company.co.uk" : "you@company.co.uk"}
-                      autoComplete="email"
-                      inputMode="email"
-                    />
-                  </label>
+                  {isDriver ? (
+                    <label className={styles.label}>
+                      Driver login code
+                      <input
+                        className="sl-input"
+                        value={loginCode}
+                        onChange={(e) => setLoginCode(e.target.value)}
+                        placeholder="e.g. aburnell"
+                      />
+                    </label>
+                  ) : (
+                    <label className={styles.label}>
+                      Email
+                      <input
+                        className="sl-input"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="you@company.co.uk"
+                        autoComplete="email"
+                      />
+                    </label>
+                  )}
 
                   <label className={styles.label}>
                     Password
@@ -207,10 +199,6 @@ export default function Login() {
                       <>
                         <Link href="/login?type=office" className="sl-link">
                           Office login
-                        </Link>
-                        <span>•</span>
-                        <Link href="/forgot-password" className="sl-link">
-                          Forgot password
                         </Link>
                       </>
                     ) : (
