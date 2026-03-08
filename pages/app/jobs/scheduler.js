@@ -29,7 +29,11 @@ function ymdAddDays(ymd, deltaDays) {
 function fmtGBP(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "—";
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(x);
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    maximumFractionDigits: 0,
+  }).format(x);
 }
 
 function buildAddress(job) {
@@ -82,17 +86,25 @@ function isWorkToDo(job, selectedDate) {
 
 function cardKey(card) {
   if (!card) return "";
-  if (card.type === "swap") {
-    return `swap:${card.swap_group_id || card.collect?.id || card.deliver?.id || ""}`;
-  }
+  if (card.type === "swap") return `swap:${card.swap_group_id || card.collect?.id || card.deliver?.id || ""}`;
   if (card.type === "job") return `job:${card.job?.id || ""}`;
   if (card.type === "block") return `block:${card.block_id || ""}`;
   return "";
 }
 
+function makeBlock(blockType, label, durationMins) {
+  return {
+    type: "block",
+    block_id: `block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    block_type: blockType,
+    label,
+    duration_mins: durationMins,
+    driver_run_group: null,
+  };
+}
+
 function groupIntoCards(jobs, selectedDate) {
   const bySwapGroup = {};
-  const used = new Set();
   const cards = [];
 
   for (const j of jobs || []) {
@@ -114,15 +126,13 @@ function groupIntoCards(jobs, selectedDate) {
     const deliver = arr.find((x) => String(x.swap_role || "").toLowerCase() === "deliver") || null;
 
     if (collect || deliver) {
-      used.add(key);
       cards.push({
         type: "swap",
         swap_group_id: key,
         collect,
         deliver,
         assigned_driver_id: collect?.assigned_driver_id || deliver?.assigned_driver_id || null,
-        driver_run_group:
-          collect?.driver_run_group ?? deliver?.driver_run_group ?? null,
+        driver_run_group: collect?.driver_run_group ?? deliver?.driver_run_group ?? null,
       });
     } else {
       for (const j of arr) cards.push({ type: "job", job: j });
@@ -142,6 +152,18 @@ function groupIntoCards(jobs, selectedDate) {
   return cards;
 }
 
+function getCardKind(card, date) {
+  if (!card) return "job";
+  if (card.type === "swap") return "swap";
+  if (card.type === "block") return "block";
+  if (card.type === "job") {
+    const j = card.job || {};
+    if (String(j.collection_date || "") === String(date)) return "collection";
+    return "delivery";
+  }
+  return "job";
+}
+
 export default function SchedulerPage() {
   const router = useRouter();
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
@@ -158,9 +180,9 @@ export default function SchedulerPage() {
   const [rolling, setRolling] = useState(false);
 
   const [yardPostcode, setYardPostcode] = useState("");
-  const [startTime, setStartTime] = useState("07:30");
+  const [startTime, setStartTime] = useState("08:00");
   const [minsVehicleChecks, setMinsVehicleChecks] = useState(10);
-  const [minsDelivery, setMinsDelivery] = useState(12);
+  const [minsDelivery, setMinsDelivery] = useState(10);
   const [minsCollection, setMinsCollection] = useState(10);
   const [minsSwap, setMinsSwap] = useState(18);
   const [minsReturn, setMinsReturn] = useState(15);
@@ -170,6 +192,7 @@ export default function SchedulerPage() {
   const [computed, setComputed] = useState(null);
   const [computing, setComputing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [showTimingHelp, setShowTimingHelp] = useState(false);
 
   const prevDate = useMemo(() => ymdAddDays(date, -1), [date]);
 
@@ -457,7 +480,6 @@ export default function SchedulerPage() {
           next[driverId] = arr;
           return next;
         });
-        return;
       }
     } catch (e) {
       console.error(e);
@@ -496,6 +518,7 @@ export default function SchedulerPage() {
               arr[i] = { ...arr[i], driver_run_group: ag };
             }
           }
+
           next[driverKey] = arr;
           return next;
         });
@@ -581,10 +604,10 @@ export default function SchedulerPage() {
     try {
       if (card.type === "job") {
         const j = card.job;
-        const payload =
-          String(j.collection_date || "") === String(date)
-            ? { collection_actual_date: date, job_status: "collected" }
-            : { delivery_actual_date: date, job_status: "delivered" };
+        const isCollection = String(j.collection_date || "") === String(date);
+        const payload = isCollection
+          ? { collection_actual_date: date, job_status: "collected" }
+          : { delivery_actual_date: date, job_status: "delivered" };
 
         const { error } = await supabase
           .from("jobs")
@@ -698,33 +721,40 @@ export default function SchedulerPage() {
   }
 
   function onDragStart(e, card) {
-    e.dataTransfer.setData("text/plain", JSON.stringify(card));
+    e.dataTransfer.setData("application/json", JSON.stringify(card));
+  }
+
+  function getDraggedCard(e) {
+    try {
+      const raw = e.dataTransfer.getData("application/json") || e.dataTransfer.getData("text/plain");
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
   }
 
   async function onDropToDriver(e, driverId) {
     e.preventDefault();
-    try {
-      const raw = e.dataTransfer.getData("text/plain");
-      if (!raw) return;
-      const card = JSON.parse(raw);
-      await assignCardToDriver(card, driverId);
-    } catch (e2) {
-      console.error(e2);
-      setErr("Drop failed");
-    }
+    const card = getDraggedCard(e);
+    if (!card) return;
+    await assignCardToDriver(card, driverId);
   }
 
   async function onDropToUnassigned(e) {
     e.preventDefault();
-    try {
-      const raw = e.dataTransfer.getData("text/plain");
-      if (!raw) return;
-      const card = JSON.parse(raw);
-      await unassignCard(card);
-    } catch (e2) {
-      console.error(e2);
-      setErr("Drop failed");
+    const card = getDraggedCard(e);
+    if (!card) return;
+
+    if (card.type === "block") {
+      const sourceDriverId = String(card._driverId || "");
+      if (sourceDriverId) {
+        await unassignCard(card, sourceDriverId);
+      }
+      return;
     }
+
+    await unassignCard(card);
   }
 
   async function getTimings() {
@@ -762,9 +792,7 @@ export default function SchedulerPage() {
       }
 
       const uniquePostcodes = Array.from(
-        new Set(
-          [normalisePostcode(yardPostcode), ...allStops.map((s) => s.postcode)].filter(Boolean)
-        )
+        new Set([normalisePostcode(yardPostcode), ...allStops.map((s) => s.postcode)].filter(Boolean))
       );
 
       const pairs = [];
@@ -808,22 +836,18 @@ export default function SchedulerPage() {
           if (item.type === "block") {
             const bt = item.block_type || "block";
 
-            if (bt === "return_yard" && hasStop) {
-              const tk = `${normalisePostcode(lastPc)}→${yard}`;
-              const travelMins = Number(travelMinutes[tk] || 0);
+            if (bt === "return_yard") {
+              const travelMins = hasStop
+                ? Number(travelMinutes[`${normalisePostcode(lastPc)}→${yard}`] || 0)
+                : 0;
+
               const arriveMin = t + (Number.isFinite(travelMins) ? travelMins : 0);
-              const departMin =
-                arriveMin +
-                clampInt(
-                  item.duration_mins || minsReturn,
-                  0,
-                  600
-                );
+              const departMin = arriveMin + clampInt(item.duration_mins || minsReturn, 0, 600);
 
               lane[key] = {
                 type: "block",
                 block_type: bt,
-                label: item.label || "Return yard",
+                label: item.label || "Return to yard",
                 arrive: minutesToHm(arriveMin),
                 depart: minutesToHm(departMin),
                 travel_mins: Math.round(travelMins || 0),
@@ -857,15 +881,9 @@ export default function SchedulerPage() {
           if (item.type === "job") {
             pc = normalisePostcode(item.job.site_postcode || "");
             const isCollection = String(item.job.collection_date || "") === String(date);
-            onSiteMins = clampInt(
-              isCollection ? minsCollection : minsDelivery,
-              0,
-              600
-            );
+            onSiteMins = clampInt(isCollection ? minsCollection : minsDelivery, 0, 600);
           } else if (item.type === "swap") {
-            pc = normalisePostcode(
-              item.deliver?.site_postcode || item.collect?.site_postcode || ""
-            );
+            pc = normalisePostcode(item.deliver?.site_postcode || item.collect?.site_postcode || "");
             onSiteMins = clampInt(minsSwap, 0, 600);
           }
 
@@ -891,10 +909,7 @@ export default function SchedulerPage() {
               perJobId[String(j.id)] = {
                 job_id: String(j.id),
                 job_number: j.job_number || "",
-                type:
-                  String(j.collection_date || "") === String(date)
-                    ? "collection"
-                    : "delivery",
+                type: String(j.collection_date || "") === String(date) ? "collection" : "delivery",
                 driver_id: driverId,
                 driver_name: driverLabel(d),
                 arrive: minutesToHm(arriveMin),
@@ -911,7 +926,7 @@ export default function SchedulerPage() {
           } else if (item.type === "swap") {
             const collect = item.collect;
             const deliver = item.deliver;
-            const pc = normalisePostcode(deliver?.site_postcode || collect?.site_postcode || "");
+            const pcSwap = normalisePostcode(deliver?.site_postcode || collect?.site_postcode || "");
             const addr = buildAddress(deliver || collect);
 
             if (collect?.id) {
@@ -924,7 +939,7 @@ export default function SchedulerPage() {
                 arrive: minutesToHm(arriveMin),
                 depart: minutesToHm(departMin),
                 travel_mins: Math.round(travelOk),
-                postcode: pc,
+                postcode: pcSwap,
                 address: addr,
                 customer_id: collect.customer_id || null,
                 customer_name: customerLabel(collect.customer_id),
@@ -942,7 +957,7 @@ export default function SchedulerPage() {
                 arrive: minutesToHm(arriveMin),
                 depart: minutesToHm(departMin),
                 travel_mins: Math.round(travelOk),
-                postcode: pc,
+                postcode: pcSwap,
                 address: addr,
                 customer_id: deliver.customer_id || null,
                 customer_name: customerLabel(deliver.customer_id),
@@ -1011,6 +1026,10 @@ export default function SchedulerPage() {
     return lane[cardKey(card)] || null;
   }
 
+  const paletteItems = [
+    makeBlock("return_yard", "Return to yard", minsReturn),
+  ];
+
   if (checking) {
     return (
       <main style={centerStyle}>
@@ -1036,14 +1055,16 @@ export default function SchedulerPage() {
           <h1 style={{ margin: 0 }}>Skip hire scheduler</h1>
           <div style={{ marginTop: 6, color: "#555", fontSize: 13 }}>Signed in as {user.email}</div>
           <div style={{ marginTop: 8 }}>
-            <a href="/app/jobs" style={{ fontSize: 14 }}>← Back to jobs</a>
+            <a href="/app/jobs" style={{ fontSize: 14, color: "#2563eb", textDecoration: "none" }}>
+              ← Back to jobs
+            </a>
           </div>
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button type="button" style={btnSecondary} onClick={() => setDate((d) => ymdAddDays(d, -1))}>◀</button>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value || ymdTodayLocal())} style={input} />
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value || ymdTodayLocal())} style={inputCompact} />
             <button type="button" style={btnSecondary} onClick={() => setDate((d) => ymdAddDays(d, 1))}>▶</button>
           </div>
           <button type="button" onClick={loadAll} style={btnSecondary}>Refresh</button>
@@ -1052,21 +1073,78 @@ export default function SchedulerPage() {
 
       {(authError || err) ? <div style={alertError}>{authError || err}</div> : null}
 
-      <section style={topControls}>
-        <div style={topControlsLeft}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>Day controls</div>
-
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <button type="button" style={btnPrimary} onClick={rollForwardFromYesterday} disabled={rolling}>
-              {rolling ? "Rolling…" : `Roll forward unfinished jobs from ${prevDate} → ${date}`}
-            </button>
-
-            <div style={{ color: "#666", fontSize: 12 }}>
-              Rolls forward <b>all incomplete</b> jobs (assigned or unassigned).
+      <section style={topStrip}>
+        <div style={helpCard}>
+          <div style={helpHeaderRow}>
+            <div>
+              <div style={helpTitle}>Run timings</div>
+              <div style={helpSub}>
+                Set yard postcode, driver start time, and average task minutes. Then build each run by dragging jobs and
+                <strong> Return to yard</strong> blocks into the driver columns in the order the day should happen.
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => setShowTimingHelp((v) => !v)}
+              style={btnGhost}
+            >
+              {showTimingHelp ? "Hide guide" : "Show guide"}
+            </button>
           </div>
 
-          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {showTimingHelp ? (
+            <div style={helpSteps}>
+              <div>1. Drag deliveries, collections, swaps, and return-to-yard blocks into each driver lane.</div>
+              <div>2. Put them in the exact running order. Use ↑ and ↓ to fine tune.</div>
+              <div>3. Set average minutes for checks, delivery, collection, swap, and return-to-yard.</div>
+              <div>4. Press <strong>Get timings</strong>. The scheduler starts from the driver start time, adds checks, then travel from yard to first stop, then service time, then travel to the next item, and so on.</div>
+              <div>5. Use <strong>Send messages</strong> once the run looks right.</div>
+            </div>
+          ) : null}
+
+          <div style={compactTimingGrid}>
+            <label style={fieldWrap}>
+              <span style={fieldLabel}>Yard postcode</span>
+              <input value={yardPostcode} onChange={(e) => setYardPostcode(e.target.value)} placeholder="CF33 6BN" style={inputCompact} />
+            </label>
+
+            <label style={fieldWrap}>
+              <span style={fieldLabel}>Start</span>
+              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={inputCompact} />
+            </label>
+
+            <label style={fieldWrap}>
+              <span style={fieldLabel}>Checks</span>
+              <input type="number" value={minsVehicleChecks} onChange={(e) => setMinsVehicleChecks(clampInt(e.target.value, 0, 600))} style={inputCompact} />
+            </label>
+
+            <label style={fieldWrap}>
+              <span style={fieldLabel}>Delivery</span>
+              <input type="number" value={minsDelivery} onChange={(e) => setMinsDelivery(clampInt(e.target.value, 0, 600))} style={inputCompact} />
+            </label>
+
+            <label style={fieldWrap}>
+              <span style={fieldLabel}>Collection</span>
+              <input type="number" value={minsCollection} onChange={(e) => setMinsCollection(clampInt(e.target.value, 0, 600))} style={inputCompact} />
+            </label>
+
+            <label style={fieldWrap}>
+              <span style={fieldLabel}>Swap</span>
+              <input type="number" value={minsSwap} onChange={(e) => setMinsSwap(clampInt(e.target.value, 0, 600))} style={inputCompact} />
+            </label>
+
+            <label style={fieldWrap}>
+              <span style={fieldLabel}>Return yard</span>
+              <input type="number" value={minsReturn} onChange={(e) => setMinsReturn(clampInt(e.target.value, 0, 600))} style={inputCompact} />
+            </label>
+
+            <label style={fieldWrap}>
+              <span style={fieldLabel}>Gap after stop</span>
+              <input type="number" value={minsBreak} onChange={(e) => setMinsBreak(clampInt(e.target.value, 0, 600))} style={inputCompact} />
+            </label>
+          </div>
+
+          <div style={timingActionsRow}>
             <button type="button" style={btnPrimaryAlt} onClick={getTimings} disabled={computing}>
               {computing ? "Getting timings…" : "Get timings"}
             </button>
@@ -1076,61 +1154,42 @@ export default function SchedulerPage() {
               style={btnPrimary}
               onClick={sendMessages}
               disabled={sending || !computed?.perJobId || Object.keys(computed.perJobId).length === 0}
-              title={!computed ? "Run Get timings first" : ""}
             >
               {sending ? "Sending…" : "Send messages"}
             </button>
 
-            <div style={{ color: "#666", fontSize: 12, alignSelf: "center" }}>
-              {computed ? `Timings computed at ${new Date(computed.computedAt).toLocaleTimeString()}` : "Timings not computed yet."}
+            <button type="button" style={btnSecondary} onClick={rollForwardFromYesterday} disabled={rolling}>
+              {rolling ? "Rolling…" : `Roll forward unfinished from ${prevDate}`}
+            </button>
+
+            <div style={timingStatusText}>
+              {computed ? `Timings last built ${new Date(computed.computedAt).toLocaleTimeString()}` : "Build timings after arranging the runs."}
             </div>
           </div>
         </div>
+      </section>
 
-        <div style={topControlsRight}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>Run timings / blocks</div>
+      <section style={paletteRow}>
+        <div style={legendRow}>
+          <div style={legendChipDelivery}>Delivery</div>
+          <div style={legendChipCollection}>Collection</div>
+          <div style={legendChipSwap}>Swap</div>
+          <div style={legendChipBlock}>Return to yard</div>
+        </div>
 
-          <div style={timingGrid}>
-            <div style={timingCell}>
-              <div style={timingLabel}>Yard postcode</div>
-              <input value={yardPostcode} onChange={(e) => setYardPostcode(e.target.value)} placeholder="e.g. CF33 6BN" style={input} />
+        <div style={paletteWrap}>
+          {paletteItems.map((item) => (
+            <div
+              key={item.block_id}
+              style={paletteTile}
+              draggable
+              onDragStart={(e) => onDragStart(e, item)}
+              title="Drag into a driver lane"
+            >
+              <div style={paletteTileTitle}>{item.label}</div>
+              <div style={paletteTileSub}>{item.duration_mins} mins on site</div>
             </div>
-
-            <div style={timingCell}>
-              <div style={timingLabel}>Start time</div>
-              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={input} />
-            </div>
-
-            <div style={timingCell}>
-              <div style={timingLabel}>Vehicle checks (mins)</div>
-              <input type="number" value={minsVehicleChecks} onChange={(e) => setMinsVehicleChecks(clampInt(e.target.value, 0, 600))} style={input} />
-            </div>
-
-            <div style={timingCell}>
-              <div style={timingLabel}>Delivery (mins)</div>
-              <input type="number" value={minsDelivery} onChange={(e) => setMinsDelivery(clampInt(e.target.value, 0, 600))} style={input} />
-            </div>
-
-            <div style={timingCell}>
-              <div style={timingLabel}>Collection (mins)</div>
-              <input type="number" value={minsCollection} onChange={(e) => setMinsCollection(clampInt(e.target.value, 0, 600))} style={input} />
-            </div>
-
-            <div style={timingCell}>
-              <div style={timingLabel}>Swap (mins)</div>
-              <input type="number" value={minsSwap} onChange={(e) => setMinsSwap(clampInt(e.target.value, 0, 600))} style={input} />
-            </div>
-
-            <div style={timingCell}>
-              <div style={timingLabel}>Return yard (mins)</div>
-              <input type="number" value={minsReturn} onChange={(e) => setMinsReturn(clampInt(e.target.value, 0, 600))} style={input} />
-            </div>
-
-            <div style={timingCell}>
-              <div style={timingLabel}>Break after each stop (mins)</div>
-              <input type="number" value={minsBreak} onChange={(e) => setMinsBreak(clampInt(e.target.value, 0, 600))} style={input} />
-            </div>
-          </div>
+          ))}
         </div>
       </section>
 
@@ -1146,15 +1205,18 @@ export default function SchedulerPage() {
             onDrop={onDropToUnassigned}
           >
             <div style={laneHeader}>
-              <div style={{ fontWeight: 900 }}>Unassigned</div>
-              <div style={{ color: "#666", fontSize: 12 }}>{unassignedCards.length} item(s)</div>
+              <div>
+                <div style={laneTitle}>Unassigned</div>
+                <div style={laneCount}>{unassignedCards.length} item(s)</div>
+              </div>
             </div>
 
-            <div style={{ display: "grid", gap: 10 }}>
+            <div style={cardsColumn}>
               {unassignedCards.length ? unassignedCards.map((c) => (
                 <SchedulerCard
                   key={cardKey(c)}
                   card={c}
+                  date={date}
                   customerLabel={customerLabel}
                   customerPhone={customerPhone}
                   skipLabel={skipLabel}
@@ -1166,7 +1228,7 @@ export default function SchedulerPage() {
                   onUnassign={() => unassignCard(c)}
                 />
               )) : (
-                <div style={{ color: "#666", padding: 10 }}>None</div>
+                <div style={emptyLaneText}>None</div>
               )}
             </div>
           </section>
@@ -1187,15 +1249,18 @@ export default function SchedulerPage() {
                     onDrop={(e) => onDropToDriver(e, d.id)}
                   >
                     <div style={laneHeader}>
-                      <div style={{ fontWeight: 900 }}>{driverLabel(d)}</div>
-                      <div style={{ color: "#666", fontSize: 12 }}>{list.length} item(s)</div>
+                      <div>
+                        <div style={laneTitle}>{driverLabel(d)}</div>
+                        <div style={laneCount}>{list.length} item(s)</div>
+                      </div>
                     </div>
 
-                    <div style={{ display: "grid", gap: 10 }}>
+                    <div style={cardsColumn}>
                       {list.length ? list.map((c) => (
                         <SchedulerCard
                           key={cardKey(c)}
                           card={c}
+                          date={date}
                           customerLabel={customerLabel}
                           customerPhone={customerPhone}
                           skipLabel={skipLabel}
@@ -1212,7 +1277,7 @@ export default function SchedulerPage() {
                           onMoveDown={() => moveCardWithinDriver(c, d.id, 1)}
                         />
                       )) : (
-                        <div style={{ color: "#666", padding: 10 }}>Drop jobs here</div>
+                        <div style={emptyLaneText}>Drop jobs or return-to-yard here</div>
                       )}
                     </div>
                   </div>
@@ -1228,6 +1293,7 @@ export default function SchedulerPage() {
 
 function SchedulerCard({
   card,
+  date,
   customerLabel,
   customerPhone,
   skipLabel,
@@ -1240,45 +1306,40 @@ function SchedulerCard({
   onMoveUp,
   onMoveDown,
 }) {
+  const kind = getCardKind(card, date);
   const isSwap = card.type === "swap";
   const isJob = card.type === "job";
   const isBlock = card.type === "block";
 
   let title = "";
   let sub = "";
-  let meta = [];
+  let compactMeta = "";
   let completeLabel = "Complete";
 
   if (isBlock) {
     title = card.label || "Block";
-    sub = card.block_type || "block";
-    meta = [
-      card.duration_mins ? `${card.duration_mins} mins` : "",
-    ].filter(Boolean);
+    sub = `${card.duration_mins || 0} mins`;
   } else if (isSwap) {
     const collect = card.collect;
     const deliver = card.deliver;
     title = `Swap ${deliver?.job_number || collect?.job_number || ""}`.trim();
     sub = customerLabel(deliver?.customer_id || collect?.customer_id);
-    meta = [
-      buildAddress(deliver || collect),
-      skipLabel(deliver?.skip_type_id || collect?.skip_type_id),
-      fmtGBP(deliver?.price_inc_vat ?? collect?.price_inc_vat),
-    ].filter(Boolean);
-    completeLabel = "Complete swap";
+    compactMeta = [skipLabel(deliver?.skip_type_id || collect?.skip_type_id), fmtGBP(deliver?.price_inc_vat ?? collect?.price_inc_vat)]
+      .filter(Boolean)
+      .join(" · ");
+    completeLabel = "Complete";
   } else if (isJob) {
     const j = card.job;
-    const isCollection = !!j.collection_date && !j.delivery_actual_date && String(j.collection_date) === String(j.collection_date);
-    title = `${j.job_number || "Job"}${isCollection ? " · Collection" : " · Delivery"}`;
+    const isCollection = String(j.collection_date || "") === String(date);
+    title = `${j.job_number || "Job"} · ${isCollection ? "Collection" : "Delivery"}`;
     sub = customerLabel(j.customer_id);
-    meta = [
-      buildAddress(j),
-      skipLabel(j.skip_type_id),
-      j.payment_type ? `Pay: ${j.payment_type}` : "",
-      Number.isFinite(Number(j.price_inc_vat)) ? fmtGBP(j.price_inc_vat) : "",
-    ].filter(Boolean);
-    completeLabel = isCollection ? "Complete collection" : "Complete delivery";
+    compactMeta = [skipLabel(j.skip_type_id), fmtGBP(j.price_inc_vat), j.site_postcode || ""]
+      .filter(Boolean)
+      .join(" · ");
+    completeLabel = isCollection ? "Collect" : "Deliver";
   }
+
+  const cardStyle = getCardStyle(kind);
 
   return (
     <div
@@ -1288,56 +1349,106 @@ function SchedulerCard({
     >
       <div style={cardTopRow}>
         <div style={{ minWidth: 0 }}>
-          <div style={cardTitle}>{title || "Item"}</div>
-          <div style={cardSub}>{sub || "—"}</div>
+          <div style={smallBadge(kind)}>{kind === "block" ? "Yard" : title.split("·")[1]?.trim() || title.split(" ")[0]}</div>
+          <div style={cardTitleCompact}>{title}</div>
+          <div style={cardSubCompact}>{sub || "—"}</div>
+          {compactMeta ? <div style={cardMetaCompact}>{compactMeta}</div> : null}
+          {!isBlock ? (
+            <div style={cardAddressCompact}>
+              {isSwap ? buildAddress(card.deliver || card.collect) : buildAddress(card.job)}
+            </div>
+          ) : null}
+          {!isBlock && (
+            <div style={cardPhoneCompact}>
+              {isSwap
+                ? customerPhone(card.deliver?.customer_id || card.collect?.customer_id)
+                : customerPhone(card.job?.customer_id)}
+            </div>
+          )}
         </div>
 
-        {!isBlock ? (
-          <button type="button" style={btnTiny} onClick={() => onOpenJob(card)}>
-            Open
-          </button>
-        ) : null}
+        <div style={miniButtonColumn}>
+          {!isBlock ? (
+            <button type="button" style={btnMini} onClick={() => onOpenJob(card)}>
+              Open
+            </button>
+          ) : null}
+          <button type="button" style={btnMini} onClick={onMoveUp}>↑</button>
+          <button type="button" style={btnMini} onClick={onMoveDown}>↓</button>
+        </div>
       </div>
 
       {timing ? (
-        <div style={timingPill}>
+        <div style={timingPillCompact}>
           {timing.arrive} → {timing.depart}
           {Number.isFinite(Number(timing.travel_mins)) ? ` · ${timing.travel_mins}m travel` : ""}
         </div>
       ) : null}
 
-      {customerPhone && !isBlock && (
-        <div style={phoneText}>
-          {isSwap
-            ? customerPhone(card.deliver?.customer_id || card.collect?.customer_id)
-            : customerPhone(card.job?.customer_id)}
-        </div>
-      )}
-
-      {meta.length ? (
-        <div style={metaList}>
-          {meta.map((m, i) => (
-            <div key={`${i}-${m}`} style={metaRow}>{m}</div>
-          ))}
-        </div>
-      ) : null}
-
-      {!isBlock && card.job?.notes ? (
-        <div style={notesBox}>{card.job.notes}</div>
-      ) : null}
-
-      <div style={cardActions}>
-        <button type="button" style={btnTiny} onClick={onMoveUp}>↑</button>
-        <button type="button" style={btnTiny} onClick={onMoveDown}>↓</button>
-        <button type="button" style={btnTiny} onClick={onUnassign}>Unassign</button>
+      <div style={cardActionRowCompact}>
+        <button type="button" style={btnMini} onClick={onUnassign}>
+          Unassign
+        </button>
         {!isBlock ? (
-          <button type="button" style={btnTinyPrimary} onClick={() => onComplete(card)}>
+          <button type="button" style={btnMiniPrimary} onClick={() => onComplete(card)}>
             {completeLabel}
           </button>
         ) : null}
       </div>
     </div>
   );
+}
+
+function getCardStyle(kind) {
+  if (kind === "delivery") {
+    return {
+      ...cardBaseCompact,
+      background: "#eef8f1",
+      border: "1px solid #cfe9d6",
+    };
+  }
+  if (kind === "collection") {
+    return {
+      ...cardBaseCompact,
+      background: "#edf5ff",
+      border: "1px solid #cfe0fb",
+    };
+  }
+  if (kind === "swap") {
+    return {
+      ...cardBaseCompact,
+      background: "#fff4e9",
+      border: "1px solid #f7dfc2",
+    };
+  }
+  return {
+    ...cardBaseCompact,
+    background: "#f6f0ff",
+    border: "1px solid #ddd0fb",
+  };
+}
+
+function smallBadge(kind) {
+  const map = {
+    delivery: { background: "#d9f0df", color: "#2f6d42", text: "Delivery" },
+    collection: { background: "#dceaff", color: "#28579e", text: "Collection" },
+    swap: { background: "#ffe7cf", color: "#9a5a1c", text: "Swap" },
+    block: { background: "#ece2ff", color: "#6b46c1", text: "Return yard" },
+  };
+  const cfg = map[kind] || map.delivery;
+
+  return {
+    display: "inline-block",
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+    padding: "3px 7px",
+    borderRadius: 999,
+    background: cfg.background,
+    color: cfg.color,
+    marginBottom: 6,
+  };
 }
 
 const pageStyle = {
@@ -1355,54 +1466,172 @@ const headerStyle = {
   justifyContent: "space-between",
   gap: 16,
   alignItems: "flex-start",
-  marginBottom: 14,
+  marginBottom: 12,
   flexWrap: "wrap",
 };
 
-const topControls = {
-  display: "grid",
-  gridTemplateColumns: "1.2fr 1fr",
+const topStrip = {
+  marginBottom: 12,
+};
+
+const helpCard = {
+  background: "#fff",
+  border: "1px solid #e5e7eb",
+  borderRadius: 12,
+  padding: 12,
+  boxShadow: "0 2px 10px rgba(0,0,0,0.03)",
+};
+
+const helpHeaderRow = {
+  display: "flex",
+  justifyContent: "space-between",
   gap: 12,
-  alignItems: "start",
-  marginBottom: 14,
+  alignItems: "flex-start",
+  flexWrap: "wrap",
 };
 
-const topControlsLeft = {
-  background: "#fff",
-  border: "1px solid #eee",
-  borderRadius: 12,
-  padding: 12,
-  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+const helpTitle = {
+  fontSize: 16,
+  fontWeight: 800,
+  color: "#111827",
 };
 
-const topControlsRight = {
-  background: "#fff",
-  border: "1px solid #eee",
-  borderRadius: 12,
-  padding: 12,
-  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+const helpSub = {
+  marginTop: 4,
+  fontSize: 12,
+  lineHeight: 1.45,
+  color: "#4b5563",
+  maxWidth: 980,
 };
 
-const timingGrid = {
+const helpSteps = {
+  marginTop: 10,
   display: "grid",
-  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-  gap: 10,
+  gap: 6,
+  fontSize: 12,
+  color: "#374151",
+  background: "#f8fafc",
+  border: "1px solid #e5e7eb",
+  borderRadius: 10,
+  padding: 10,
 };
 
-const timingCell = {
+const compactTimingGrid = {
+  marginTop: 12,
+  display: "grid",
+  gridTemplateColumns: "repeat(8, minmax(90px, 1fr))",
+  gap: 8,
+};
+
+const fieldWrap = {
   display: "flex",
   flexDirection: "column",
-  gap: 6,
+  gap: 4,
 };
 
-const timingLabel = {
+const fieldLabel = {
+  fontSize: 11,
+  color: "#6b7280",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+};
+
+const timingActionsRow = {
+  marginTop: 12,
+  display: "flex",
+  gap: 8,
+  alignItems: "center",
+  flexWrap: "wrap",
+};
+
+const timingStatusText = {
   fontSize: 12,
-  color: "#555",
+  color: "#6b7280",
+};
+
+const paletteRow = {
+  marginBottom: 12,
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 12,
+  flexWrap: "wrap",
+};
+
+const legendRow = {
+  display: "flex",
+  gap: 8,
+  alignItems: "center",
+  flexWrap: "wrap",
+};
+
+const legendChipBase = {
+  fontSize: 11,
+  fontWeight: 700,
+  padding: "5px 9px",
+  borderRadius: 999,
+  border: "1px solid transparent",
+};
+
+const legendChipDelivery = {
+  ...legendChipBase,
+  background: "#eef8f1",
+  borderColor: "#cfe9d6",
+  color: "#2f6d42",
+};
+
+const legendChipCollection = {
+  ...legendChipBase,
+  background: "#edf5ff",
+  borderColor: "#cfe0fb",
+  color: "#28579e",
+};
+
+const legendChipSwap = {
+  ...legendChipBase,
+  background: "#fff4e9",
+  borderColor: "#f7dfc2",
+  color: "#9a5a1c",
+};
+
+const legendChipBlock = {
+  ...legendChipBase,
+  background: "#f6f0ff",
+  borderColor: "#ddd0fb",
+  color: "#6b46c1",
+};
+
+const paletteWrap = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+const paletteTile = {
+  background: "#f6f0ff",
+  border: "1px solid #ddd0fb",
+  borderRadius: 10,
+  padding: "8px 10px",
+  cursor: "grab",
+  minWidth: 140,
+};
+
+const paletteTileTitle = {
+  fontSize: 12,
+  fontWeight: 800,
+  color: "#4c1d95",
+};
+
+const paletteTileSub = {
+  fontSize: 11,
+  color: "#6b7280",
+  marginTop: 2,
 };
 
 const boardWrap = {
   display: "grid",
-  gridTemplateColumns: "360px minmax(0, 1fr)",
+  gridTemplateColumns: "300px minmax(0, 1fr)",
   gap: 12,
   alignItems: "start",
 };
@@ -1421,26 +1650,26 @@ const driversRow = {
   minWidth: "max-content",
 };
 
-const baseLane = {
+const laneBase = {
   background: "#fff",
-  border: "1px solid #eee",
+  border: "1px solid #e5e7eb",
   borderRadius: 12,
-  padding: 12,
-  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+  padding: 10,
+  boxShadow: "0 2px 10px rgba(0,0,0,0.03)",
   minHeight: 120,
 };
 
 const unassignedLane = {
-  ...baseLane,
+  ...laneBase,
   position: "sticky",
   top: 0,
 };
 
 const driverLane = {
-  ...baseLane,
-  width: 380,
-  minWidth: 380,
-  maxWidth: 380,
+  ...laneBase,
+  width: 320,
+  minWidth: 320,
+  maxWidth: 320,
 };
 
 const laneHeader = {
@@ -1448,17 +1677,38 @@ const laneHeader = {
   justifyContent: "space-between",
   gap: 10,
   alignItems: "baseline",
-  marginBottom: 10,
+  marginBottom: 8,
 };
 
-const cardStyle = {
-  background: "#fff",
-  borderRadius: 12,
-  padding: 12,
-  border: "1px solid #e5e7eb",
-  boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+const laneTitle = {
+  fontSize: 15,
+  fontWeight: 800,
+  color: "#111827",
+};
+
+const laneCount = {
+  fontSize: 12,
+  color: "#6b7280",
+  marginTop: 2,
+};
+
+const cardsColumn = {
   display: "grid",
-  gap: 10,
+  gap: 8,
+};
+
+const emptyLaneText = {
+  color: "#6b7280",
+  padding: 10,
+  fontSize: 13,
+};
+
+const cardBaseCompact = {
+  borderRadius: 10,
+  padding: 9,
+  display: "grid",
+  gap: 8,
+  boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
 };
 
 const cardTopRow = {
@@ -1468,126 +1718,143 @@ const cardTopRow = {
   alignItems: "flex-start",
 };
 
-const cardTitle = {
-  fontSize: 14,
+const cardTitleCompact = {
+  fontSize: 13,
   fontWeight: 800,
   color: "#111827",
+  lineHeight: 1.25,
+};
+
+const cardSubCompact = {
+  fontSize: 12,
+  color: "#374151",
+  marginTop: 1,
+  lineHeight: 1.25,
+};
+
+const cardMetaCompact = {
+  fontSize: 11,
+  color: "#4b5563",
+  marginTop: 3,
+  lineHeight: 1.25,
+};
+
+const cardAddressCompact = {
+  fontSize: 11,
+  color: "#6b7280",
+  marginTop: 4,
   lineHeight: 1.3,
 };
 
-const cardSub = {
-  fontSize: 13,
-  color: "#4b5563",
-  marginTop: 4,
-  lineHeight: 1.35,
+const cardPhoneCompact = {
+  fontSize: 11,
+  color: "#2563eb",
+  marginTop: 3,
 };
 
-const metaList = {
-  display: "grid",
+const miniButtonColumn = {
+  display: "flex",
+  flexDirection: "column",
   gap: 4,
+  alignItems: "flex-end",
 };
 
-const metaRow = {
-  fontSize: 12,
-  color: "#4b5563",
-  lineHeight: 1.4,
-};
-
-const notesBox = {
-  fontSize: 12,
-  color: "#374151",
-  background: "#f9fafb",
-  border: "1px solid #e5e7eb",
-  borderRadius: 8,
-  padding: 8,
-  lineHeight: 1.4,
-};
-
-const timingPill = {
-  fontSize: 12,
+const timingPillCompact = {
+  fontSize: 11,
   color: "#0f172a",
-  background: "#eef6ff",
-  border: "1px solid #bfdbfe",
+  background: "rgba(255,255,255,0.75)",
+  border: "1px solid rgba(148,163,184,0.35)",
   borderRadius: 999,
-  padding: "6px 10px",
+  padding: "4px 8px",
   width: "fit-content",
 };
 
-const phoneText = {
-  fontSize: 12,
-  color: "#2563eb",
-};
-
-const cardActions = {
+const cardActionRowCompact = {
   display: "flex",
-  gap: 8,
+  gap: 6,
   flexWrap: "wrap",
 };
 
-const input = {
+const inputCompact = {
   width: "100%",
   border: "1px solid #d1d5db",
-  borderRadius: 10,
-  padding: "10px 12px",
-  fontSize: 14,
+  borderRadius: 8,
+  padding: "8px 10px",
+  fontSize: 13,
   outline: "none",
   background: "#fff",
 };
 
 const btnPrimary = {
   border: "none",
-  borderRadius: 10,
-  padding: "10px 14px",
+  borderRadius: 9,
+  padding: "9px 12px",
   background: "#111827",
   color: "#fff",
   fontWeight: 700,
   cursor: "pointer",
+  fontSize: 13,
 };
 
 const btnPrimaryAlt = {
   border: "none",
-  borderRadius: 10,
-  padding: "10px 14px",
+  borderRadius: 9,
+  padding: "9px 12px",
   background: "#2563eb",
   color: "#fff",
   fontWeight: 700,
   cursor: "pointer",
+  fontSize: 13,
 };
 
 const btnSecondary = {
   border: "1px solid #d1d5db",
-  borderRadius: 10,
-  padding: "10px 14px",
+  borderRadius: 9,
+  padding: "9px 12px",
   background: "#fff",
   color: "#111827",
   fontWeight: 700,
   cursor: "pointer",
+  fontSize: 13,
 };
 
-const btnTiny = {
+const btnGhost = {
   border: "1px solid #d1d5db",
-  borderRadius: 8,
-  padding: "7px 10px",
+  borderRadius: 9,
+  padding: "8px 11px",
   background: "#fff",
   color: "#111827",
-  fontSize: 12,
-  fontWeight: 700,
+  fontWeight: 600,
   cursor: "pointer",
+  fontSize: 12,
 };
 
-const btnTinyPrimary = {
+const btnMini = {
+  border: "1px solid rgba(0,0,0,0.12)",
+  borderRadius: 7,
+  padding: "5px 7px",
+  background: "rgba(255,255,255,0.85)",
+  color: "#111827",
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: "pointer",
+  lineHeight: 1,
+};
+
+const btnMiniPrimary = {
   border: "none",
-  borderRadius: 8,
-  padding: "7px 10px",
+  borderRadius: 7,
+  padding: "6px 8px",
   background: "#111827",
   color: "#fff",
-  fontSize: 12,
+  fontSize: 11,
   fontWeight: 700,
   cursor: "pointer",
+  lineHeight: 1,
 };
 
 const alertError = {
-  marginBottom: 14,
+  marginBottom: 12,
   padding: "10px 12px",
   background: "#fff1f2",
   border: "1px solid #fecdd3",
