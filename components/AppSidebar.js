@@ -12,7 +12,7 @@ const NAV_SECTIONS = [
     title: "Jobs",
     items: [
       { href: "/app/jobs", label: "Jobs", match: ["/app/jobs", "/app/jobs/[id]"] },
-      { href: "/app/jobs/book", label: "Book Job", match: ["/app/jobs/book"] },
+      { href: "/app/jobs/book", label: "Book A Skip", match: ["/app/jobs/book"] },
       { href: "/app/jobs/book-swap", label: "Book Swap", match: ["/app/jobs/book-swap"] },
       { href: "/app/jobs/scheduler", label: "Scheduler", match: ["/app/jobs/scheduler"] },
     ],
