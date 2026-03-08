@@ -1,4 +1,3 @@
-// pages/driver/index.js
 import { useRouter } from "next/router";
 import { useEffect, useMemo, useState } from "react";
 
@@ -18,12 +17,42 @@ export default function DriverLoginPage() {
   const router = useRouter();
   const today = useMemo(() => ymdTodayLocal(), []);
 
+  const [checkingSession, setCheckingSession] = useState(true);
   const [loginCode, setLoginCode] = useState("");
   const [password, setPassword] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkExistingSession() {
+      try {
+        const res = await fetch(`/api/driver/jobs?date=${encodeURIComponent(today)}`, {
+          method: "GET",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (!cancelled && res.ok) {
+          router.replace("/driver/menu");
+          return;
+        }
+      } catch (_) {
+        // ignore
+      } finally {
+        if (!cancelled) setCheckingSession(false);
+      }
+    }
+
+    checkExistingSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router, today]);
 
   useEffect(() => {
     if (router?.query?.logged_out) setInfo("Logged out.");
@@ -70,16 +99,23 @@ export default function DriverLoginPage() {
         );
       }
 
-      if (!verify.ok) {
-        setInfo("Logged in, but jobs could not be loaded yet.");
-      }
-
       router.push("/driver/menu");
     } catch (e2) {
       setErr(e2?.message || "Login failed");
     } finally {
       setLoading(false);
     }
+  }
+
+  if (checkingSession) {
+    return (
+      <main style={styles.page}>
+        <div style={styles.card}>
+          <h1 style={styles.h1}>Driver login</h1>
+          <p style={styles.sub}>Checking session…</p>
+        </div>
+      </main>
+    );
   }
 
   return (
