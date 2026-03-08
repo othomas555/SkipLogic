@@ -561,7 +561,7 @@ export default function DriversPage() {
                     </label>
 
                     <label style={labelStyle}>
-                      Driver login email *
+                      Driver login code *
                       <input value={row.email ?? ""} onChange={(e) => setEdit(d.id, "email", e.target.value)} style={inputStyle} />
                     </label>
 
@@ -668,8 +668,8 @@ export default function DriversPage() {
                       </div>
 
                       <div style={{ marginTop: 8, color: "#666", fontSize: 12, lineHeight: 1.5 }}>
-                        Drivers sign in with <b>email + password</b>.<br />
-                        Driver code is optional and is for your own internal reference only.
+                       Drivers sign in with login code + password.
+                       Example login: aburnell
                       </div>
                     </div>
                   </div>
