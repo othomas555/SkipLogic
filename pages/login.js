@@ -1,6 +1,6 @@
 // pages/api/driver/jobs.js
-import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
-import { getDriverFromSession } from "../../../lib/driverAuth";
+import { getSupabaseAdmin } from "../../lib/supabaseAdmin";
+import { getDriverFromSession } from "../../lib/driverAuth";
 
 function ymd(d) {
   const x = new Date(d);
