@@ -178,6 +178,7 @@ export default function SchedulerPage() {
   const [jobs, setJobs] = useState([]);
 
   const [rolling, setRolling] = useState(false);
+  const [savingRuns, setSavingRuns] = useState(false);
 
   const [yardPostcode, setYardPostcode] = useState("");
   const [startTime, setStartTime] = useState("08:00");
@@ -720,6 +721,93 @@ export default function SchedulerPage() {
     }
   }
 
+  async function saveRuns() {
+    if (!subscriberId) return;
+    setErr("");
+    setSavingRuns(true);
+
+    try {
+      for (const d of drivers || []) {
+        const driverId = String(d.id);
+        const list = cardsByDriverId[driverId] || [];
+
+        const runs = [];
+        let currentRun = [];
+
+        for (const item of list) {
+          if (item.type === "job") {
+            currentRun.push({
+              type: "job",
+              job_id: item.job.id,
+            });
+            continue;
+          }
+
+          if (item.type === "swap") {
+            if (item.collect?.id) {
+              currentRun.push({
+                type: "job",
+                job_id: item.collect.id,
+              });
+            }
+            if (item.deliver?.id) {
+              currentRun.push({
+                type: "job",
+                job_id: item.deliver.id,
+              });
+            }
+            continue;
+          }
+
+          if (item.type === "block" && item.block_type === "return_yard") {
+            currentRun.push({
+              type: "return_yard",
+            });
+
+            if (currentRun.length) {
+              runs.push(currentRun);
+            }
+            currentRun = [];
+          }
+        }
+
+        if (currentRun.length) {
+          runs.push(currentRun);
+        }
+
+        await supabase
+          .from("driver_runs")
+          .delete()
+          .eq("subscriber_id", subscriberId)
+          .eq("driver_id", driverId)
+          .eq("run_date", date);
+
+        for (let i = 0; i < runs.length; i += 1) {
+          const { error } = await supabase.from("driver_runs").insert({
+            subscriber_id: subscriberId,
+            driver_id: driverId,
+            run_date: date,
+            run_number: i + 1,
+            status: "planned",
+            items: runs[i],
+          });
+
+          if (error) {
+            console.error("Error saving driver run:", error);
+            throw new Error(error.message || "Failed to save driver runs");
+          }
+        }
+      }
+
+      alert("Runs saved.");
+      setSavingRuns(false);
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to save runs");
+      setSavingRuns(false);
+    }
+  }
+
   function onDragStart(e, card) {
     e.dataTransfer.setData("application/json", JSON.stringify(card));
   }
@@ -1079,8 +1167,9 @@ export default function SchedulerPage() {
             <div>
               <div style={helpTitle}>Run timings</div>
               <div style={helpSub}>
-                Set yard postcode, driver start time, and average task minutes. Then build each run by dragging jobs and
+                Set yard postcode, driver start time, and average task minutes. Build each run by dragging jobs and
                 <strong> Return to yard</strong> blocks into the driver columns in the order the day should happen.
+                Return to yard means the end of a run. Then press <strong>Save Runs</strong> so the driver can see the runs you built.
               </div>
             </div>
             <button
@@ -1096,9 +1185,11 @@ export default function SchedulerPage() {
             <div style={helpSteps}>
               <div>1. Drag deliveries, collections, swaps, and return-to-yard blocks into each driver lane.</div>
               <div>2. Put them in the exact running order. Use ↑ and ↓ to fine tune.</div>
-              <div>3. Set average minutes for checks, delivery, collection, swap, and return-to-yard.</div>
-              <div>4. Press <strong>Get timings</strong>. The scheduler starts from the driver start time, adds checks, then travel from yard to first stop, then service time, then travel to the next item, and so on.</div>
-              <div>5. Use <strong>Send messages</strong> once the run looks right.</div>
+              <div>3. A return-to-yard block ends that run. Anything after it becomes the next run.</div>
+              <div>4. Set average minutes for checks, delivery, collection, swap, and return-to-yard.</div>
+              <div>5. Press <strong>Get timings</strong>. The scheduler starts from the driver start time, adds checks, then travel from yard to first stop, then service time, then travel to the next item, and so on.</div>
+              <div>6. Press <strong>Save Runs</strong> to write the runs into the driver run table.</div>
+              <div>7. Use <strong>Send messages</strong> once the run looks right.</div>
             </div>
           ) : null}
 
@@ -1147,6 +1238,15 @@ export default function SchedulerPage() {
           <div style={timingActionsRow}>
             <button type="button" style={btnPrimaryAlt} onClick={getTimings} disabled={computing}>
               {computing ? "Getting timings…" : "Get timings"}
+            </button>
+
+            <button
+              type="button"
+              style={btnPrimary}
+              onClick={saveRuns}
+              disabled={savingRuns}
+            >
+              {savingRuns ? "Saving runs…" : "Save Runs"}
             </button>
 
             <button
@@ -1631,7 +1731,7 @@ const paletteTileSub = {
 
 const boardWrap = {
   display: "grid",
-  gridTemplateColumns: "300px minmax(0, 1fr)",
+  gridTemplateColumns: "280px minmax(0, 1fr)",
   gap: 12,
   alignItems: "start",
 };
@@ -1667,9 +1767,9 @@ const unassignedLane = {
 
 const driverLane = {
   ...laneBase,
-  width: 320,
-  minWidth: 320,
-  maxWidth: 320,
+  width: 280,
+  minWidth: 280,
+  maxWidth: 280,
 };
 
 const laneHeader = {
