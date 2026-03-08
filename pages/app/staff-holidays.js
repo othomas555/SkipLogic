@@ -1,7 +1,83 @@
-import { useEffect, useState } from "react";
+// pages/app/staff-holidays.js
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
 import { useAuthProfile } from "../../lib/useAuthProfile";
+
+function parseYmd(ymd) {
+  if (!ymd) return null;
+  const [y, m, d] = String(ymd).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+
+function formatDate(ymd) {
+  const dt = parseYmd(ymd);
+  if (!dt) return ymd || "";
+  return dt.toLocaleDateString("en-GB");
+}
+
+function countWorkingDaysInclusive(startYmd, endYmd) {
+  const start = parseYmd(startYmd);
+  const end = parseYmd(endYmd);
+  if (!start || !end) return 0;
+  if (end < start) return 0;
+
+  let count = 0;
+  const cur = new Date(start);
+
+  while (cur <= end) {
+    const day = cur.getDay(); // 0 = Sun, 6 = Sat
+    if (day !== 0 && day !== 6) {
+      count += 1;
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  return count;
+}
+
+function holidayYearRange(staffMember, referenceDateYmd) {
+  const ref = parseYmd(referenceDateYmd) || new Date();
+  const holidayStart = parseYmd(staffMember?.holiday_year_start);
+
+  if (!holidayStart) {
+    const year = ref.getFullYear();
+    return {
+      start: `${year}-01-01`,
+      end: `${year}-12-31`,
+      label: `${year}`,
+    };
+  }
+
+  const startMonth = holidayStart.getMonth();
+  const startDay = holidayStart.getDate();
+
+  let year = ref.getFullYear();
+  const thisYearsStart = new Date(year, startMonth, startDay);
+
+  if (ref < thisYearsStart) {
+    year -= 1;
+  }
+
+  const rangeStart = new Date(year, startMonth, startDay);
+  const nextRangeStart = new Date(year + 1, startMonth, startDay);
+  const rangeEnd = new Date(nextRangeStart);
+  rangeEnd.setDate(rangeEnd.getDate() - 1);
+
+  const toYmd = (dt) => {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, "0");
+    const d = String(dt.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
+  return {
+    start: toYmd(rangeStart),
+    end: toYmd(rangeEnd),
+    label: `${formatDate(toYmd(rangeStart))} to ${formatDate(toYmd(rangeEnd))}`,
+  };
+}
 
 export default function StaffHolidaysPage() {
   const router = useRouter();
@@ -17,7 +93,6 @@ export default function StaffHolidaysPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Form state
   const [selectedStaffId, setSelectedStaffId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -33,6 +108,7 @@ export default function StaffHolidaysPage() {
     if (!checking && subscriberId) {
       loadData();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, subscriberId]);
 
   async function loadData() {
@@ -41,10 +117,9 @@ export default function StaffHolidaysPage() {
       setErrorMsg("");
       setSuccessMsg("");
 
-      // Load staff for this subscriber
       const { data: staffRows, error: staffError } = await supabase
         .from("staff")
-        .select("id, full_name, is_driver")
+        .select("id, full_name, role, annual_leave_allowance, holiday_year_start")
         .eq("subscriber_id", subscriberId)
         .order("full_name", { ascending: true });
 
@@ -53,10 +128,9 @@ export default function StaffHolidaysPage() {
         throw new Error("Could not load staff list");
       }
 
-      // Load holidays
       const { data: holidayRows, error: holidayError } = await supabase
         .from("staff_holidays")
-        .select("id, staff_id, start_date, end_date, status, reason, created_at")
+        .select("id, staff_id, start_date, end_date, status, reason")
         .eq("subscriber_id", subscriberId)
         .order("start_date", { ascending: false });
 
@@ -84,6 +158,17 @@ export default function StaffHolidaysPage() {
       return;
     }
 
+    if (endDate < startDate) {
+      setErrorMsg("End date cannot be before start date.");
+      return;
+    }
+
+    const workingDays = countWorkingDaysInclusive(startDate, endDate);
+    if (workingDays <= 0) {
+      setErrorMsg("That range contains no working days. Weekends are not counted.");
+      return;
+    }
+
     try {
       setSaving(true);
 
@@ -93,8 +178,7 @@ export default function StaffHolidaysPage() {
         start_date: startDate,
         end_date: endDate,
         reason: reason || null,
-        status: "pending",
-        created_by: user?.id || null,
+        status: "approved",
       });
 
       if (error) {
@@ -102,14 +186,12 @@ export default function StaffHolidaysPage() {
         throw new Error(error.message || "Could not create holiday");
       }
 
-      setSuccessMsg("Holiday request added.");
-      // Reset form
+      setSuccessMsg(`Holiday added (${workingDays} working day${workingDays === 1 ? "" : "s"}).`);
       setSelectedStaffId("");
       setStartDate("");
       setEndDate("");
       setReason("");
 
-      // Reload list
       await loadData();
     } catch (err) {
       setErrorMsg(err.message || "Something went wrong saving the holiday.");
@@ -128,10 +210,9 @@ export default function StaffHolidaysPage() {
         .from("staff_holidays")
         .update({
           status: newStatus,
-          decided_at: new Date().toISOString(),
-          decided_by: user?.id || null,
         })
-        .eq("id", id);
+        .eq("id", id)
+        .eq("subscriber_id", subscriberId);
 
       if (error) {
         console.error("Error updating holiday status", error);
@@ -147,20 +228,95 @@ export default function StaffHolidaysPage() {
     }
   }
 
-  function formatDate(d) {
-    if (!d) return "";
-    // d will be "YYYY-MM-DD" from Postgres for a date column
+  async function deleteHoliday(id) {
+    const ok = window.confirm("Delete this holiday record?");
+    if (!ok) return;
+
+    setErrorMsg("");
+    setSuccessMsg("");
+    setUpdatingId(id);
+
     try {
-      return new Date(d).toLocaleDateString();
-    } catch {
-      return d;
+      const { error } = await supabase
+        .from("staff_holidays")
+        .delete()
+        .eq("id", id)
+        .eq("subscriber_id", subscriberId);
+
+      if (error) {
+        console.error("Error deleting holiday", error);
+        throw new Error(error.message || "Could not delete holiday");
+      }
+
+      setSuccessMsg("Holiday deleted.");
+      await loadData();
+    } catch (err) {
+      setErrorMsg(err.message || "Something went wrong deleting the holiday.");
+    } finally {
+      setUpdatingId(null);
     }
   }
 
-  const staffById = staff.reduce((acc, s) => {
-    acc[s.id] = s;
+  const staffById = useMemo(() => {
+    const acc = {};
+    for (const s of staff) {
+      acc[s.id] = s;
+    }
     return acc;
-  }, {});
+  }, [staff]);
+
+  const holidaySummariesByStaffId = useMemo(() => {
+    const map = {};
+
+    for (const s of staff) {
+      const year = holidayYearRange(s, new Date().toISOString().slice(0, 10));
+      map[s.id] = {
+        allowance: Number(s.annual_leave_allowance ?? 28) || 28,
+        yearStart: year.start,
+        yearEnd: year.end,
+        yearLabel: year.label,
+        approvedDaysTaken: 0,
+        pendingDays: 0,
+        remaining: Number(s.annual_leave_allowance ?? 28) || 28,
+      };
+    }
+
+    for (const h of holidays) {
+      const staffMember = staffById[h.staff_id];
+      if (!staffMember) continue;
+
+      const summary = map[h.staff_id];
+      if (!summary) continue;
+
+      if (!h.start_date || !h.end_date) continue;
+
+      if (h.end_date < summary.yearStart || h.start_date > summary.yearEnd) {
+        continue;
+      }
+
+      const clippedStart = h.start_date < summary.yearStart ? summary.yearStart : h.start_date;
+      const clippedEnd = h.end_date > summary.yearEnd ? summary.yearEnd : h.end_date;
+
+      const days = countWorkingDaysInclusive(clippedStart, clippedEnd);
+
+      if (h.status === "approved") {
+        summary.approvedDaysTaken += days;
+      } else if (h.status === "pending") {
+        summary.pendingDays += days;
+      }
+    }
+
+    for (const staffId of Object.keys(map)) {
+      map[staffId].remaining = map[staffId].allowance - map[staffId].approvedDaysTaken;
+    }
+
+    return map;
+  }, [staff, holidays, staffById]);
+
+  const previewWorkingDays =
+    startDate && endDate && endDate >= startDate
+      ? countWorkingDaysInclusive(startDate, endDate)
+      : 0;
 
   if (checking) {
     return <div style={{ padding: 20 }}>Checking login…</div>;
@@ -175,69 +331,49 @@ export default function StaffHolidaysPage() {
   }
 
   return (
-    <div style={{ padding: 20, maxWidth: 900, margin: "0 auto" }}>
+    <div style={{ padding: 20, maxWidth: 1200, margin: "0 auto" }}>
       <h1>Staff Holidays</h1>
 
       {errorMsg && (
-        <div
-          style={{
-            backgroundColor: "#ffe5e5",
-            color: "#b00020",
-            padding: "10px 15px",
-            marginBottom: 15,
-            borderRadius: 4,
-          }}
-        >
+        <div style={errorStyle}>
           {errorMsg}
         </div>
       )}
 
       {successMsg && (
-        <div
-          style={{
-            backgroundColor: "#e5ffe9",
-            color: "#1b5e20",
-            padding: "10px 15px",
-            marginBottom: 15,
-            borderRadius: 4,
-          }}
-        >
+        <div style={successStyle}>
           {successMsg}
         </div>
       )}
 
-      {/* Add holiday form */}
-      <section
-        style={{
-          border: "1px solid #ddd",
-          padding: 16,
-          borderRadius: 4,
-          marginBottom: 24,
-        }}
-      >
+      <section style={cardStyle}>
         <h2 style={{ marginTop: 0 }}>Add Holiday</h2>
+
+        <p style={{ marginTop: 0, color: "#555" }}>
+          Working days only are counted. Weekends are excluded automatically.
+        </p>
+
         <form onSubmit={handleAddHoliday}>
-          <div style={{ marginBottom: 10 }}>
+          <div style={{ marginBottom: 12 }}>
             <label>
               Staff member:
               <br />
               <select
                 value={selectedStaffId}
                 onChange={(e) => setSelectedStaffId(e.target.value)}
-                style={{ padding: 6, minWidth: 250 }}
+                style={{ ...inputStyle, minWidth: 280 }}
               >
                 <option value="">Select staff…</option>
                 {staff.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {s.full_name}
-                    {s.is_driver ? " (Driver)" : ""}
+                    {s.full_name}{s.role ? ` (${s.role})` : ""}
                   </option>
                 ))}
               </select>
             </label>
           </div>
 
-          <div style={{ marginBottom: 10, display: "flex", gap: 16 }}>
+          <div style={{ marginBottom: 12, display: "flex", gap: 16, flexWrap: "wrap" }}>
             <label>
               Start date:
               <br />
@@ -245,7 +381,7 @@ export default function StaffHolidaysPage() {
                 type="date"
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
-                style={{ padding: 6 }}
+                style={inputStyle}
               />
             </label>
 
@@ -256,12 +392,18 @@ export default function StaffHolidaysPage() {
                 type="date"
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
-                style={{ padding: 6 }}
+                style={inputStyle}
               />
             </label>
           </div>
 
-          <div style={{ marginBottom: 10 }}>
+          <div style={{ marginBottom: 12, color: "#444", fontSize: 14 }}>
+            {previewWorkingDays > 0
+              ? `This booking will use ${previewWorkingDays} working day${previewWorkingDays === 1 ? "" : "s"}.`
+              : "Select a valid date range to see working days used."}
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
             <label>
               Reason / notes (optional):
               <br />
@@ -269,7 +411,7 @@ export default function StaffHolidaysPage() {
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 rows={3}
-                style={{ width: "100%", padding: 6 }}
+                style={{ ...inputStyle, width: "100%", minHeight: 90 }}
               />
             </label>
           </div>
@@ -277,19 +419,60 @@ export default function StaffHolidaysPage() {
           <button
             type="submit"
             disabled={saving || !subscriberId}
-            style={{
-              padding: "8px 16px",
-              cursor: saving ? "wait" : "pointer",
-            }}
+            style={primaryBtn}
           >
             {saving ? "Saving…" : "Add Holiday"}
           </button>
         </form>
       </section>
 
-      {/* Holiday list */}
-      <section>
+      <section style={{ ...cardStyle, marginTop: 24 }}>
+        <h2 style={{ marginTop: 0 }}>Leave Balances</h2>
+
+        {loading ? (
+          <div>Loading balances…</div>
+        ) : staff.length === 0 ? (
+          <div>No staff found yet.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 850 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Staff</th>
+                  <th style={thStyle}>Role</th>
+                  <th style={thStyle}>Holiday Year</th>
+                  <th style={thStyle}>Allowance</th>
+                  <th style={thStyle}>Approved Taken</th>
+                  <th style={thStyle}>Pending</th>
+                  <th style={thStyle}>Remaining</th>
+                </tr>
+              </thead>
+              <tbody>
+                {staff.map((s) => {
+                  const summary = holidaySummariesByStaffId[s.id];
+                  return (
+                    <tr key={s.id}>
+                      <td style={tdStyle}>{s.full_name}</td>
+                      <td style={tdStyle}>{s.role || ""}</td>
+                      <td style={tdStyle}>{summary?.yearLabel || ""}</td>
+                      <td style={tdStyle}>{summary?.allowance ?? 28}</td>
+                      <td style={tdStyle}>{summary?.approvedDaysTaken ?? 0}</td>
+                      <td style={tdStyle}>{summary?.pendingDays ?? 0}</td>
+                      <td style={tdStyle}>
+                        <strong>{summary?.remaining ?? 28}</strong>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section style={{ marginTop: 24 }}>
         <h2>Holiday Requests / Booked Days Off</h2>
+
         {loading ? (
           <div>Loading holidays…</div>
         ) : holidays.length === 0 ? (
@@ -300,56 +483,72 @@ export default function StaffHolidaysPage() {
               style={{
                 borderCollapse: "collapse",
                 width: "100%",
-                minWidth: 600,
+                minWidth: 950,
               }}
             >
               <thead>
                 <tr>
                   <th style={thStyle}>Staff</th>
+                  <th style={thStyle}>Role</th>
                   <th style={thStyle}>Start</th>
                   <th style={thStyle}>End</th>
+                  <th style={thStyle}>Working Days</th>
                   <th style={thStyle}>Status</th>
                   <th style={thStyle}>Reason</th>
                   <th style={thStyle}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {holidays.map((h) => (
-                  <tr key={h.id}>
-                    <td style={tdStyle}>
-                      {staffById[h.staff_id]?.full_name || "Unknown"}
-                    </td>
-                    <td style={tdStyle}>{formatDate(h.start_date)}</td>
-                    <td style={tdStyle}>{formatDate(h.end_date)}</td>
-                    <td style={tdStyle}>{h.status}</td>
-                    <td style={tdStyle}>{h.reason || ""}</td>
-                    <td style={tdStyle}>
-                      <button
-                        type="button"
-                        onClick={() => updateStatus(h.id, "approved")}
-                        disabled={updatingId === h.id}
-                        style={{ marginRight: 6 }}
-                      >
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => updateStatus(h.id, "rejected")}
-                        disabled={updatingId === h.id}
-                        style={{ marginRight: 6 }}
-                      >
-                        Reject
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => updateStatus(h.id, "cancelled")}
-                        disabled={updatingId === h.id}
-                      >
-                        Cancel
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {holidays.map((h) => {
+                  const staffMember = staffById[h.staff_id];
+                  const workingDays = countWorkingDaysInclusive(h.start_date, h.end_date);
+
+                  return (
+                    <tr key={h.id}>
+                      <td style={tdStyle}>{staffMember?.full_name || "Unknown"}</td>
+                      <td style={tdStyle}>{staffMember?.role || ""}</td>
+                      <td style={tdStyle}>{formatDate(h.start_date)}</td>
+                      <td style={tdStyle}>{formatDate(h.end_date)}</td>
+                      <td style={tdStyle}>{workingDays}</td>
+                      <td style={tdStyle}>{h.status}</td>
+                      <td style={tdStyle}>{h.reason || ""}</td>
+                      <td style={tdStyle}>
+                        <button
+                          type="button"
+                          onClick={() => updateStatus(h.id, "approved")}
+                          disabled={updatingId === h.id}
+                          style={{ ...smallBtn, marginRight: 6 }}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateStatus(h.id, "rejected")}
+                          disabled={updatingId === h.id}
+                          style={{ ...smallBtn, marginRight: 6 }}
+                        >
+                          Reject
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateStatus(h.id, "cancelled")}
+                          disabled={updatingId === h.id}
+                          style={{ ...smallBtn, marginRight: 6 }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteHoliday(h.id)}
+                          disabled={updatingId === h.id}
+                          style={deleteBtn}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -359,13 +558,72 @@ export default function StaffHolidaysPage() {
   );
 }
 
+const cardStyle = {
+  border: "1px solid #ddd",
+  padding: 16,
+  borderRadius: 4,
+  background: "#fff",
+};
+
+const inputStyle = {
+  padding: 8,
+  borderRadius: 4,
+  border: "1px solid #ccc",
+};
+
+const errorStyle = {
+  backgroundColor: "#ffe5e5",
+  color: "#b00020",
+  padding: "10px 15px",
+  marginBottom: 15,
+  borderRadius: 4,
+};
+
+const successStyle = {
+  backgroundColor: "#e5ffe9",
+  color: "#1b5e20",
+  padding: "10px 15px",
+  marginBottom: 15,
+  borderRadius: 4,
+};
+
+const primaryBtn = {
+  padding: "10px 16px",
+  borderRadius: 4,
+  border: "none",
+  background: "#111827",
+  color: "#fff",
+  cursor: "pointer",
+};
+
+const smallBtn = {
+  padding: "6px 10px",
+  borderRadius: 4,
+  border: "1px solid #ccc",
+  background: "#fff",
+  cursor: "pointer",
+  fontSize: 12,
+};
+
+const deleteBtn = {
+  padding: "6px 10px",
+  borderRadius: 4,
+  border: "1px solid #f5b3b3",
+  background: "#ffe5e5",
+  cursor: "pointer",
+  fontSize: 12,
+};
+
 const thStyle = {
   borderBottom: "1px solid #ccc",
   textAlign: "left",
-  padding: "6px 8px",
+  padding: "8px 10px",
+  fontSize: 12,
 };
 
 const tdStyle = {
   borderBottom: "1px solid #eee",
-  padding: "6px 8px",
+  padding: "8px 10px",
+  fontSize: 12,
+  verticalAlign: "top",
 };
