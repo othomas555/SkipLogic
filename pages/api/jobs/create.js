@@ -1,4 +1,3 @@
-// pages/api/jobs/create.js
 import { randomUUID } from "crypto";
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
@@ -34,18 +33,73 @@ function isWithinGrace(subscription_status, grace_ends_at) {
 }
 
 function isBillingAllowedRow(subRow) {
-  // Assumption (explicit): existing legacy subscribers may have null subscription_status.
-  // We allow them for now so you don't accidentally lock older tenants during rollout.
   if (!subRow) return false;
   if (subRow.locked_at) return false;
 
   const s = subRow.subscription_status;
 
-  if (!s) return true; // legacy / not yet onboarded
+  if (!s) return true;
   if (s === "active" || s === "trialing") return true;
   if (isWithinGrace(s, subRow.grace_ends_at)) return true;
 
   return false;
+}
+
+function buildAddress(jobLike) {
+  return [
+    jobLike?.site_address_line1,
+    jobLike?.site_address_line2,
+    jobLike?.site_town,
+    jobLike?.site_postcode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+async function geocodeAddress(address) {
+  if (!address) return null;
+
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) {
+    console.warn("jobs/create geocode skipped: GOOGLE_MAPS_API_KEY missing");
+    return null;
+  }
+
+  try {
+    const url =
+      "https://maps.googleapis.com/maps/api/geocode/json?address=" +
+      encodeURIComponent(address) +
+      "&key=" +
+      encodeURIComponent(apiKey);
+
+    const resp = await fetch(url);
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      console.warn("jobs/create geocode http failed:", resp.status);
+      return null;
+    }
+
+    if (data.status !== "OK" || !Array.isArray(data.results) || !data.results.length) {
+      console.warn("jobs/create geocode failed:", data.status || "UNKNOWN");
+      return null;
+    }
+
+    const loc = data.results[0]?.geometry?.location;
+    if (!loc || typeof loc.lat !== "number" || typeof loc.lng !== "number") {
+      console.warn("jobs/create geocode missing geometry.location");
+      return null;
+    }
+
+    return {
+      lat: loc.lat,
+      lng: loc.lng,
+      formatted_address: data.results[0]?.formatted_address || "",
+    };
+  } catch (err) {
+    console.warn("jobs/create geocode unexpected:", err?.message || err);
+    return null;
+  }
 }
 
 export default async function handler(req, res) {
@@ -119,7 +173,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Only enforce if a limit is configured
     if (activeJobsLimit != null) {
       const { count, error: cntErr } = await supabase
         .from("jobs")
@@ -137,7 +190,6 @@ export default async function handler(req, res) {
 
       const activeJobs = Number(count || 0);
 
-      // New job will be active (your DB status values: booked/delivered/collected)
       if (activeJobs >= activeJobsLimit) {
         return res.status(409).json({
           ok: false,
@@ -150,21 +202,20 @@ export default async function handler(req, res) {
     }
 
     // -------------------------------------------------------------------------
-    // Existing job creation logic (unchanged below)
+    // Existing job creation logic
     // -------------------------------------------------------------------------
     const customer_id = asText(body.customer_id);
     const skip_type_id = asText(body.skip_type_id);
     const payment_type = asText(body.payment_type);
     const price_inc_vat = clampMoney(body.price_inc_vat);
 
-    const create_invoice = body.create_invoice === false ? false : true; // default true
+    const create_invoice = body.create_invoice === false ? false : true;
 
     if (!customer_id) return res.status(400).json({ ok: false, error: "customer_id is required" });
     if (!skip_type_id) return res.status(400).json({ ok: false, error: "skip_type_id is required" });
     if (!payment_type) return res.status(400).json({ ok: false, error: "payment_type is required" });
     if (!(price_inc_vat > 0)) return res.status(400).json({ ok: false, error: "price_inc_vat must be > 0" });
 
-    // CREDIT OVERRIDE: only allow uuid or null; if reason exists but token missing, server generates uuid
     const credit_override_reason = asText(body.credit_override_reason) || null;
     let credit_override_token = uuidOrNull(body.credit_override_token);
 
@@ -201,7 +252,11 @@ export default async function handler(req, res) {
       credit_override_reason,
     };
 
-    const { data: job, error: insertError } = await supabase.from("jobs").insert([insertPayload]).select("*").single();
+    const { data: job, error: insertError } = await supabase
+      .from("jobs")
+      .insert([insertPayload])
+      .select("*")
+      .single();
 
     if (insertError || !job) {
       console.error("jobs/create insert error:", insertError);
@@ -212,6 +267,35 @@ export default async function handler(req, res) {
         details: insertError?.details || null,
         hint: insertError?.hint || null,
       });
+    }
+
+    // -------------------------------------------------------------------------
+    // NEW: geocode newly created jobs
+    // -------------------------------------------------------------------------
+    let geocode = null;
+    try {
+      const address = buildAddress(job);
+      geocode = await geocodeAddress(address);
+
+      if (geocode) {
+        const { error: geoUpdateErr } = await supabase
+          .from("jobs")
+          .update({
+            site_lat: geocode.lat,
+            site_lng: geocode.lng,
+          })
+          .eq("id", job.id)
+          .eq("subscriber_id", subscriberId);
+
+        if (geoUpdateErr) {
+          console.warn("jobs/create geocode update failed:", geoUpdateErr.message);
+        } else {
+          job.site_lat = geocode.lat;
+          job.site_lng = geocode.lng;
+        }
+      }
+    } catch (e) {
+      console.warn("jobs/create geocode block failed:", e?.message || e);
     }
 
     // Initial delivery event
@@ -244,7 +328,21 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(200).json({ ok: true, job, invoice });
+    return res.status(200).json({
+      ok: true,
+      job,
+      invoice,
+      geocode: geocode
+        ? {
+            ok: true,
+            lat: geocode.lat,
+            lng: geocode.lng,
+            formatted_address: geocode.formatted_address || "",
+          }
+        : {
+            ok: false,
+          },
+    });
   } catch (err) {
     console.error("jobs/create unexpected error:", err);
     return res.status(500).json({
