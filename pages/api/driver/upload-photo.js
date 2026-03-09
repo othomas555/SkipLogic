@@ -1,10 +1,9 @@
-// pages/api/driver/upload-photo.js
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { getDriverFromSession } from "../../../lib/driverAuth";
 
 export const config = {
   api: {
-    bodyParser: false, // we will read raw bytes
+    bodyParser: false,
   },
 };
 
@@ -39,7 +38,8 @@ export default async function handler(req, res) {
   const supabase = getSupabaseAdmin();
 
   const jobId = String(req.query.job_id || "").trim();
-  const kind = String(req.query.kind || "").trim(); // e.g. delivered / collected / swap_full / swap_empty
+  const kind = String(req.query.kind || "").trim();
+
   if (!jobId) return bad(res, "Missing job_id");
   if (!kind) return bad(res, "Missing kind");
 
@@ -49,7 +49,19 @@ export default async function handler(req, res) {
   const buf = await readRawBody(req);
   if (!buf || !buf.length) return bad(res, "Empty upload");
 
-  // Path: subscriber/driver/job/timestamp_kind.ext
+  const { data: job, error: jobErr } = await supabase
+    .from("jobs")
+    .select("id, subscriber_id, assigned_driver_id")
+    .eq("id", jobId)
+    .eq("subscriber_id", driver.subscriber_id)
+    .maybeSingle();
+
+  if (jobErr) return bad(res, jobErr.message || "Failed to load job", 500);
+  if (!job) return bad(res, "Job not found", 404);
+  if (String(job.assigned_driver_id || "") !== String(driver.id)) {
+    return bad(res, "This job is not assigned to you", 403);
+  }
+
   const ext = safeExtFromContentType(contentType);
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const path = `${driver.subscriber_id}/${driver.id}/${jobId}/${ts}_${kind}.${ext}`;
@@ -63,11 +75,23 @@ export default async function handler(req, res) {
 
   if (upErr) return bad(res, upErr.message || "Upload failed", 500);
 
-  // Public URL (bucket must be public)
   const { data: pub } = bucket.getPublicUrl(path);
   const publicUrl = pub?.publicUrl || null;
 
   if (!publicUrl) return bad(res, "Uploaded but could not get URL", 500);
 
-  return res.json({ ok: true, path, url: publicUrl });
+  try {
+    await supabase.from("job_photos").insert({
+      job_id: jobId,
+      driver_id: driver.id,
+      photo_url: publicUrl,
+      photo_type: kind,
+      created_at: new Date().toISOString(),
+    });
+  } catch (e) {
+    // best effort only
+    console.warn("job_photos insert skipped/failed", e?.message || e);
+  }
+
+  return res.json({ ok: true, path, url: publicUrl, kind });
 }
