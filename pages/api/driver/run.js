@@ -5,6 +5,17 @@ function isYmd(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
 }
 
+function pickJobType(job, runDate) {
+  const collectionDueToday = String(job?.collection_date || "") === String(runDate);
+  return collectionDueToday ? "collection" : "delivery";
+}
+
+function isJobCompleted(job, runDate) {
+  const kind = pickJobType(job, runDate);
+  if (kind === "collection") return !!job?.collection_actual_date;
+  return !!job?.delivery_actual_date;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
@@ -32,7 +43,8 @@ export default async function handler(req, res) {
 
     const { data: run, error: runErr } = await supabase
       .from("driver_runs")
-      .select("id, driver_id, run_date, items, updated_at")
+      .select("id, subscriber_id, driver_id, run_date, items, updated_at")
+      .eq("subscriber_id", driver.subscriber_id)
       .eq("driver_id", driver.id)
       .eq("run_date", date)
       .maybeSingle();
@@ -57,14 +69,50 @@ export default async function handler(req, res) {
     }
 
     const items = Array.isArray(run.items) ? run.items : [];
-    const jobIds = [...new Set(items.filter((x) => x?.type === "job" && x?.job_id).map((x) => x.job_id))];
+
+    const jobIds = [
+      ...new Set(
+        items.flatMap((x) => {
+          if (!x || typeof x !== "object") return [];
+          if (x.type === "job" && x.job_id) return [String(x.job_id)];
+          if (x.type === "swap") {
+            return [x.collect_job_id, x.deliver_job_id].filter(Boolean).map(String);
+          }
+          return [];
+        })
+      ),
+    ];
 
     let jobs = [];
     if (jobIds.length > 0) {
       const { data: jobsData, error: jobsErr } = await supabase
         .from("jobs")
         .select(
-          "id, job_number, site_name, site_address_line1, site_address_line2, site_town, site_postcode, notes, payment_type, job_status, skip_type_id"
+          [
+            "id",
+            "job_number",
+            "customer_id",
+            "site_name",
+            "site_address_line1",
+            "site_address_line2",
+            "site_town",
+            "site_postcode",
+            "notes",
+            "payment_type",
+            "job_status",
+            "skip_type_id",
+            "scheduled_date",
+            "collection_date",
+            "delivery_actual_date",
+            "collection_actual_date",
+            "delivery_photo_url",
+            "collection_photo_url",
+            "swap_full_photo_url",
+            "swap_empty_photo_url",
+            "swap_group_id",
+            "swap_role",
+            "assigned_driver_id",
+          ].join(",")
         )
         .eq("subscriber_id", driver.subscriber_id)
         .in("id", jobIds);
@@ -77,7 +125,10 @@ export default async function handler(req, res) {
     }
 
     const skipTypeIds = [...new Set(jobs.map((j) => j.skip_type_id).filter(Boolean))];
+    const customerIds = [...new Set(jobs.map((j) => j.customer_id).filter(Boolean))];
+
     const skipTypeNameById = {};
+    const customerById = {};
 
     if (skipTypeIds.length > 0) {
       const { data: skipTypesData } = await supabase
@@ -87,15 +138,39 @@ export default async function handler(req, res) {
         .in("id", skipTypeIds);
 
       for (const st of skipTypesData || []) {
-        skipTypeNameById[st.id] = st.name || "";
+        skipTypeNameById[String(st.id)] = st.name || "";
+      }
+    }
+
+    if (customerIds.length > 0) {
+      const { data: customerRows } = await supabase
+        .from("customers")
+        .select("id, first_name, last_name, company_name, phone, email")
+        .eq("subscriber_id", driver.subscriber_id)
+        .in("id", customerIds);
+
+      for (const c of customerRows || []) {
+        customerById[String(c.id)] = c;
       }
     }
 
     const jobsById = {};
     for (const job of jobs) {
-      jobsById[job.id] = {
+      const customer = customerById[String(job.customer_id)] || null;
+      const customerName = customer
+        ? [customer.company_name, `${customer.first_name || ""} ${customer.last_name || ""}`.trim()]
+            .filter(Boolean)
+            .join(" – ")
+        : "";
+
+      jobsById[String(job.id)] = {
         ...job,
-        skip_type_name: skipTypeNameById[job.skip_type_id] || "",
+        skip_type_name: skipTypeNameById[String(job.skip_type_id)] || "",
+        customer_name: customerName || "",
+        customer_phone: customer?.phone || "",
+        customer_email: customer?.email || "",
+        driver_job_type: pickJobType(job, date),
+        driver_completed: isJobCompleted(job, date),
       };
     }
 
