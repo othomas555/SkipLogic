@@ -1,4 +1,3 @@
-// pages/api/jobs/book-swap.js
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import crypto from "crypto";
 
@@ -109,6 +108,7 @@ export default async function handler(req, res) {
         `
         id, subscriber_id, customer_id, skip_type_id,
         site_name, site_address_line1, site_address_line2, site_town, site_postcode,
+        site_lat, site_lng,
         scheduled_date, delivery_actual_date, collection_date, collection_actual_date,
         notes, payment_type, job_status,
         assigned_driver_id
@@ -163,6 +163,8 @@ export default async function handler(req, res) {
       site_address_line2: oldJob.site_address_line2 || null,
       site_town: oldJob.site_town || null,
       site_postcode: oldJob.site_postcode || null,
+      site_lat: oldJob.site_lat || null,
+      site_lng: oldJob.site_lng || null,
 
       scheduled_date: swapDate,
       notes: body.notes ? String(body.notes) : "Swap delivery booked",
@@ -190,7 +192,7 @@ export default async function handler(req, res) {
         .from("jobs")
         .insert([newJobInsertPayload])
         .select(
-          "id, job_number, customer_id, skip_type_id, scheduled_date, price_inc_vat, swap_group_id, swap_role, driver_run_group, assigned_driver_id, weekend_override"
+          "id, job_number, customer_id, skip_type_id, scheduled_date, price_inc_vat, swap_group_id, swap_role, driver_run_group, assigned_driver_id, weekend_override, site_lat, site_lng"
         )
         .single();
 
@@ -275,10 +277,6 @@ export default async function handler(req, res) {
         }
       }
     }
-
-    // We DO NOT log overrides here (no guessing table/columns).
-    // The UI is already logging via your chosen mechanism (job_overrides / RPC),
-    // and this endpoint’s job is to guarantee the insert can bypass the trigger safely.
 
     return res.json({
       ok: true,
