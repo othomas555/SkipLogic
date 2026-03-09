@@ -20,89 +20,234 @@ function isJobCompleted(job, runDate) {
 async function loadJobsForRun(supabase, subscriberId, jobIds) {
   if (!jobIds.length) return [];
 
-  // Try extended field set first.
-  const extendedSelect = [
-    "id",
-    "job_number",
-    "customer_id",
-    "site_name",
-    "site_address_line1",
-    "site_address_line2",
-    "site_town",
-    "site_postcode",
-    "notes",
-    "payment_type",
-    "job_status",
-    "skip_type_id",
-    "scheduled_date",
-    "collection_date",
-    "delivery_actual_date",
-    "collection_actual_date",
-    "delivery_photo_url",
-    "collection_photo_url",
-    "swap_full_photo_url",
-    "swap_empty_photo_url",
-    "swap_group_id",
-    "swap_role",
-    "assigned_driver_id",
+  const attempts = [
+    [
+      "id",
+      "job_number",
+      "customer_id",
+      "site_name",
+      "site_address_line1",
+      "site_address_line2",
+      "site_town",
+      "site_postcode",
+      "notes",
+      "payment_type",
+      "job_status",
+      "skip_type_id",
+      "scheduled_date",
+      "collection_date",
+      "delivery_actual_date",
+      "collection_actual_date",
+      "delivery_photo_url",
+      "collection_photo_url",
+      "swap_full_photo_url",
+      "swap_empty_photo_url",
+      "swap_group_id",
+      "swap_role",
+      "assigned_driver_id",
 
-    // best-effort optional fields for driver detail
-    "placement",
-    "placement_location",
-    "placement_notes",
-    "private_ground",
-    "permit_required",
-    "permit_type",
-    "permit_status",
-  ].join(",");
+      "placement",
+      "placement_location",
+      "placement_notes",
+      "private_ground",
+      "permit_required",
+      "permit_type",
+      "permit_status",
 
-  const baseSelect = [
-    "id",
-    "job_number",
-    "customer_id",
-    "site_name",
-    "site_address_line1",
-    "site_address_line2",
-    "site_town",
-    "site_postcode",
-    "notes",
-    "payment_type",
-    "job_status",
-    "skip_type_id",
-    "scheduled_date",
-    "collection_date",
-    "delivery_actual_date",
-    "collection_actual_date",
-    "delivery_photo_url",
-    "collection_photo_url",
-    "swap_full_photo_url",
-    "swap_empty_photo_url",
-    "swap_group_id",
-    "swap_role",
-    "assigned_driver_id",
-  ].join(",");
+      "site_lat",
+      "site_lng",
+    ].join(","),
 
-  let jobsErr = null;
-  let jobsData = null;
+    [
+      "id",
+      "job_number",
+      "customer_id",
+      "site_name",
+      "site_address_line1",
+      "site_address_line2",
+      "site_town",
+      "site_postcode",
+      "notes",
+      "payment_type",
+      "job_status",
+      "skip_type_id",
+      "scheduled_date",
+      "collection_date",
+      "delivery_actual_date",
+      "collection_actual_date",
+      "delivery_photo_url",
+      "collection_photo_url",
+      "swap_full_photo_url",
+      "swap_empty_photo_url",
+      "swap_group_id",
+      "swap_role",
+      "assigned_driver_id",
 
-  ({ data: jobsData, error: jobsErr } = await supabase
-    .from("jobs")
-    .select(extendedSelect)
-    .eq("subscriber_id", subscriberId)
-    .in("id", jobIds));
+      "placement",
+      "placement_location",
+      "placement_notes",
+      "private_ground",
+      "permit_required",
+      "permit_type",
+      "permit_status",
 
-  if (jobsErr) {
-    console.warn("driver/run extended jobs select failed, falling back:", jobsErr.message);
+      "site_lat",
+      "site_long",
+    ].join(","),
 
-    ({ data: jobsData, error: jobsErr } = await supabase
+    [
+      "id",
+      "job_number",
+      "customer_id",
+      "site_name",
+      "site_address_line1",
+      "site_address_line2",
+      "site_town",
+      "site_postcode",
+      "notes",
+      "payment_type",
+      "job_status",
+      "skip_type_id",
+      "scheduled_date",
+      "collection_date",
+      "delivery_actual_date",
+      "collection_actual_date",
+      "delivery_photo_url",
+      "collection_photo_url",
+      "swap_full_photo_url",
+      "swap_empty_photo_url",
+      "swap_group_id",
+      "swap_role",
+      "assigned_driver_id",
+
+      "placement",
+      "placement_location",
+      "placement_notes",
+      "private_ground",
+      "permit_required",
+      "permit_type",
+      "permit_status",
+
+      "latitude",
+      "longitude",
+    ].join(","),
+
+    [
+      "id",
+      "job_number",
+      "customer_id",
+      "site_name",
+      "site_address_line1",
+      "site_address_line2",
+      "site_town",
+      "site_postcode",
+      "notes",
+      "payment_type",
+      "job_status",
+      "skip_type_id",
+      "scheduled_date",
+      "collection_date",
+      "delivery_actual_date",
+      "collection_actual_date",
+      "delivery_photo_url",
+      "collection_photo_url",
+      "swap_full_photo_url",
+      "swap_empty_photo_url",
+      "swap_group_id",
+      "swap_role",
+      "assigned_driver_id",
+
+      "placement",
+      "placement_location",
+      "placement_notes",
+      "private_ground",
+      "permit_required",
+      "permit_type",
+      "permit_status",
+
+      "lat",
+      "lng",
+    ].join(","),
+
+    [
+      "id",
+      "job_number",
+      "customer_id",
+      "site_name",
+      "site_address_line1",
+      "site_address_line2",
+      "site_town",
+      "site_postcode",
+      "notes",
+      "payment_type",
+      "job_status",
+      "skip_type_id",
+      "scheduled_date",
+      "collection_date",
+      "delivery_actual_date",
+      "collection_actual_date",
+      "delivery_photo_url",
+      "collection_photo_url",
+      "swap_full_photo_url",
+      "swap_empty_photo_url",
+      "swap_group_id",
+      "swap_role",
+      "assigned_driver_id",
+
+      "placement",
+      "placement_location",
+      "placement_notes",
+      "private_ground",
+      "permit_required",
+      "permit_type",
+      "permit_status",
+    ].join(","),
+
+    [
+      "id",
+      "job_number",
+      "customer_id",
+      "site_name",
+      "site_address_line1",
+      "site_address_line2",
+      "site_town",
+      "site_postcode",
+      "notes",
+      "payment_type",
+      "job_status",
+      "skip_type_id",
+      "scheduled_date",
+      "collection_date",
+      "delivery_actual_date",
+      "collection_actual_date",
+      "delivery_photo_url",
+      "collection_photo_url",
+      "swap_full_photo_url",
+      "swap_empty_photo_url",
+      "swap_group_id",
+      "swap_role",
+      "assigned_driver_id",
+    ].join(","),
+  ];
+
+  let lastErr = null;
+
+  for (const selectText of attempts) {
+    const { data, error } = await supabase
       .from("jobs")
-      .select(baseSelect)
+      .select(selectText)
       .eq("subscriber_id", subscriberId)
-      .in("id", jobIds));
+      .in("id", jobIds);
+
+    if (!error) {
+      return Array.isArray(data) ? data : [];
+    }
+
+    lastErr = error;
+    console.warn("driver/run jobs select attempt failed, trying fallback:", error.message);
   }
 
-  if (jobsErr) throw jobsErr;
-  return Array.isArray(jobsData) ? jobsData : [];
+  throw lastErr || new Error("Failed to load jobs");
 }
 
 async function loadCustomersBestEffort(supabase, subscriberId, customerIds) {
@@ -262,8 +407,6 @@ export default async function handler(req, res) {
         customer_email: customer?.email || "",
         driver_job_type: pickJobType(job, date),
         driver_completed: isJobCompleted(job, date),
-
-        // convenience field for UI
         placement_summary: buildPlacementSummary(job),
       };
     }
