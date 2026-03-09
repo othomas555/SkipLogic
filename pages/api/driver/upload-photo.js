@@ -58,6 +58,7 @@ export default async function handler(req, res) {
 
   if (jobErr) return bad(res, jobErr.message || "Failed to load job", 500);
   if (!job) return bad(res, "Job not found", 404);
+
   if (String(job.assigned_driver_id || "") !== String(driver.id)) {
     return bad(res, "This job is not assigned to you", 403);
   }
@@ -80,18 +81,23 @@ export default async function handler(req, res) {
 
   if (!publicUrl) return bad(res, "Uploaded but could not get URL", 500);
 
-  try {
-    await supabase.from("job_photos").insert({
-      job_id: jobId,
-      driver_id: driver.id,
-      photo_url: publicUrl,
-      photo_type: kind,
-      created_at: new Date().toISOString(),
-    });
-  } catch (e) {
-    // best effort only
-    console.warn("job_photos insert skipped/failed", e?.message || e);
+  const { error: photoErr } = await supabase.from("job_photos").insert({
+    subscriber_id: driver.subscriber_id,
+    job_id: jobId,
+    driver_id: driver.id,
+    photo_url: publicUrl,
+    photo_type: kind,
+    created_at: new Date().toISOString(),
+  });
+
+  if (photoErr) {
+    return bad(res, photoErr.message || "Uploaded but failed to record photo", 500);
   }
 
-  return res.json({ ok: true, path, url: publicUrl, kind });
+  return res.json({
+    ok: true,
+    path,
+    url: publicUrl,
+    kind,
+  });
 }
