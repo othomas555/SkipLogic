@@ -1,3 +1,4 @@
+// pages/driver/run.js
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
@@ -62,27 +63,15 @@ function itemIsDone(item, jobsById) {
   return false;
 }
 
-function placementSummary(job) {
-  const bits = [];
-
-  if (job?.placement_location) bits.push(job.placement_location);
-  if (job?.placement_notes) bits.push(job.placement_notes);
-  if (job?.placement) bits.push(job.placement);
-
-  if (job?.private_ground === true) bits.push("Private ground");
-  if (job?.private_ground === false) bits.push("Road placement");
-
-  if (job?.permit_required === true) bits.push("Permit required");
-  if (job?.permit_required === false) bits.push("No permit");
-
-  if (job?.permit_type) bits.push(job.permit_type);
-  if (job?.permit_status) bits.push(job.permit_status);
-
-  return bits.join(" · ");
-}
-
 function jobTypeLabel(job) {
   return job?.driver_job_type === "collection" ? "Collection" : "Delivery";
+}
+
+function itemKey(item) {
+  if (!item || typeof item !== "object") return "";
+  if (item.type === "job") return `job:${item.job_id}`;
+  if (item.type === "swap") return `swap:${item.collect_job_id || ""}:${item.deliver_job_id || ""}`;
+  return `${item.type || "item"}:x`;
 }
 
 function IconTruck() {
@@ -162,7 +151,6 @@ export default function DriverRunPage() {
   const [jobsById, setJobsById] = useState({});
   const [photoState, setPhotoState] = useState({});
   const [busyByKey, setBusyByKey] = useState({});
-  const [currentCoords, setCurrentCoords] = useState(null);
 
   const lastUpdatedAtRef = useRef(null);
   const fileInputsRef = useRef({});
@@ -243,30 +231,6 @@ export default function DriverRunPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runDate]);
 
-  useEffect(() => {
-    if (!navigator.geolocation) return undefined;
-
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        setCurrentCoords({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        });
-      },
-      () => {},
-      {
-        enableHighAccuracy: true,
-        maximumAge: 15000,
-        timeout: 20000,
-      }
-    );
-
-    return () => {
-      navigator.geolocation.clearWatch(watchId);
-    };
-  }, []);
-
   async function refreshNow() {
     if (refreshing) return;
     setRefreshing(true);
@@ -304,13 +268,6 @@ export default function DriverRunPage() {
   function setPhotoList(item, photos) {
     const key = itemKey(item);
     setPhotoState((prev) => ({ ...prev, [key]: photos }));
-  }
-
-  function itemKey(item) {
-    if (!item || typeof item !== "object") return "";
-    if (item.type === "job") return `job:${item.job_id}`;
-    if (item.type === "swap") return `swap:${item.collect_job_id || ""}:${item.deliver_job_id || ""}`;
-    return `${item.type || "item"}:${Math.random().toString(36).slice(2)}`;
   }
 
   function triggerPhotoInput(item, kind) {
@@ -640,7 +597,7 @@ export default function DriverRunPage() {
                 const issueBusy = !!busyByKey[`${itemKey(it)}:issue`];
                 const unableBusy = !!busyByKey[`${itemKey(it)}:unable`];
                 const uploaded = getPhotoList(it);
-                const placeText = placementSummary(job);
+                const placeText = String(job?.placement_summary || "").trim();
 
                 return (
                   <div key={key} style={done ? styles.itemCardDone : styles.itemCard}>
@@ -821,6 +778,12 @@ export default function DriverRunPage() {
                       </div>
                     </div>
 
+                    {displayJob?.placement_summary ? (
+                      <div style={styles.infoStrip}>
+                        <strong>Placement:</strong> {displayJob.placement_summary}
+                      </div>
+                    ) : null}
+
                     <div style={styles.photoList}>
                       {uploaded.map((p, i) => (
                         <a key={`${p.kind}:${i}`} href={p.url} target="_blank" rel="noreferrer" style={styles.photoChip}>
@@ -926,11 +889,6 @@ export default function DriverRunPage() {
             })}
           </section>
         )}
-
-        <div style={styles.footerNote}>
-          Run order is shown exactly as stored in <code>driver_runs.items</code>.
-          {currentCoords ? ` Location active (${Math.round(currentCoords.accuracy || 0)}m accuracy).` : ""}
-        </div>
       </div>
     </main>
   );
@@ -1425,13 +1383,6 @@ const styles = {
     textDecoration: "none",
     fontSize: 12,
     fontWeight: 800,
-  },
-  footerNote: {
-    marginTop: 16,
-    fontSize: 13,
-    color: "#64748b",
-    textAlign: "center",
-    paddingBottom: 22,
   },
   centerCard: {
     width: "100%",
