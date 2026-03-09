@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
 
 function todayYMDLocal() {
@@ -21,11 +21,68 @@ function addrLine(job) {
   return xs.join(", ");
 }
 
-function niceTypeLabel(item) {
-  if (item?.type === "yard_break") return "Return to yard";
-  if (item?.type === "driver_break") return "Driver break";
-  if (item?.type === "job") return "Job";
-  return "Run item";
+function fullAddress(job) {
+  return [job?.site_address_line1, job?.site_address_line2, job?.site_town, job?.site_postcode]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function mapsUrl(job) {
+  const destination = encodeURIComponent(job?.site_postcode || fullAddress(job) || "");
+  if (!destination) return "";
+  return `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
+}
+
+function appleMapsUrl(job) {
+  const destination = encodeURIComponent(job?.site_postcode || fullAddress(job) || "");
+  if (!destination) return "";
+  return `https://maps.apple.com/?daddr=${destination}`;
+}
+
+function telUrl(job) {
+  const phone = String(job?.customer_phone || "").trim();
+  if (!phone) return "";
+  return `tel:${phone.replace(/\s+/g, "")}`;
+}
+
+function itemIsDone(item, jobsById) {
+  if (!item || typeof item !== "object") return false;
+
+  if (item.type === "job") {
+    const job = item.job_id ? jobsById[item.job_id] : null;
+    return !!job?.driver_completed;
+  }
+
+  if (item.type === "swap") {
+    const c = item.collect_job_id ? jobsById[item.collect_job_id] : null;
+    const d = item.deliver_job_id ? jobsById[item.deliver_job_id] : null;
+    return !!c?.collection_actual_date && !!d?.delivery_actual_date;
+  }
+
+  return false;
+}
+
+function placementSummary(job) {
+  const bits = [];
+
+  if (job?.placement_location) bits.push(job.placement_location);
+  if (job?.placement_notes) bits.push(job.placement_notes);
+  if (job?.placement) bits.push(job.placement);
+
+  if (job?.private_ground === true) bits.push("Private ground");
+  if (job?.private_ground === false) bits.push("Road placement");
+
+  if (job?.permit_required === true) bits.push("Permit required");
+  if (job?.permit_required === false) bits.push("No permit");
+
+  if (job?.permit_type) bits.push(job.permit_type);
+  if (job?.permit_status) bits.push(job.permit_status);
+
+  return bits.join(" · ");
+}
+
+function jobTypeLabel(job) {
+  return job?.driver_job_type === "collection" ? "Collection" : "Delivery";
 }
 
 function IconTruck() {
@@ -97,19 +154,35 @@ export default function DriverRunPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [runChanged, setRunChanged] = useState(false);
 
   const [signedIn, setSignedIn] = useState(true);
   const [driver, setDriver] = useState(null);
   const [run, setRun] = useState(null);
   const [jobsById, setJobsById] = useState({});
+  const [photoState, setPhotoState] = useState({});
+  const [busyByKey, setBusyByKey] = useState({});
+  const [currentCoords, setCurrentCoords] = useState(null);
+
+  const lastUpdatedAtRef = useRef(null);
+  const fileInputsRef = useRef({});
 
   const items = useMemo(() => {
     const raw = run?.items;
     return Array.isArray(raw) ? raw : [];
   }, [run]);
 
-  const totalJobs = useMemo(() => items.filter((x) => x?.type === "job").length, [items]);
-  const yardReturns = useMemo(() => items.filter((x) => x?.type === "yard_break").length, [items]);
+  const completedJobs = useMemo(() => {
+    return items.filter((x) => itemIsDone(x, jobsById)).length;
+  }, [items, jobsById]);
+
+  const totalStops = items.length;
+
+  const nextActiveIndex = useMemo(() => {
+    return items.findIndex((x) => !itemIsDone(x, jobsById) && (x?.type === "job" || x?.type === "swap"));
+  }, [items, jobsById]);
+
+  const nextActiveItem = nextActiveIndex >= 0 ? items[nextActiveIndex] : null;
 
   async function loadRun({ silent = false } = {}) {
     if (!silent) setLoading(true);
@@ -138,6 +211,13 @@ export default function DriverRunPage() {
         throw new Error(data?.error || "Could not load run.");
       }
 
+      const incomingUpdatedAt = data?.run?.updated_at || null;
+      if (silent && lastUpdatedAtRef.current && incomingUpdatedAt && incomingUpdatedAt !== lastUpdatedAtRef.current) {
+        setRunChanged(true);
+      }
+
+      lastUpdatedAtRef.current = incomingUpdatedAt;
+
       setDriver(data?.driver || null);
       setRun(data?.run || null);
       setJobsById(data?.jobs || {});
@@ -163,9 +243,34 @@ export default function DriverRunPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runDate]);
 
+  useEffect(() => {
+    if (!navigator.geolocation) return undefined;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setCurrentCoords({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        });
+      },
+      () => {},
+      {
+        enableHighAccuracy: true,
+        maximumAge: 15000,
+        timeout: 20000,
+      }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, []);
+
   async function refreshNow() {
     if (refreshing) return;
     setRefreshing(true);
+    setRunChanged(false);
     await loadRun({ silent: true });
     setRefreshing(false);
   }
@@ -186,6 +291,182 @@ export default function DriverRunPage() {
       router.push("/login?type=driver");
     }
   }
+
+  function setBusy(key, value) {
+    setBusyByKey((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function getPhotoList(item) {
+    const key = itemKey(item);
+    return Array.isArray(photoState[key]) ? photoState[key] : [];
+  }
+
+  function setPhotoList(item, photos) {
+    const key = itemKey(item);
+    setPhotoState((prev) => ({ ...prev, [key]: photos }));
+  }
+
+  function itemKey(item) {
+    if (!item || typeof item !== "object") return "";
+    if (item.type === "job") return `job:${item.job_id}`;
+    if (item.type === "swap") return `swap:${item.collect_job_id || ""}:${item.deliver_job_id || ""}`;
+    return `${item.type || "item"}:${Math.random().toString(36).slice(2)}`;
+  }
+
+  function triggerPhotoInput(item, kind) {
+    const key = `${itemKey(item)}:${kind}`;
+    const input = fileInputsRef.current[key];
+    if (input) input.click();
+  }
+
+  async function onFilePicked(item, kind, file) {
+    if (!file) return;
+
+    const key = `${itemKey(item)}:upload:${kind}`;
+    setBusy(key, true);
+    setErrorMsg("");
+
+    try {
+      const jobId =
+        item.type === "job"
+          ? item.job_id
+          : kind === "swap_full"
+            ? item.collect_job_id
+            : item.deliver_job_id;
+
+      const res = await fetch(
+        `/api/driver/upload-photo?job_id=${encodeURIComponent(jobId)}&kind=${encodeURIComponent(kind)}`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": file.type || "application/octet-stream",
+          },
+          body: file,
+        }
+      );
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.error || "Upload failed");
+      }
+
+      const next = [...getPhotoList(item), { kind, url: data.url, path: data.path }];
+      setPhotoList(item, next);
+    } catch (e) {
+      console.error(e);
+      setErrorMsg(e?.message || "Upload failed");
+    } finally {
+      setBusy(key, false);
+    }
+  }
+
+  async function completeItem(item) {
+    const key = `${itemKey(item)}:complete`;
+    setBusy(key, true);
+    setErrorMsg("");
+
+    try {
+      const photos = getPhotoList(item);
+
+      let body;
+      if (item.type === "swap") {
+        body = {
+          kind: "swap",
+          date: runDate,
+          collect_job_id: item.collect_job_id,
+          deliver_job_id: item.deliver_job_id,
+          photos,
+        };
+      } else {
+        const job = jobsById[item.job_id] || null;
+        body = {
+          kind: "job",
+          date: runDate,
+          job_id: item.job_id,
+          job_type: job?.driver_job_type || "delivery",
+          photos,
+        };
+      }
+
+      const res = await fetch("/api/driver/complete-job", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.error || "Could not complete item");
+      }
+
+      await loadRun({ silent: true });
+    } catch (e) {
+      console.error(e);
+      setErrorMsg(e?.message || "Could not complete item");
+    } finally {
+      setBusy(key, false);
+    }
+  }
+
+  async function reportIssue(item, unableToComplete = false) {
+    const jobId = item.type === "job" ? item.job_id : item.collect_job_id || item.deliver_job_id;
+    if (!jobId) return;
+
+    const issueType = window.prompt(
+      unableToComplete
+        ? "Reason unable to complete:\nBlocked access / Skip not out / Permit issue / Car in way / Customer not in / Other"
+        : "Issue type:\nBlocked access / Skip not out / Overloaded skip / Wrong skip / Customer issue / Other",
+      unableToComplete ? "Unable to complete" : "Blocked access"
+    );
+
+    if (!issueType) return;
+
+    const notes = window.prompt("Notes for office (optional)", "") || "";
+    const key = `${itemKey(item)}:${unableToComplete ? "unable" : "issue"}`;
+
+    setBusy(key, true);
+    setErrorMsg("");
+
+    try {
+      const res = await fetch("/api/driver/report-issue", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          job_id: jobId,
+          issue_type: issueType,
+          notes,
+          unable_to_complete: unableToComplete,
+          date: runDate,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.error || "Could not report issue");
+      }
+
+      await loadRun({ silent: true });
+    } catch (e) {
+      console.error(e);
+      setErrorMsg(e?.message || "Could not report issue");
+    } finally {
+      setBusy(key, false);
+    }
+  }
+
+  function nextJobData() {
+    if (!nextActiveItem) return null;
+    if (nextActiveItem.type === "job") return jobsById[nextActiveItem.job_id] || null;
+    if (nextActiveItem.type === "swap") {
+      return jobsById[nextActiveItem.deliver_job_id] || jobsById[nextActiveItem.collect_job_id] || null;
+    }
+    return null;
+  }
+
+  const nextJob = nextJobData();
 
   if (!signedIn) {
     return (
@@ -248,13 +529,17 @@ export default function DriverRunPage() {
             </div>
 
             <div style={styles.statCard}>
-              <div style={styles.statLabel}>Jobs</div>
-              <div style={styles.statValue}>{totalJobs}</div>
+              <div style={styles.statLabel}>Progress</div>
+              <div style={styles.statValue}>
+                {completedJobs}/{totalStops}
+              </div>
             </div>
 
             <div style={styles.statCard}>
-              <div style={styles.statLabel}>Yard returns</div>
-              <div style={styles.statValue}>{yardReturns}</div>
+              <div style={styles.statLabel}>Updated</div>
+              <div style={styles.statValueSmall}>
+                {run?.updated_at ? new Date(run.updated_at).toLocaleTimeString() : "—"}
+              </div>
             </div>
 
             <div style={styles.statCard}>
@@ -263,6 +548,36 @@ export default function DriverRunPage() {
             </div>
           </div>
         </section>
+
+        {runChanged ? (
+          <div style={styles.updateBanner}>
+            <strong>Run updated by office.</strong> Refresh to load the latest route.
+          </div>
+        ) : null}
+
+        {nextJob ? (
+          <section style={styles.nextJobCard}>
+            <div style={styles.nextJobEyebrow}>Next job</div>
+            <div style={styles.nextJobTitle}>
+              {nextJob.job_number || "Job"} · {jobTypeLabel(nextJob)}
+            </div>
+            <div style={styles.nextJobSub}>{nextJob.customer_name || nextJob.site_name || "—"}</div>
+            <div style={styles.nextJobPostcode}>{nextJob.site_postcode || "—"}</div>
+
+            <div style={styles.inlineActions}>
+              {mapsUrl(nextJob) ? (
+                <a href={mapsUrl(nextJob)} target="_blank" rel="noreferrer" style={styles.primaryAction}>
+                  Navigate
+                </a>
+              ) : null}
+              {telUrl(nextJob) ? (
+                <a href={telUrl(nextJob)} style={styles.secondaryAction}>
+                  Call
+                </a>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
 
         {errorMsg ? <div style={styles.errBox}>{errorMsg}</div> : null}
 
@@ -278,6 +593,7 @@ export default function DriverRunPage() {
           <section style={styles.listWrap}>
             {items.map((it, idx) => {
               const key = `${run.id}:${idx}`;
+              const done = itemIsDone(it, jobsById);
 
               if (!it || typeof it !== "object") {
                 return (
@@ -291,7 +607,7 @@ export default function DriverRunPage() {
                 );
               }
 
-              if (it.type === "yard_break") {
+              if (it.type === "return_yard" || it.type === "yard_break") {
                 return (
                   <div key={key} style={styles.specialCard}>
                     <div style={styles.itemTop}>
@@ -299,9 +615,7 @@ export default function DriverRunPage() {
                       <div style={styles.itemIndex}>#{idx + 1}</div>
                     </div>
                     <div style={styles.itemTitle}>Return to yard / tip return</div>
-                    <div style={styles.itemSub}>
-                      This appears in the run exactly where the office placed it.
-                    </div>
+                    <div style={styles.itemSub}>This appears in the run exactly where the office placed it.</div>
                   </div>
                 );
               }
@@ -322,11 +636,18 @@ export default function DriverRunPage() {
               if (it.type === "job") {
                 const job = it.job_id ? jobsById[it.job_id] : null;
                 const notes = String(job?.notes || "").trim();
+                const actionBusy = !!busyByKey[`${itemKey(it)}:complete`];
+                const issueBusy = !!busyByKey[`${itemKey(it)}:issue`];
+                const unableBusy = !!busyByKey[`${itemKey(it)}:unable`];
+                const uploaded = getPhotoList(it);
+                const placeText = placementSummary(job);
 
                 return (
-                  <div key={key} style={styles.itemCard}>
+                  <div key={key} style={done ? styles.itemCardDone : styles.itemCard}>
                     <div style={styles.itemTop}>
-                      <div style={styles.itemBadgeGreen}>{niceTypeLabel(it)}</div>
+                      <div style={done ? styles.itemBadgeDone : styles.itemBadgeGreen}>
+                        {done ? "Completed" : jobTypeLabel(job)}
+                      </div>
                       <div style={styles.itemIndex}>#{idx + 1}</div>
                     </div>
 
@@ -337,7 +658,22 @@ export default function DriverRunPage() {
                     <div style={styles.metaGrid}>
                       <div style={styles.metaBox}>
                         <div style={styles.metaLabel}>Postcode</div>
-                        <div style={styles.metaValue}>{job?.site_postcode || "—"}</div>
+                        <div style={styles.metaValueBig}>{job?.site_postcode || "—"}</div>
+                      </div>
+
+                      <div style={styles.metaBox}>
+                        <div style={styles.metaLabel}>Skip</div>
+                        <div style={styles.metaValue}>{job?.skip_type_name || "—"}</div>
+                      </div>
+
+                      <div style={styles.metaBox}>
+                        <div style={styles.metaLabel}>Customer</div>
+                        <div style={styles.metaValue}>{job?.customer_name || "—"}</div>
+                      </div>
+
+                      <div style={styles.metaBox}>
+                        <div style={styles.metaLabel}>Phone</div>
+                        <div style={styles.metaValue}>{job?.customer_phone || "—"}</div>
                       </div>
 
                       <div style={styles.metaBox}>
@@ -349,18 +685,229 @@ export default function DriverRunPage() {
                         <div style={styles.metaLabel}>Payment</div>
                         <div style={styles.metaValue}>{job?.payment_type || "—"}</div>
                       </div>
-
-                      <div style={styles.metaBox}>
-                        <div style={styles.metaLabel}>Skip</div>
-                        <div style={styles.metaValue}>{job?.skip_type_name || "—"}</div>
-                      </div>
                     </div>
+
+                    {placeText ? (
+                      <div style={styles.infoStrip}>
+                        <strong>Placement:</strong> {placeText}
+                      </div>
+                    ) : null}
 
                     {notes ? (
                       <details style={styles.notesWrap}>
                         <summary style={styles.notesSummary}>Notes</summary>
                         <div style={styles.notesBody}>{notes}</div>
                       </details>
+                    ) : null}
+
+                    <div style={styles.photoList}>
+                      {uploaded.map((p, i) => (
+                        <a key={`${p.kind}:${i}`} href={p.url} target="_blank" rel="noreferrer" style={styles.photoChip}>
+                          {p.kind}
+                        </a>
+                      ))}
+                    </div>
+
+                    {!done ? (
+                      <>
+                        <div style={styles.inlineActions}>
+                          {telUrl(job) ? (
+                            <a href={telUrl(job)} style={styles.secondaryAction}>
+                              Call
+                            </a>
+                          ) : null}
+                          {mapsUrl(job) ? (
+                            <a href={mapsUrl(job)} target="_blank" rel="noreferrer" style={styles.primaryAction}>
+                              Navigate
+                            </a>
+                          ) : null}
+                          {appleMapsUrl(job) ? (
+                            <a href={appleMapsUrl(job)} target="_blank" rel="noreferrer" style={styles.secondaryAction}>
+                              Apple Maps
+                            </a>
+                          ) : null}
+                        </div>
+
+                        <div style={styles.inlineActions}>
+                          <button
+                            type="button"
+                            style={styles.secondaryBtnLight}
+                            onClick={() => triggerPhotoInput(it, job?.driver_job_type === "collection" ? "collected" : "delivered")}
+                          >
+                            Take photo
+                          </button>
+
+                          <button
+                            type="button"
+                            style={styles.secondaryBtnLight}
+                            onClick={() => reportIssue(it, false)}
+                            disabled={issueBusy}
+                          >
+                            {issueBusy ? "Reporting…" : "Report issue"}
+                          </button>
+
+                          <button
+                            type="button"
+                            style={styles.secondaryBtnLight}
+                            onClick={() => reportIssue(it, true)}
+                            disabled={unableBusy}
+                          >
+                            {unableBusy ? "Saving…" : "Unable to complete"}
+                          </button>
+
+                          <button
+                            type="button"
+                            style={styles.primaryBtnDark}
+                            onClick={() => completeItem(it)}
+                            disabled={actionBusy}
+                          >
+                            {actionBusy ? "Completing…" : "Mark complete"}
+                          </button>
+                        </div>
+
+                        <input
+                          ref={(el) => {
+                            fileInputsRef.current[`${itemKey(it)}:${job?.driver_job_type === "collection" ? "collected" : "delivered"}`] = el;
+                          }}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          style={{ display: "none" }}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0] || null;
+                            onFilePicked(it, job?.driver_job_type === "collection" ? "collected" : "delivered", file);
+                            e.target.value = "";
+                          }}
+                        />
+                      </>
+                    ) : null}
+                  </div>
+                );
+              }
+
+              if (it.type === "swap") {
+                const collectJob = it.collect_job_id ? jobsById[it.collect_job_id] : null;
+                const deliverJob = it.deliver_job_id ? jobsById[it.deliver_job_id] : null;
+                const displayJob = deliverJob || collectJob;
+                const uploaded = getPhotoList(it);
+
+                return (
+                  <div key={key} style={done ? styles.itemCardDone : styles.itemCard}>
+                    <div style={styles.itemTop}>
+                      <div style={done ? styles.itemBadgeDone : styles.itemBadgeAmber}>Swap</div>
+                      <div style={styles.itemIndex}>#{idx + 1}</div>
+                    </div>
+
+                    <div style={styles.jobNumber}>
+                      {deliverJob?.job_number || collectJob?.job_number || "—"} · Swap
+                    </div>
+                    <div style={styles.siteName}>{displayJob?.site_name || "—"}</div>
+                    <div style={styles.address}>{addrLine(displayJob) || "No address provided"}</div>
+
+                    <div style={styles.metaGrid}>
+                      <div style={styles.metaBox}>
+                        <div style={styles.metaLabel}>Postcode</div>
+                        <div style={styles.metaValueBig}>{displayJob?.site_postcode || "—"}</div>
+                      </div>
+
+                      <div style={styles.metaBox}>
+                        <div style={styles.metaLabel}>Skip</div>
+                        <div style={styles.metaValue}>{displayJob?.skip_type_name || "—"}</div>
+                      </div>
+
+                      <div style={styles.metaBox}>
+                        <div style={styles.metaLabel}>Customer</div>
+                        <div style={styles.metaValue}>{displayJob?.customer_name || "—"}</div>
+                      </div>
+                    </div>
+
+                    <div style={styles.photoList}>
+                      {uploaded.map((p, i) => (
+                        <a key={`${p.kind}:${i}`} href={p.url} target="_blank" rel="noreferrer" style={styles.photoChip}>
+                          {p.kind}
+                        </a>
+                      ))}
+                    </div>
+
+                    {!done ? (
+                      <>
+                        <div style={styles.inlineActions}>
+                          {telUrl(displayJob) ? (
+                            <a href={telUrl(displayJob)} style={styles.secondaryAction}>
+                              Call
+                            </a>
+                          ) : null}
+                          {mapsUrl(displayJob) ? (
+                            <a href={mapsUrl(displayJob)} target="_blank" rel="noreferrer" style={styles.primaryAction}>
+                              Navigate
+                            </a>
+                          ) : null}
+                        </div>
+
+                        <div style={styles.inlineActions}>
+                          <button
+                            type="button"
+                            style={styles.secondaryBtnLight}
+                            onClick={() => triggerPhotoInput(it, "swap_full")}
+                          >
+                            Full skip photo
+                          </button>
+
+                          <button
+                            type="button"
+                            style={styles.secondaryBtnLight}
+                            onClick={() => triggerPhotoInput(it, "swap_empty")}
+                          >
+                            Empty skip photo
+                          </button>
+
+                          <button
+                            type="button"
+                            style={styles.secondaryBtnLight}
+                            onClick={() => reportIssue(it, false)}
+                          >
+                            Report issue
+                          </button>
+
+                          <button
+                            type="button"
+                            style={styles.primaryBtnDark}
+                            onClick={() => completeItem(it)}
+                          >
+                            Mark complete
+                          </button>
+                        </div>
+
+                        <input
+                          ref={(el) => {
+                            fileInputsRef.current[`${itemKey(it)}:swap_full`] = el;
+                          }}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          style={{ display: "none" }}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0] || null;
+                            onFilePicked(it, "swap_full", file);
+                            e.target.value = "";
+                          }}
+                        />
+
+                        <input
+                          ref={(el) => {
+                            fileInputsRef.current[`${itemKey(it)}:swap_empty`] = el;
+                          }}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          style={{ display: "none" }}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0] || null;
+                            onFilePicked(it, "swap_empty", file);
+                            e.target.value = "";
+                          }}
+                        />
+                      </>
                     ) : null}
                   </div>
                 );
@@ -382,6 +929,7 @@ export default function DriverRunPage() {
 
         <div style={styles.footerNote}>
           Run order is shown exactly as stored in <code>driver_runs.items</code>.
+          {currentCoords ? ` Location active (${Math.round(currentCoords.accuracy || 0)}m accuracy).` : ""}
         </div>
       </div>
     </main>
@@ -556,6 +1104,53 @@ const styles = {
     fontWeight: 900,
     letterSpacing: "-0.03em",
   },
+  statValueSmall: {
+    marginTop: 10,
+    fontSize: 18,
+    fontWeight: 900,
+    letterSpacing: "-0.03em",
+  },
+  updateBanner: {
+    background: "#fff7ed",
+    color: "#9a3412",
+    padding: 14,
+    borderRadius: 16,
+    border: "1px solid #fdba74",
+    marginBottom: 14,
+    boxShadow: "0 10px 24px rgba(15,23,42,0.06)",
+  },
+  nextJobCard: {
+    background: "linear-gradient(180deg, #ffffff, #f8fbff)",
+    borderRadius: 22,
+    padding: 18,
+    border: "1px solid rgba(15,23,42,0.08)",
+    boxShadow: "0 14px 36px rgba(15,23,42,0.08)",
+    marginBottom: 14,
+  },
+  nextJobEyebrow: {
+    fontSize: 12,
+    color: "#2563eb",
+    fontWeight: 800,
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+  },
+  nextJobTitle: {
+    marginTop: 8,
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#0f172a",
+  },
+  nextJobSub: {
+    marginTop: 6,
+    fontSize: 15,
+    color: "#475569",
+  },
+  nextJobPostcode: {
+    marginTop: 8,
+    fontSize: 22,
+    fontWeight: 900,
+    color: "#111827",
+  },
   errBox: {
     background: "#fff1f2",
     color: "#881337",
@@ -584,6 +1179,14 @@ const styles = {
     padding: 18,
     border: "1px solid rgba(15,23,42,0.08)",
     boxShadow: "0 14px 36px rgba(15,23,42,0.08)",
+  },
+  itemCardDone: {
+    background: "linear-gradient(180deg, #f8fafc, #f1f5f9)",
+    borderRadius: 22,
+    padding: 18,
+    border: "1px solid #cbd5e1",
+    boxShadow: "0 14px 36px rgba(15,23,42,0.05)",
+    opacity: 0.9,
   },
   specialCard: {
     background: "linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)",
@@ -643,6 +1246,16 @@ const styles = {
     borderRadius: 999,
     background: "#e2e8f0",
     color: "#475569",
+    fontWeight: 800,
+    fontSize: 12,
+  },
+  itemBadgeDone: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "7px 10px",
+    borderRadius: 999,
+    background: "#dcfce7",
+    color: "#166534",
     fontWeight: 800,
     fontSize: 12,
   },
@@ -709,6 +1322,13 @@ const styles = {
     color: "#0f172a",
     fontWeight: 700,
   },
+  metaValueBig: {
+    marginTop: 6,
+    fontSize: 22,
+    color: "#0f172a",
+    fontWeight: 900,
+    letterSpacing: "-0.03em",
+  },
   notesWrap: {
     marginTop: 14,
   },
@@ -726,6 +1346,85 @@ const styles = {
     whiteSpace: "pre-wrap",
     color: "#334155",
     lineHeight: 1.5,
+  },
+  infoStrip: {
+    marginTop: 14,
+    background: "#eff6ff",
+    border: "1px solid #bfdbfe",
+    padding: 12,
+    borderRadius: 14,
+    color: "#1e3a8a",
+  },
+  inlineActions: {
+    marginTop: 14,
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  primaryAction: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    textDecoration: "none",
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "#111827",
+    color: "#fff",
+    fontWeight: 800,
+  },
+  secondaryAction: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    textDecoration: "none",
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "#fff",
+    color: "#111827",
+    fontWeight: 800,
+    border: "1px solid #cbd5e1",
+  },
+  secondaryBtnLight: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "#fff",
+    color: "#111827",
+    fontWeight: 800,
+    border: "1px solid #cbd5e1",
+    cursor: "pointer",
+  },
+  primaryBtnDark: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "#111827",
+    color: "#fff",
+    fontWeight: 800,
+    border: "none",
+    cursor: "pointer",
+  },
+  photoList: {
+    marginTop: 12,
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  photoChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "8px 10px",
+    borderRadius: 999,
+    background: "#eef2ff",
+    color: "#3730a3",
+    textDecoration: "none",
+    fontSize: 12,
+    fontWeight: 800,
   },
   footerNote: {
     marginTop: 16,
