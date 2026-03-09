@@ -10,6 +10,12 @@ function todayYMDLocal() {
   return `${y}-${m}-${day}`;
 }
 
+function formatYmdUk(ymd) {
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(String(ymd))) return ymd || "";
+  const [y, m, d] = String(ymd).split("-");
+  return `${d}/${m}/${y}`;
+}
+
 function addrLine(job) {
   const xs = [job?.site_address_line1, job?.site_address_line2, job?.site_town].filter(Boolean);
   return xs.join(", ");
@@ -85,6 +91,7 @@ function IconLogout() {
 export default function DriverRunPage() {
   const router = useRouter();
   const runDate = useMemo(() => todayYMDLocal(), []);
+  const runDateUk = useMemo(() => formatYmdUk(runDate), [runDate]);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -209,7 +216,7 @@ export default function DriverRunPage() {
               </div>
               <div>
                 <div style={styles.brandTitle}>Today’s work</div>
-                <div style={styles.brandSub}>{runDate}</div>
+                <div style={styles.brandSub}>{runDateUk}</div>
               </div>
             </div>
 
