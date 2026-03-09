@@ -71,17 +71,25 @@ function normalisePostcode(pc) {
 
 function isWorkToDo(job, selectedDate) {
   if (!job) return false;
+
   const status = String(job.job_status || "");
 
-  if (job.swap_role === "collect") {
+  // COLLECTIONS:
+  // Any job with a collection planned for the selected date should appear,
+  // whether it is a normal collection or the collect leg of a swap.
+  if (String(job.collection_date || "") === String(selectedDate)) {
     if (job.collection_actual_date) return false;
     if (status === "collected" || status === "completed") return false;
-    return String(job.collection_date || "") === String(selectedDate);
+    return true;
   }
 
+  // DELIVERIES:
+  // Only jobs scheduled for the selected date and not already delivered/completed.
+  if (String(job.scheduled_date || "") !== String(selectedDate)) return false;
   if (job.delivery_actual_date) return false;
   if (status === "delivered" || status === "collected" || status === "completed") return false;
-  return String(job.scheduled_date || "") === String(selectedDate);
+
+  return true;
 }
 
 function cardKey(card) {
