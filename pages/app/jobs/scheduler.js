@@ -285,11 +285,10 @@ export default function SchedulerPage() {
 
       const { data: runRows, error: runErr } = await supabase
         .from("driver_runs")
-        .select("driver_id, run_number, items")
+        .select("driver_id, items, updated_at")
         .eq("subscriber_id", subscriberId)
         .eq("run_date", date)
-        .order("driver_id", { ascending: true })
-        .order("run_number", { ascending: true });
+        .order("driver_id", { ascending: true });
 
       if (runErr) {
         console.error("Error loading driver runs:", runErr);
@@ -310,13 +309,13 @@ export default function SchedulerPage() {
 
           persistedExtras[driverId].push({
             type: "block",
-            block_id: `saved-${driverId}-${row.run_number}-${idx}`,
+            block_id: `saved-${driverId}-${idx}`,
             block_type: "return_yard",
             label: "Return to yard",
             duration_mins: clampInt(item?.duration_mins ?? minsReturn, 0, 600),
             driver_run_group: Number.isFinite(Number(item?.group_order))
               ? Number(item.group_order)
-              : Number(`${row.run_number}999`),
+              : 999999,
           });
         });
       }
@@ -449,15 +448,26 @@ export default function SchedulerPage() {
           if (type === "return_yard") {
             m[driverId].push({
               type: "block",
-              block_id: `saved-${driverId}-${row.run_number}-${idx}`,
+              block_id: `saved-${driverId}-${idx}`,
               block_type: "return_yard",
               label: "Return to yard",
               duration_mins: clampInt(item?.duration_mins ?? minsReturn, 0, 600),
               driver_run_group: Number.isFinite(Number(item?.group_order))
                 ? Number(item.group_order)
-                : Number(`${row.run_number}999`),
+                : 999999,
             });
           }
+        });
+      }
+
+      for (const k of Object.keys(m)) {
+        m[k].sort((a, b) => {
+          const ag = Number(a.driver_run_group ?? a.job?.driver_run_group ?? 999999);
+          const bg = Number(b.driver_run_group ?? b.job?.driver_run_group ?? 999999);
+          if (ag !== bg) return ag - bg;
+          const an = String(a.job?.job_number ?? a.collect?.job_number ?? a.label ?? "");
+          const bn = String(b.job?.job_number ?? b.collect?.job_number ?? b.label ?? "");
+          return an.localeCompare(bn);
         });
       }
 
@@ -933,70 +943,100 @@ export default function SchedulerPage() {
   }
 
   async function saveRuns() {
-  if (!subscriberId) return;
+    if (!subscriberId) return;
 
-  setSavingRuns(true);
-  setErr("");
+    setSavingRuns(true);
+    setErr("");
 
-  try {
-    for (const d of drivers) {
-      const driverId = d.id;
-      const list = cardsByDriverId[driverId] || [];
+    try {
+      for (const d of drivers || []) {
+        const driverId = String(d.id);
+        const list = cardsByDriverId[driverId] || [];
 
-      const items = [];
+        const items = [];
+        const seenJobIds = new Set();
 
-      for (const item of list) {
-        if (item.type === "job") {
-          items.push({
-            type: "job",
-            job_id: item.job.id,
-          });
+        for (const item of list) {
+          if (!item || typeof item !== "object") continue;
+
+          if (item.type === "job") {
+            const jobId = String(item.job?.id || "");
+            if (!jobId || seenJobIds.has(jobId)) continue;
+            seenJobIds.add(jobId);
+
+            items.push({
+              type: "job",
+              job_id: jobId,
+              group_order: Number(
+                item.driver_run_group ??
+                item.job?.driver_run_group ??
+                0
+              ),
+            });
+            continue;
+          }
+
+          if (item.type === "swap") {
+            const collectId = item.collect?.id ? String(item.collect.id) : null;
+            const deliverId = item.deliver?.id ? String(item.deliver.id) : null;
+
+            if (!collectId && !deliverId) continue;
+            if (collectId && seenJobIds.has(collectId)) continue;
+            if (deliverId && seenJobIds.has(deliverId)) continue;
+
+            if (collectId) seenJobIds.add(collectId);
+            if (deliverId) seenJobIds.add(deliverId);
+
+            items.push({
+              type: "swap",
+              swap_group_id: item.swap_group_id || null,
+              collect_job_id: collectId,
+              deliver_job_id: deliverId,
+              group_order: Number(
+                item.driver_run_group ??
+                item.collect?.driver_run_group ??
+                item.deliver?.driver_run_group ??
+                0
+              ),
+            });
+            continue;
+          }
+
+          if (item.type === "block" && item.block_type === "return_yard") {
+            items.push({
+              type: "return_yard",
+              duration_mins: clampInt(item.duration_mins ?? minsReturn, 0, 600),
+              group_order: Number(item.driver_run_group ?? 0),
+            });
+          }
         }
 
-        if (item.type === "block" && item.block_type === "return_yard") {
-          items.push({
-            type: "return_yard",
-            duration_mins: item.duration_mins || 15,
+        const payload = {
+          subscriber_id: subscriberId,
+          driver_id: driverId,
+          run_date: date,
+          items,
+          updated_at: new Date().toISOString(),
+        };
+
+        const { error } = await supabase
+          .from("driver_runs")
+          .upsert(payload, {
+            onConflict: "subscriber_id,driver_id,run_date",
           });
+
+        if (error) {
+          console.error("Error saving driver run:", error);
+          throw new Error(error.message || "Failed to save driver runs");
         }
       }
-
-      const payload = {
-        subscriber_id: subscriberId,
-        driver_id: driverId,
-        run_date: date,
-        items,
-        updated_at: new Date().toISOString(),
-      };
-
-      const { error } = await supabase
-        .from("driver_runs")
-        .upsert(payload, {
-          onConflict: "subscriber_id,driver_id,run_date",
-        });
-
-      if (error) {
-        console.error(error);
-        throw new Error(error.message);
-      }
-    }
-
-    alert("Runs saved");
-    await loadAll();
-  } catch (e) {
-    console.error(e);
-    setErr(e.message || "Failed to save runs");
-  }
-
-  setSavingRuns(false);
-}
 
       await loadAll();
       alert("Runs saved.");
-      setSavingRuns(false);
     } catch (e) {
       console.error(e);
       setErr(e?.message || "Failed to save runs");
+    } finally {
       setSavingRuns(false);
     }
   }
@@ -1378,10 +1418,10 @@ export default function SchedulerPage() {
             <div style={helpSteps}>
               <div>1. Drag deliveries, collections, swaps, and return-to-yard blocks into each driver lane.</div>
               <div>2. Put them in the exact running order. Use ↑ and ↓ to fine tune.</div>
-              <div>3. A return-to-yard block ends that run. Anything after it becomes the next run.</div>
+              <div>3. A return-to-yard block ends that run.</div>
               <div>4. Set average minutes for checks, delivery, collection, swap, and return-to-yard.</div>
               <div>5. Press <strong>Get timings</strong>. The scheduler starts from the driver start time, adds checks, then travel from yard to first stop, then service time, then travel to the next item, and so on.</div>
-              <div>6. Press <strong>Save Runs</strong> to write the runs into the driver run table.</div>
+              <div>6. Press <strong>Save Runs</strong> to write the run into the driver run table.</div>
               <div>7. Use <strong>Send messages</strong> once the run looks right.</div>
             </div>
           ) : null}
