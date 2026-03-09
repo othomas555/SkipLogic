@@ -933,96 +933,63 @@ export default function SchedulerPage() {
   }
 
   async function saveRuns() {
-    if (!subscriberId) return;
-    setErr("");
-    setSavingRuns(true);
+  if (!subscriberId) return;
 
-    try {
-      for (const d of drivers || []) {
-        const driverId = String(d.id);
-        const list = cardsByDriverId[driverId] || [];
+  setSavingRuns(true);
+  setErr("");
 
-        const runs = [];
-        let currentRun = [];
+  try {
+    for (const d of drivers) {
+      const driverId = d.id;
+      const list = cardsByDriverId[driverId] || [];
 
-        for (const item of list) {
-          if (item.type === "job") {
-            currentRun.push({
-              type: "job",
-              job_id: item.job.id,
-              group_order: Number(item.job?.driver_run_group ?? item.driver_run_group ?? 0),
-            });
-            continue;
-          }
+      const items = [];
 
-          if (item.type === "swap") {
-            currentRun.push({
-              type: "swap",
-              swap_group_id: item.swap_group_id || null,
-              collect_job_id: item.collect?.id || null,
-              deliver_job_id: item.deliver?.id || null,
-              group_order: Number(
-                item.driver_run_group ??
-                item.collect?.driver_run_group ??
-                item.deliver?.driver_run_group ??
-                0
-              ),
-            });
-            continue;
-          }
-
-          if (item.type === "block" && item.block_type === "return_yard") {
-            currentRun.push({
-              type: "return_yard",
-              group_order: Number(item.driver_run_group ?? 0),
-              duration_mins: clampInt(item.duration_mins ?? minsReturn, 0, 600),
-            });
-
-            if (currentRun.length) {
-              runs.push(currentRun);
-            }
-            currentRun = [];
-          }
+      for (const item of list) {
+        if (item.type === "job") {
+          items.push({
+            type: "job",
+            job_id: item.job.id,
+          });
         }
 
-        if (currentRun.length) {
-          runs.push(currentRun);
-        }
-
-        const { error: deleteError } = await supabase
-          .from("driver_runs")
-          .delete()
-          .eq("subscriber_id", subscriberId)
-          .eq("driver_id", driverId)
-          .eq("run_date", date);
-
-        if (deleteError) {
-          console.error("Error deleting existing driver runs:", deleteError);
-          throw new Error(deleteError.message || "Failed to clear existing runs");
-        }
-
-        for (let i = 0; i < runs.length; i += 1) {
-          const payload = {
-            subscriber_id: subscriberId,
-            driver_id: driverId,
-            run_date: date,
-            run_number: i + 1,
-            status: "planned",
-            items: runs[i],
-          };
-
-          const { error: upsertError } = await supabase
-            .from("driver_runs")
-            .upsert(payload, {
-              onConflict: "subscriber_id,driver_id,run_date,run_number",
-            });
-
-          if (upsertError) {
-            console.error("Error saving driver run:", upsertError);
-            throw new Error(upsertError.message || "Failed to save driver runs");
-          }
+        if (item.type === "block" && item.block_type === "return_yard") {
+          items.push({
+            type: "return_yard",
+            duration_mins: item.duration_mins || 15,
+          });
         }
       }
+
+      const payload = {
+        subscriber_id: subscriberId,
+        driver_id: driverId,
+        run_date: date,
+        items,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from("driver_runs")
+        .upsert(payload, {
+          onConflict: "subscriber_id,driver_id,run_date",
+        });
+
+      if (error) {
+        console.error(error);
+        throw new Error(error.message);
+      }
+    }
+
+    alert("Runs saved");
+    await loadAll();
+  } catch (e) {
+    console.error(e);
+    setErr(e.message || "Failed to save runs");
+  }
+
+  setSavingRuns(false);
+}
 
       await loadAll();
       alert("Runs saved.");
