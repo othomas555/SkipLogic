@@ -74,6 +74,47 @@ function itemKey(item) {
   return `${item.type || "item"}:x`;
 }
 
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getJobCoords(job) {
+  if (!job || typeof job !== "object") return null;
+
+  const lat =
+    numOrNull(job.site_lat) ??
+    numOrNull(job.site_lng_lat) ??
+    numOrNull(job.latitude) ??
+    numOrNull(job.lat);
+
+  const lng =
+    numOrNull(job.site_lng) ??
+    numOrNull(job.site_long) ??
+    numOrNull(job.longitude) ??
+    numOrNull(job.lng) ??
+    numOrNull(job.lon);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  return { lat, lng };
+}
+
+function metresBetween(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 function IconTruck() {
   return (
     <svg viewBox="0 0 24 24" style={styles.iconSvg} aria-hidden="true">
@@ -134,6 +175,21 @@ function IconLogout() {
   );
 }
 
+function IconPin() {
+  return (
+    <svg viewBox="0 0 24 24" style={styles.iconSvgSm} aria-hidden="true">
+      <path
+        d="M12 21s-6-5.3-6-11a6 6 0 1 1 12 0c0 5.7-6 11-6 11Zm0-8.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export default function DriverRunPage() {
   const router = useRouter();
   const runDate = useMemo(() => todayYMDLocal(), []);
@@ -151,6 +207,12 @@ export default function DriverRunPage() {
   const [jobsById, setJobsById] = useState({});
   const [photoState, setPhotoState] = useState({});
   const [busyByKey, setBusyByKey] = useState({});
+
+  const [currentCoords, setCurrentCoords] = useState(null);
+  const [geoEnabled, setGeoEnabled] = useState(false);
+  const [geoError, setGeoError] = useState("");
+  const [arrivedItemKey, setArrivedItemKey] = useState("");
+  const [distanceToNextMetres, setDistanceToNextMetres] = useState(null);
 
   const lastUpdatedAtRef = useRef(null);
   const fileInputsRef = useRef({});
@@ -171,6 +233,17 @@ export default function DriverRunPage() {
   }, [items, jobsById]);
 
   const nextActiveItem = nextActiveIndex >= 0 ? items[nextActiveIndex] : null;
+
+  function nextJobData() {
+    if (!nextActiveItem) return null;
+    if (nextActiveItem.type === "job") return jobsById[nextActiveItem.job_id] || null;
+    if (nextActiveItem.type === "swap") {
+      return jobsById[nextActiveItem.deliver_job_id] || jobsById[nextActiveItem.collect_job_id] || null;
+    }
+    return null;
+  }
+
+  const nextJob = nextJobData();
 
   async function loadRun({ silent = false } = {}) {
     if (!silent) setLoading(true);
@@ -230,6 +303,63 @@ export default function DriverRunPage() {
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runDate]);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setGeoEnabled(false);
+      setGeoError("Location not supported on this device.");
+      return undefined;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setGeoEnabled(true);
+        setGeoError("");
+        setCurrentCoords({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        });
+      },
+      (err) => {
+        setGeoEnabled(false);
+        setGeoError(err?.message || "Could not access location.");
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 15000,
+        timeout: 20000,
+      }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!nextActiveItem || !nextJob || !currentCoords) {
+      setDistanceToNextMetres(null);
+      setArrivedItemKey("");
+      return;
+    }
+
+    const coords = getJobCoords(nextJob);
+    if (!coords) {
+      setDistanceToNextMetres(null);
+      setArrivedItemKey("");
+      return;
+    }
+
+    const metres = metresBetween(currentCoords.lat, currentCoords.lng, coords.lat, coords.lng);
+    setDistanceToNextMetres(Math.round(metres));
+
+    if (metres <= 150) {
+      setArrivedItemKey(itemKey(nextActiveItem));
+    } else {
+      setArrivedItemKey("");
+    }
+  }, [nextActiveItem, nextJob, currentCoords]);
 
   async function refreshNow() {
     if (refreshing) return;
@@ -358,6 +488,8 @@ export default function DriverRunPage() {
         throw new Error(data?.error || "Could not complete item");
       }
 
+      setArrivedItemKey("");
+      setDistanceToNextMetres(null);
       await loadRun({ silent: true });
     } catch (e) {
       console.error(e);
@@ -413,17 +545,6 @@ export default function DriverRunPage() {
       setBusy(key, false);
     }
   }
-
-  function nextJobData() {
-    if (!nextActiveItem) return null;
-    if (nextActiveItem.type === "job") return jobsById[nextActiveItem.job_id] || null;
-    if (nextActiveItem.type === "swap") {
-      return jobsById[nextActiveItem.deliver_job_id] || jobsById[nextActiveItem.collect_job_id] || null;
-    }
-    return null;
-  }
-
-  const nextJob = nextJobData();
 
   if (!signedIn) {
     return (
@@ -512,6 +633,15 @@ export default function DriverRunPage() {
           </div>
         ) : null}
 
+        {geoEnabled || geoError ? (
+          <div style={geoError ? styles.locationBannerWarn : styles.locationBannerOk}>
+            <IconPin />
+            {geoError
+              ? `Location: ${geoError}`
+              : `Location active${currentCoords?.accuracy ? ` (${Math.round(currentCoords.accuracy)}m accuracy)` : ""}`}
+          </div>
+        ) : null}
+
         {nextJob ? (
           <section style={styles.nextJobCard}>
             <div style={styles.nextJobEyebrow}>Next job</div>
@@ -520,6 +650,18 @@ export default function DriverRunPage() {
             </div>
             <div style={styles.nextJobSub}>{nextJob.customer_name || nextJob.site_name || "—"}</div>
             <div style={styles.nextJobPostcode}>{nextJob.site_postcode || "—"}</div>
+
+            {typeof distanceToNextMetres === "number" ? (
+              <div style={styles.distancePill}>
+                Distance to next job: {distanceToNextMetres}m
+              </div>
+            ) : null}
+
+            {arrivedItemKey && nextActiveItem && arrivedItemKey === itemKey(nextActiveItem) ? (
+              <div style={styles.arrivedBanner}>
+                <strong>Arrived at job.</strong> You are within 150 metres of the next stop.
+              </div>
+            ) : null}
 
             <div style={styles.inlineActions}>
               {mapsUrl(nextJob) ? (
@@ -551,6 +693,7 @@ export default function DriverRunPage() {
             {items.map((it, idx) => {
               const key = `${run.id}:${idx}`;
               const done = itemIsDone(it, jobsById);
+              const isArrived = arrivedItemKey && arrivedItemKey === itemKey(it);
 
               if (!it || typeof it !== "object") {
                 return (
@@ -607,6 +750,10 @@ export default function DriverRunPage() {
                       </div>
                       <div style={styles.itemIndex}>#{idx + 1}</div>
                     </div>
+
+                    {isArrived ? (
+                      <div style={styles.arrivedInline}>Arrived at job</div>
+                    ) : null}
 
                     <div style={styles.jobNumber}>{job?.job_number || "—"}</div>
                     <div style={styles.siteName}>{job?.site_name || "—"}</div>
@@ -754,6 +901,10 @@ export default function DriverRunPage() {
                       <div style={done ? styles.itemBadgeDone : styles.itemBadgeAmber}>Swap</div>
                       <div style={styles.itemIndex}>#{idx + 1}</div>
                     </div>
+
+                    {isArrived ? (
+                      <div style={styles.arrivedInline}>Arrived at job</div>
+                    ) : null}
 
                     <div style={styles.jobNumber}>
                       {deliverJob?.job_number || collectJob?.job_number || "—"} · Swap
@@ -1077,6 +1228,30 @@ const styles = {
     marginBottom: 14,
     boxShadow: "0 10px 24px rgba(15,23,42,0.06)",
   },
+  locationBannerOk: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    background: "#ecfdf5",
+    color: "#166534",
+    padding: 12,
+    borderRadius: 16,
+    border: "1px solid #86efac",
+    marginBottom: 14,
+    boxShadow: "0 10px 24px rgba(15,23,42,0.06)",
+  },
+  locationBannerWarn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    background: "#fff7ed",
+    color: "#9a3412",
+    padding: 12,
+    borderRadius: 16,
+    border: "1px solid #fdba74",
+    marginBottom: 14,
+    boxShadow: "0 10px 24px rgba(15,23,42,0.06)",
+  },
   nextJobCard: {
     background: "linear-gradient(180deg, #ffffff, #f8fbff)",
     borderRadius: 22,
@@ -1108,6 +1283,36 @@ const styles = {
     fontSize: 22,
     fontWeight: 900,
     color: "#111827",
+  },
+  distancePill: {
+    display: "inline-flex",
+    marginTop: 10,
+    padding: "8px 10px",
+    borderRadius: 999,
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    border: "1px solid #bfdbfe",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  arrivedBanner: {
+    marginTop: 12,
+    background: "#ecfdf5",
+    color: "#166534",
+    padding: 12,
+    borderRadius: 14,
+    border: "1px solid #86efac",
+  },
+  arrivedInline: {
+    display: "inline-flex",
+    marginBottom: 10,
+    padding: "7px 10px",
+    borderRadius: 999,
+    background: "#ecfdf5",
+    color: "#166534",
+    border: "1px solid #86efac",
+    fontSize: 12,
+    fontWeight: 800,
   },
   errBox: {
     background: "#fff1f2",
