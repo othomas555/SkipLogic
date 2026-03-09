@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-function ymdTodayLocal() {
-  const dt = new Date();
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const d = String(dt.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+function formatTodayUk() {
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date());
 }
 
 function IconToday() {
@@ -70,7 +71,7 @@ function IconReminder() {
 }
 
 export default function DriverMenuPage() {
-  const today = useMemo(() => ymdTodayLocal(), []);
+  const today = useMemo(() => formatTodayUk(), []);
   const [loggingOut, setLoggingOut] = useState(false);
 
   async function doLogout(e) {
