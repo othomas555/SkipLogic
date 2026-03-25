@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
+import { createInvoiceForJob } from "../xero/xero_create_invoice";
 import crypto from "crypto";
 
 function assert(cond, msg) {
@@ -6,20 +7,19 @@ function assert(cond, msg) {
 }
 
 function isWeekendDate(ymd) {
-  // ymd: "YYYY-MM-DD"
-  // Use UTC midnight to avoid local timezone shifting day-of-week.
   const dt = new Date(`${ymd}T00:00:00Z`);
   if (!Number.isFinite(dt.getTime())) return false;
-  const day = dt.getUTCDay(); // 0=Sun, 6=Sat
+  const day = dt.getUTCDay();
   return day === 0 || day === 6;
 }
 
+function clampMoney(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.round(x * 100) / 100);
+}
+
 async function getNextDriverRunGroup(supabase, subscriberId, swapDate) {
-  // We treat "what's happening on swapDate" as:
-  // - deliveries: scheduled_date = swapDate
-  // - collections: collection_date = swapDate
-  //
-  // driver_run_group should be the same for BOTH legs of a swap
   const { data, error } = await supabase
     .from("jobs")
     .select("driver_run_group")
@@ -38,19 +38,6 @@ async function getNextDriverRunGroup(supabase, subscriberId, swapDate) {
   return (Number.isFinite(maxGroup) ? maxGroup : 0) + 1;
 }
 
-function getBaseUrlFromReq(req) {
-  const proto = String(req.headers["x-forwarded-proto"] || "https");
-  const host = String(req.headers["x-forwarded-host"] || req.headers["host"] || "");
-  if (!host) return null;
-  return `${proto}://${host}`;
-}
-
-function getBearerToken(req) {
-  const authHeader = String(req.headers.authorization || "");
-  if (!authHeader.startsWith("Bearer ")) return null;
-  return authHeader.slice("Bearer ".length).trim() || null;
-}
-
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
@@ -64,15 +51,11 @@ export default async function handler(req, res) {
     const oldJobId = String(body.old_job_id || "");
     const newSkipTypeId = String(body.new_skip_type_id || "");
     const swapDate = String(body.swap_date || "");
-    const priceIncVat = Number(body.price_inc_vat);
+    const priceIncVat = clampMoney(body.price_inc_vat);
 
-    // Existing pattern: caller controls invoicing (default true)
     const createInvoice = body.create_invoice === false ? false : true;
-
-    // weekend override (default false) to satisfy jobs_scheduled_date_weekday_or_override
     const weekendOverride = !!body.weekend_override;
 
-    // NEW: credit override fields (client sets these when user explicitly overrides)
     const creditOverrideToken = body.credit_override_token ? String(body.credit_override_token) : "";
     const creditOverrideReason = body.credit_override_reason ? String(body.credit_override_reason) : "";
     const creditOverride = !!creditOverrideToken;
@@ -83,16 +66,13 @@ export default async function handler(req, res) {
     assert(swapDate, "Missing swap_date");
     assert(Number.isFinite(priceIncVat) && priceIncVat > 0, "Invalid price_inc_vat");
 
-    // Basic sanity (avoid junk)
     if (creditOverride) {
       assert(creditOverrideToken.length >= 8, "Invalid credit_override_token");
-      // reason can be empty, but if present keep it reasonable
       if (creditOverrideReason && creditOverrideReason.length > 800) {
         throw new Error("credit_override_reason too long");
       }
     }
 
-    // Enforce same rule as booking: weekends are blocked unless override is true.
     if (isWeekendDate(swapDate) && !weekendOverride) {
       return res.status(400).json({
         ok: false,
@@ -101,24 +81,38 @@ export default async function handler(req, res) {
       });
     }
 
-    // Load old job (we copy site + customer + payment type, and also assigned driver if present)
     const { data: oldJob, error: oldErr } = await supabase
       .from("jobs")
-      .select(
-        `
-        id, subscriber_id, customer_id, skip_type_id,
-        site_name, site_address_line1, site_address_line2, site_town, site_postcode,
-        site_lat, site_lng,
-        scheduled_date, delivery_actual_date, collection_date, collection_actual_date,
-        notes, payment_type, job_status,
+      .select(`
+        id,
+        subscriber_id,
+        customer_id,
+        skip_type_id,
+        site_name,
+        site_address_line1,
+        site_address_line2,
+        site_town,
+        site_postcode,
+        site_lat,
+        site_lng,
+        scheduled_date,
+        delivery_actual_date,
+        collection_date,
+        collection_actual_date,
+        notes,
+        payment_type,
+        job_status,
         assigned_driver_id
-      `
-      )
+      `)
       .eq("id", oldJobId)
       .eq("subscriber_id", subscriberId)
       .maybeSingle();
 
-    if (oldErr) throw new Error("Failed to load old job");
+    if (oldErr) {
+      console.error("Failed to load old job:", oldErr);
+      throw new Error("Failed to load old job");
+    }
+
     assert(oldJob, "Old job not found");
     assert(!oldJob.collection_actual_date, "Old job already collected");
     assert(
@@ -127,12 +121,8 @@ export default async function handler(req, res) {
     );
 
     const swapGroupId = crypto.randomUUID();
-
-    // Create a numeric run group for this swap date,
-    // so both legs can be treated as one “swap” on scheduler/driver views.
     const driverRunGroup = await getNextDriverRunGroup(supabase, subscriberId, swapDate);
 
-    // 1) Update old job -> schedule collection + link
     const { error: updErr } = await supabase
       .from("jobs")
       .update({
@@ -151,8 +141,6 @@ export default async function handler(req, res) {
       throw new Error("Failed to update old job for swap");
     }
 
-    // 2) Insert new delivery job -> link (and match driver_run_group)
-    // IMPORTANT: if creditOverride is set, insert must bypass credit limit trigger safely.
     const newJobInsertPayload = {
       subscriber_id: subscriberId,
       customer_id: oldJob.customer_id,
@@ -171,29 +159,39 @@ export default async function handler(req, res) {
       payment_type: body.payment_type ? String(body.payment_type) : oldJob.payment_type || "card",
       price_inc_vat: priceIncVat,
 
-      // If old job is already assigned, keep the same driver for the new leg
       assigned_driver_id: oldJob.assigned_driver_id || null,
 
       swap_group_id: swapGroupId,
       swap_role: "deliver",
-
-      // Same group number for both legs
       driver_run_group: driverRunGroup,
-
-      // IMPORTANT: satisfies jobs_scheduled_date_weekday_or_override
       weekend_override: weekendOverride,
     };
 
     let newJob = null;
 
     if (!creditOverride) {
-      // Normal path: direct insert
       const { data, error: insErr } = await supabase
         .from("jobs")
         .insert([newJobInsertPayload])
-        .select(
-          "id, job_number, customer_id, skip_type_id, scheduled_date, price_inc_vat, swap_group_id, swap_role, driver_run_group, assigned_driver_id, weekend_override, site_lat, site_lng"
-        )
+        .select(`
+          id,
+          job_number,
+          customer_id,
+          skip_type_id,
+          scheduled_date,
+          price_inc_vat,
+          payment_type,
+          swap_group_id,
+          swap_role,
+          driver_run_group,
+          assigned_driver_id,
+          weekend_override,
+          site_lat,
+          site_lng,
+          xero_invoice_id,
+          xero_invoice_number,
+          xero_invoice_status
+        `)
         .single();
 
       if (insErr) {
@@ -203,8 +201,6 @@ export default async function handler(req, res) {
 
       newJob = data;
     } else {
-      // Override path: controlled DB function must do the insert and bypass trigger for this insert only.
-      // NOTE: This requires the SQL in step (2) below to exist.
       const { data: rpcData, error: rpcErr } = await supabase.rpc("insert_job_bypass_credit_limit", {
         _payload: newJobInsertPayload,
       });
@@ -214,7 +210,6 @@ export default async function handler(req, res) {
         throw new Error(rpcErr?.message || "Failed to create new delivery job (override)");
       }
 
-      // RPC returns a row. Depending on how you return it, it might be an object or an array.
       newJob = Array.isArray(rpcData) ? rpcData[0] : rpcData;
 
       if (!newJob?.id) {
@@ -222,7 +217,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Create initial delivery event on NEW job
     const { error: evErr } = await supabase.rpc("create_job_event", {
       _subscriber_id: subscriberId,
       _job_id: newJob.id,
@@ -237,44 +231,39 @@ export default async function handler(req, res) {
       throw new Error("Swap created but delivery event failed");
     }
 
-    // OPTIONAL: Create Xero invoice for NEW delivery job only
     let invoice = null;
     let invoice_warning = null;
 
     if (createInvoice) {
-      const authHeader = String(req.headers.authorization || "");
-      if (!authHeader.startsWith("Bearer ")) {
-        invoice_warning =
-          "create_invoice requested but no Authorization: Bearer token was provided to this endpoint, so Xero invoice creation was skipped.";
-      } else {
-        const baseUrl = getBaseUrlFromReq(req);
-        if (!baseUrl) {
-          invoice_warning =
-            "create_invoice requested but could not determine base URL from request headers; Xero invoice creation was skipped.";
-        } else {
-          try {
-            const invRes = await fetch(`${baseUrl}/api/xero/xero_create_invoice`, {
-              method: "POST",
-              headers: {
-                Authorization: authHeader,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ job_id: newJob.id }),
-            });
+      try {
+        const inv = await createInvoiceForJob({
+          subscriberId,
+          jobId: newJob.id,
+        });
 
-            const invJson = await invRes.json().catch(() => ({}));
-            invoice = {
-              status: invRes.status,
-              json: invJson,
-            };
+        invoice = {
+          status: 200,
+          json: {
+            ok: true,
+            ...inv,
+            mode: inv?.mode || "auto",
+          },
+        };
 
-            if (!invRes.ok || !invJson?.ok) {
-              invoice_warning = invJson?.details || invJson?.error || "Xero invoice creation failed";
-            }
-          } catch (e) {
-            invoice_warning = "Xero invoice creation failed unexpectedly";
-          }
-        }
+        newJob.xero_invoice_id = inv?.invoiceId || newJob.xero_invoice_id || null;
+        newJob.xero_invoice_number = inv?.invoiceNumber || newJob.xero_invoice_number || null;
+        newJob.xero_invoice_status = inv?.status || newJob.xero_invoice_status || null;
+      } catch (e) {
+        console.error("Swap invoice creation failed:", e);
+        invoice = {
+          status: 500,
+          json: {
+            ok: false,
+            error: "Invoice failed",
+            details: String(e?.message || e),
+          },
+        };
+        invoice_warning = String(e?.message || "Xero invoice creation failed");
       }
     }
 
@@ -291,6 +280,10 @@ export default async function handler(req, res) {
       invoice_warning,
     });
   } catch (e) {
-    return res.status(400).json({ ok: false, error: e?.message || "Unknown error" });
+    console.error("book-swap unexpected error:", e);
+    return res.status(400).json({
+      ok: false,
+      error: e?.message || "Unknown error",
+    });
   }
 }
