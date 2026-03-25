@@ -1,7 +1,7 @@
 // pages/api/public/quote.js
 
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
-import { getSkipPricesForPostcode } from "../../../lib/getSkipPricesForPostcode";
+import { getSkipPricesForPostcodeAdmin } from "../../../lib/getSkipPricesForPostcode";
 import { calculateEarliestBookingDate } from "../../../lib/booking/bookingAvailability";
 
 function asSlug(value) {
@@ -10,10 +10,6 @@ function asSlug(value) {
 
 function asText(value) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function asBool(value) {
-  return value === true || value === "true";
 }
 
 function clampMoney(value) {
@@ -84,8 +80,7 @@ export default async function handler(req, res) {
 
     let skipOptions = [];
     try {
-      const results = await getSkipPricesForPostcode(subscriberId, postcode);
-      skipOptions = Array.isArray(results) ? results : [];
+      skipOptions = await getSkipPricesForPostcodeAdmin(subscriberId, postcode);
     } catch (err) {
       return res.status(500).json({
         ok: false,
@@ -138,10 +133,9 @@ export default async function handler(req, res) {
       permit = permitRow;
     }
 
-    const selectedSkip =
-      selectedSkipTypeId
-        ? skipOptions.find((s) => String(s.skip_type_id) === selectedSkipTypeId) || null
-        : null;
+    const selectedSkip = selectedSkipTypeId
+      ? skipOptions.find((s) => String(s.skip_type_id) === selectedSkipTypeId) || null
+      : null;
 
     const skipPriceIncVat = clampMoney(selectedSkip?.price_inc_vat || 0);
     const permitPriceNoVat = clampMoney(permit?.price_no_vat || 0);
