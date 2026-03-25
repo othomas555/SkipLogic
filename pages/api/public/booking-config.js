@@ -4,9 +4,7 @@ import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { buildAllowedWeekdays } from "../../../lib/booking/bookingAvailability";
 
 function asSlug(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
+  return String(value || "").trim().toLowerCase();
 }
 
 function cleanColor(value, fallback = "#0f172a") {
@@ -38,7 +36,6 @@ export default async function handler(req, res) {
       .select(`
         id,
         company_name,
-        trading_name,
         public_booking_enabled,
         public_booking_slug,
         public_booking_title,
@@ -80,7 +77,6 @@ export default async function handler(req, res) {
 
     const title =
       subscriber.public_booking_title ||
-      subscriber.trading_name ||
       subscriber.company_name ||
       "Book a skip";
 
