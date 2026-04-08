@@ -3,7 +3,7 @@
 import Stripe from "stripe";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { getSkipPricesForPostcodeAdmin } from "../../../lib/getSkipPricesForPostcode";
-import { calculateEarliestBookingDate } from "../../../lib/booking/bookingAvailability";
+import { calculateEarliestBookingDate } from "../../lib/booking/bookingAvailability";
 
 function asSlug(value) {
   return String(value || "").trim().toLowerCase();
