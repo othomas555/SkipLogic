@@ -466,7 +466,7 @@ export default function SettingsPage() {
           </Link>
           <h1 style={{ margin: "10px 0 0" }}>Settings</h1>
           <p style={{ margin: "6px 0 0", color: "#666", fontSize: 13 }}>
-            Skip hire terms + integrations + permits + emails + waste.
+            Skip hire terms + integrations + permits + emails + waste + online booking.
           </p>
         </div>
 
@@ -485,6 +485,28 @@ export default function SettingsPage() {
           {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
         </div>
       )}
+
+      {/* Online booking (link only) */}
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <h2 style={h2Style}>Online booking</h2>
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>
+              Hosted public booking page, subscriber slug, branding, booking rules, copyable booking link.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Link href="/app/settings/online-booking" style={{ ...btnPrimaryDark, textDecoration: "none", display: "inline-block" }}>
+              Open online booking settings
+            </Link>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+          Customers will use your hosted booking page, for example: <b>/book/your-slug</b>
+        </div>
+      </section>
 
       {/* Emails (link only) */}
       <section style={cardStyle}>
@@ -683,7 +705,6 @@ export default function SettingsPage() {
           {permitsErr ? <p style={{ color: "#8a1f1f", margin: "0 0 8px" }}>{permitsErr}</p> : null}
           {permitsOk ? <p style={{ color: "#1f6b2a", margin: "0 0 8px" }}>{permitsOk}</p> : null}
 
-          {/* Create new permit */}
           <div style={subCard}>
             <div style={{ fontWeight: 800, marginBottom: 10 }}>Add a permit</div>
 
@@ -755,7 +776,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Existing permits list */}
           <div style={{ marginTop: 12 }}>
             <div style={{ fontWeight: 800, marginBottom: 8 }}>Existing permits</div>
 
