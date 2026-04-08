@@ -75,6 +75,20 @@ export default async function handler(req, res) {
       });
     }
 
+    const { data: permitRows, error: permitError } = await supabase
+      .from("permit_settings")
+      .select("id, name, price_no_vat, delay_business_days, validity_days, is_active")
+      .eq("subscriber_id", subscriber.id)
+      .eq("is_active", true)
+      .order("name", { ascending: true });
+
+    if (permitError) {
+      return res.status(500).json({
+        ok: false,
+        error: permitError.message || "Failed to load permit settings",
+      });
+    }
+
     const title =
       subscriber.public_booking_title ||
       subscriber.company_name ||
@@ -110,6 +124,13 @@ export default async function handler(req, res) {
           allowSunday,
         }),
       },
+      permit_options: (permitRows || []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        price_no_vat: Number(p.price_no_vat || 0),
+        delay_business_days: Number(p.delay_business_days || 0),
+        validity_days: Number(p.validity_days || 0),
+      })),
     });
   } catch (err) {
     return res.status(500).json({
