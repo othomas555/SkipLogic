@@ -1,7 +1,7 @@
 // pages/api/public/booking-config.js
 
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
-import { buildAllowedWeekdays } from "../../lib/booking/bookingAvailability";
+import { buildAllowedWeekdays } from "../../../lib/booking/bookingAvailability";
 
 function asSlug(value) {
   return String(value || "").trim().toLowerCase();
@@ -12,6 +12,12 @@ function cleanColor(value, fallback = "#0f172a") {
   if (/^#[0-9a-fA-F]{6}$/.test(v)) return v;
   if (/^#[0-9a-fA-F]{3}$/.test(v)) return v;
   return fallback;
+}
+
+function clampMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100) / 100;
 }
 
 export default async function handler(req, res) {
@@ -75,17 +81,17 @@ export default async function handler(req, res) {
       });
     }
 
-    const { data: permitRows, error: permitError } = await supabase
+    const { data: permits, error: permitErr } = await supabase
       .from("permit_settings")
       .select("id, name, price_no_vat, delay_business_days, validity_days, is_active")
       .eq("subscriber_id", subscriber.id)
       .eq("is_active", true)
       .order("name", { ascending: true });
 
-    if (permitError) {
+    if (permitErr) {
       return res.status(500).json({
         ok: false,
-        error: permitError.message || "Failed to load permit settings",
+        error: permitErr.message || "Failed to load permit settings",
       });
     }
 
@@ -124,10 +130,10 @@ export default async function handler(req, res) {
           allowSunday,
         }),
       },
-      permit_options: (permitRows || []).map((p) => ({
+      permit_options: (permits || []).map((p) => ({
         id: p.id,
         name: p.name,
-        price_no_vat: Number(p.price_no_vat || 0),
+        price_no_vat: clampMoney(p.price_no_vat),
         delay_business_days: Number(p.delay_business_days || 0),
         validity_days: Number(p.validity_days || 0),
       })),
