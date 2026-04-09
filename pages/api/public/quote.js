@@ -1,15 +1,17 @@
-// pages/api/public/quote.js
+// pages/api/public/booking-config.js
 
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
-import { getSkipPricesForPostcodeAdmin } from "../../../lib/getSkipPricesForPostcode";
-import { calculateEarliestBookingDate } from "../../lib/booking/bookingAvailability";
+import { buildAllowedWeekdays } from "../../../lib/booking/bookingAvailability";
 
 function asSlug(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function asText(value) {
-  return typeof value === "string" ? value.trim() : "";
+function cleanColor(value, fallback = "#0f172a") {
+  const v = String(value || "").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(v)) return v;
+  if (/^#[0-9a-fA-F]{3}$/.test(v)) return v;
+  return fallback;
 }
 
 function clampMoney(value) {
@@ -19,31 +21,23 @@ function clampMoney(value) {
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", ["POST"]);
+  if (req.method !== "GET") {
+    res.setHeader("Allow", ["GET"]);
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   try {
-    const body = req.body && typeof req.body === "object" ? req.body : {};
-
-    const slug = asSlug(body.slug);
-    const postcode = asText(body.postcode);
-    const placementType = asText(body.placement_type) || "private";
-    const permitSettingId = asText(body.permit_setting_id);
-    const selectedSkipTypeId = asText(body.skip_type_id);
-
+    const slug = asSlug(req.query.slug);
     if (!slug) {
-      return res.status(400).json({ ok: false, error: "Missing slug" });
-    }
-
-    if (!postcode) {
-      return res.status(400).json({ ok: false, error: "Missing postcode" });
+      return res.status(400).json({
+        ok: false,
+        error: "Missing slug",
+      });
     }
 
     const supabase = getSupabaseAdmin();
 
-    const { data: subscriber, error: subErr } = await supabase
+    const { data: subscriber, error } = await supabase
       .from("subscribers")
       .select(`
         id,
@@ -51,6 +45,10 @@ export default async function handler(req, res) {
         public_booking_enabled,
         public_booking_slug,
         public_booking_title,
+        public_booking_logo_url,
+        public_booking_primary_color,
+        public_booking_phone,
+        public_booking_terms_url,
         public_booking_notice_days,
         public_booking_notice_working_days,
         public_booking_allow_saturday,
@@ -62,146 +60,83 @@ export default async function handler(req, res) {
       .ilike("public_booking_slug", slug)
       .maybeSingle();
 
-    if (subErr) {
+    if (error) {
       return res.status(500).json({
         ok: false,
-        error: subErr.message || "Failed to load subscriber",
+        error: error.message || "Failed to load booking config",
       });
     }
 
-    if (!subscriber || !subscriber.public_booking_enabled) {
+    if (!subscriber) {
       return res.status(404).json({
         ok: false,
         error: "Booking page not found",
       });
     }
 
-    const subscriberId = subscriber.id;
+    if (!subscriber.public_booking_enabled) {
+      return res.status(404).json({
+        ok: false,
+        error: "Online booking is not enabled",
+      });
+    }
 
-    let skipOptions = [];
-    try {
-      skipOptions = await getSkipPricesForPostcodeAdmin(subscriberId, postcode);
-    } catch (err) {
+    const { data: permits, error: permitErr } = await supabase
+      .from("permit_settings")
+      .select("id, name, price_no_vat, delay_business_days, validity_days, is_active")
+      .eq("subscriber_id", subscriber.id)
+      .eq("is_active", true)
+      .order("name", { ascending: true });
+
+    if (permitErr) {
       return res.status(500).json({
         ok: false,
-        error: err?.message || "Failed to look up skip prices for postcode",
+        error: permitErr.message || "Failed to load permit settings",
       });
     }
 
-    if (!skipOptions.length) {
-      return res.status(200).json({
-        ok: true,
-        subscriber: {
-          id: subscriber.id,
-          slug: subscriber.public_booking_slug,
-          title: subscriber.public_booking_title || subscriber.company_name || "Book a skip",
-        },
-        postcode,
-        serviceable: false,
-        message: "We don't serve this postcode or no prices are set.",
-        skip_options: [],
-        permit: null,
-        pricing: null,
-        availability: null,
-      });
-    }
+    const title =
+      subscriber.public_booking_title ||
+      subscriber.company_name ||
+      "Book a skip";
 
-    let permit = null;
-    if (placementType === "permit" && permitSettingId) {
-      const { data: permitRow, error: permitErr } = await supabase
-        .from("permit_settings")
-        .select("id, name, price_no_vat, delay_business_days, validity_days, is_active")
-        .eq("subscriber_id", subscriberId)
-        .eq("id", permitSettingId)
-        .eq("is_active", true)
-        .maybeSingle();
-
-      if (permitErr) {
-        return res.status(500).json({
-          ok: false,
-          error: permitErr.message || "Failed to load permit setting",
-        });
-      }
-
-      if (!permitRow) {
-        return res.status(400).json({
-          ok: false,
-          error: "Selected permit setting was not found",
-        });
-      }
-
-      permit = permitRow;
-    }
-
-    const selectedSkip = selectedSkipTypeId
-      ? skipOptions.find((s) => String(s.skip_type_id) === selectedSkipTypeId) || null
-      : null;
-
-    const skipPriceIncVat = clampMoney(selectedSkip?.price_inc_vat || 0);
-    const permitPriceNoVat = clampMoney(permit?.price_no_vat || 0);
-
-    const usePermitLeadTimes = !!subscriber.public_booking_use_permit_lead_times;
-    const permitRequired = placementType === "permit" && !!permit && usePermitLeadTimes;
-
-    const availability = calculateEarliestBookingDate({
-      now: new Date(),
-      subscriberNoticeDays: Number(subscriber.public_booking_notice_days || 0),
-      subscriberNoticeBusinessDays: !!subscriber.public_booking_notice_working_days,
-      allowSaturday: !!subscriber.public_booking_allow_saturday,
-      allowSunday: !!subscriber.public_booking_allow_sunday,
-      cutoffTime: subscriber.public_booking_cutoff_time || null,
-      permitRequired,
-      permitDelayBusinessDays: Number(permit?.delay_business_days || 0),
-    });
-
-    const total = clampMoney(skipPriceIncVat + permitPriceNoVat);
+    const allowSaturday = !!subscriber.public_booking_allow_saturday;
+    const allowSunday = !!subscriber.public_booking_allow_sunday;
 
     return res.status(200).json({
       ok: true,
       subscriber: {
         id: subscriber.id,
         slug: subscriber.public_booking_slug,
-        title: subscriber.public_booking_title || subscriber.company_name || "Book a skip",
+        title,
+        logo_url: subscriber.public_booking_logo_url || null,
+        primary_color: cleanColor(subscriber.public_booking_primary_color),
+        phone: subscriber.public_booking_phone || null,
+        terms_url: subscriber.public_booking_terms_url || null,
       },
-      postcode,
-      serviceable: true,
-      message: `Found ${skipOptions.length} skip type(s) for this postcode.`,
-      skip_options: skipOptions.map((s) => ({
-        skip_type_id: s.skip_type_id,
-        skip_type_name: s.skip_type_name,
-        price_inc_vat: clampMoney(s.price_inc_vat),
-      })),
-      selected_skip: selectedSkip
-        ? {
-            skip_type_id: selectedSkip.skip_type_id,
-            skip_type_name: selectedSkip.skip_type_name,
-            price_inc_vat: skipPriceIncVat,
-          }
-        : null,
-      permit: permit
-        ? {
-            id: permit.id,
-            name: permit.name,
-            price_no_vat: permitPriceNoVat,
-            delay_business_days: Number(permit.delay_business_days || 0),
-            validity_days: Number(permit.validity_days || 0),
-          }
-        : null,
-      pricing: selectedSkip
-        ? {
-            skip_price_inc_vat: skipPriceIncVat,
-            permit_price_no_vat: permitPriceNoVat,
-            total_to_charge: total,
-          }
-        : null,
-      availability: {
-        earliest_date: availability.earliestDate,
+      booking_rules: {
+        notice_days: Number(subscriber.public_booking_notice_days || 0),
+        notice_working_days: !!subscriber.public_booking_notice_working_days,
+        allow_saturday: allowSaturday,
+        allow_sunday: allowSunday,
         max_days_ahead:
           subscriber.public_booking_max_days_ahead == null
             ? null
             : Number(subscriber.public_booking_max_days_ahead),
-        debug: availability.debug,
+        cutoff_time: subscriber.public_booking_cutoff_time || null,
+        use_permit_lead_times: !!subscriber.public_booking_use_permit_lead_times,
+        allowed_weekdays: buildAllowedWeekdays({
+          allowSaturday,
+          allowSunday,
+        }),
       },
+      permit_options: (permits || []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        price_no_vat: clampMoney(p.price_no_vat),
+        delay_business_days: Number(p.delay_business_days || 0),
+        validity_days: Number(p.validity_days || 0),
+      })),
     });
   } catch (err) {
     return res.status(500).json({
