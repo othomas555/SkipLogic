@@ -1,13 +1,10 @@
-// pages/api/public/create-checkout-session.js
+// pages/api/public/confirm-booking.js
 
 import Stripe from "stripe";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
+import { createInvoiceForJob } from "../xero/xero_create_invoice";
 import { getSkipPricesForPostcodeAdmin } from "../../../lib/getSkipPricesForPostcode";
-import { calculateEarliestBookingDate } from "../../lib/booking/bookingAvailability";
-
-function asSlug(value) {
-  return String(value || "").trim().toLowerCase();
-}
+import { calculateEarliestBookingDate } from "../../../lib/booking/bookingAvailability";
 
 function asText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -17,10 +14,6 @@ function clampMoney(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.round(n * 100) / 100;
-}
-
-function toPence(value) {
-  return Math.round(clampMoney(value) * 100);
 }
 
 function getBaseUrl(req) {
@@ -50,9 +43,7 @@ async function loadSubscriberBySlug(supabase, slug) {
     .maybeSingle();
 
   if (error) throw new Error(error.message || "Failed to load subscriber");
-  if (!data || !data.public_booking_enabled) {
-    throw new Error("Booking page not found");
-  }
+  if (!data || !data.public_booking_enabled) throw new Error("Booking page not found");
   return data;
 }
 
@@ -114,24 +105,9 @@ async function buildValidatedQuote({
     permitDelayBusinessDays: Number(permit?.delay_business_days || 0),
   });
 
-  if (!scheduledDate) {
-    throw new Error("Delivery date is required.");
-  }
-
+  if (!scheduledDate) throw new Error("Delivery date is required.");
   if (availability.earliestDate && scheduledDate < availability.earliestDate) {
     throw new Error(`Earliest available delivery date is ${availability.earliestDate}.`);
-  }
-
-  if (subscriber.public_booking_max_days_ahead != null) {
-    const days = Number(subscriber.public_booking_max_days_ahead);
-    if (Number.isFinite(days) && days > 0) {
-      const dt = new Date();
-      dt.setDate(dt.getDate() + days);
-      const lastAllowed = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
-      if (scheduledDate > lastAllowed) {
-        throw new Error(`Bookings can only be made up to ${days} day(s) ahead.`);
-      }
-    }
   }
 
   const skipPriceIncVat = clampMoney(selectedSkip.price_inc_vat);
@@ -142,13 +118,87 @@ async function buildValidatedQuote({
     subscriber,
     selectedSkip,
     permit,
-    availability,
     pricing: {
       skipPriceIncVat,
       permitPriceNoVat,
       totalToCharge,
     },
   };
+}
+
+async function findExistingJobBySession(supabase, subscriberId, sessionId) {
+  const token = `[stripe_session:${sessionId}]`;
+
+  const { data, error } = await supabase
+    .from("jobs")
+    .select("id, job_number")
+    .eq("subscriber_id", subscriberId)
+    .ilike("notes", `%${token}%`)
+    .limit(1);
+
+  if (error) throw new Error(error.message || "Failed to check existing booking");
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function findOrCreateCustomer(supabase, subscriberId, md) {
+  const email = asText(md.customer_email).toLowerCase();
+
+  const { data: existing, error: findErr } = await supabase
+    .from("customers")
+    .select("id")
+    .eq("subscriber_id", subscriberId)
+    .ilike("email", email)
+    .limit(1);
+
+  if (findErr) throw new Error(findErr.message || "Failed to look up customer");
+
+  if (Array.isArray(existing) && existing.length) {
+    return existing[0].id;
+  }
+
+  const insertPayload = {
+    subscriber_id: subscriberId,
+    first_name: asText(md.customer_first_name),
+    last_name: asText(md.customer_last_name),
+    company_name: asText(md.customer_company_name) || null,
+    email,
+    phone: asText(md.customer_phone),
+    address_line1: asText(md.site_address_line1),
+    address_line2: asText(md.site_address_line2),
+    address_line3: asText(md.site_town),
+    postcode: asText(md.postcode),
+    is_credit_account: false,
+  };
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from("customers")
+    .insert([insertPayload])
+    .select("id")
+    .single();
+
+  if (insertErr || !inserted) {
+    throw new Error(insertErr?.message || "Could not create customer");
+  }
+
+  return inserted.id;
+}
+
+async function sendBookingEmail(req, job, md, totalToCharge) {
+  try {
+    const baseUrl = getBaseUrl(req);
+    await fetch(`${baseUrl}/api/send_booking_email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job,
+        customerName: `${asText(md.customer_first_name)} ${asText(md.customer_last_name)}`.trim(),
+        customerEmail: asText(md.customer_email),
+        jobPrice: String(totalToCharge),
+      }),
+    });
+  } catch (err) {
+    console.warn("public confirm send_booking_email failed:", err?.message || err);
+  }
 }
 
 export default async function handler(req, res) {
@@ -162,41 +212,34 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: "STRIPE_SECRET_KEY is missing" });
     }
 
-    const body = req.body && typeof req.body === "object" ? req.body : {};
-    const slug = asSlug(body.slug);
-    const postcode = asText(body.postcode);
-    const placementType = asText(body.placement_type) || "private";
-    const permitSettingId = asText(body.permit_setting_id);
-    const skipTypeId = asText(body.skip_type_id);
-    const scheduledDate = asText(body.scheduled_date);
-
-    const customer = body.customer && typeof body.customer === "object" ? body.customer : {};
-    const site = body.site && typeof body.site === "object" ? body.site : {};
-
-    const customerFirstName = asText(customer.first_name);
-    const customerLastName = asText(customer.last_name);
-    const customerCompanyName = asText(customer.company_name);
-    const customerEmail = asText(customer.email);
-    const customerPhone = asText(customer.phone);
-
-    const siteName = asText(site.site_name);
-    const siteAddress1 = asText(site.address_line1);
-    const siteAddress2 = asText(site.address_line2);
-    const siteTown = asText(site.town);
-    const notes = asText(body.notes);
-
-    if (!slug) return res.status(400).json({ ok: false, error: "Missing slug" });
-    if (!postcode) return res.status(400).json({ ok: false, error: "Missing postcode" });
-    if (!skipTypeId) return res.status(400).json({ ok: false, error: "Missing skip type" });
-    if (placementType === "permit" && !permitSettingId) {
-      return res.status(400).json({ ok: false, error: "Missing permit setting" });
+    const sessionId = asText(req.body?.session_id);
+    if (!sessionId) {
+      return res.status(400).json({ ok: false, error: "session_id is required" });
     }
-    if (!customerFirstName || !customerLastName || !customerEmail || !customerPhone) {
-      return res.status(400).json({ ok: false, error: "Missing customer details" });
+
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: "2025-02-24.acacia",
+    });
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ["payment_intent"],
+    });
+
+    if (!session) {
+      return res.status(404).json({ ok: false, error: "Checkout session not found" });
     }
-    if (!siteAddress1 || !siteTown) {
-      return res.status(400).json({ ok: false, error: "Missing site address" });
+
+    if (session.payment_status !== "paid") {
+      return res.status(400).json({ ok: false, error: "Checkout session is not paid" });
     }
+
+    const md = session.metadata || {};
+    const slug = asText(md.booking_slug);
+    const postcode = asText(md.postcode);
+    const placementType = asText(md.placement_type) || "private";
+    const permitSettingId = asText(md.permit_setting_id);
+    const skipTypeId = asText(md.skip_type_id);
+    const scheduledDate = asText(md.scheduled_date);
 
     const supabase = getSupabaseAdmin();
 
@@ -210,86 +253,108 @@ export default async function handler(req, res) {
       scheduledDate,
     });
 
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-      apiVersion: "2025-02-24.acacia",
-    });
-
-    const baseUrl = getBaseUrl(req);
-    const title =
-      quote.subscriber.public_booking_title ||
-      quote.subscriber.company_name ||
-      "Book a skip";
-
-    const lineItems = [
-      {
-        quantity: 1,
-        price_data: {
-          currency: "gbp",
-          product_data: {
-            name: `${title} – ${quote.selectedSkip.skip_type_name}`,
-            description: `Skip hire for ${postcode}`,
-          },
-          unit_amount: toPence(quote.pricing.skipPriceIncVat),
-        },
-      },
-    ];
-
-    if (quote.pricing.permitPriceNoVat > 0 && quote.permit) {
-      lineItems.push({
-        quantity: 1,
-        price_data: {
-          currency: "gbp",
-          product_data: {
-            name: `Permit – ${quote.permit.name}`,
-            description: `Road permit fee`,
-          },
-          unit_amount: toPence(quote.pricing.permitPriceNoVat),
-        },
+    const existing = await findExistingJobBySession(supabase, quote.subscriber.id, session.id);
+    if (existing) {
+      return res.status(200).json({
+        ok: true,
+        already_confirmed: true,
+        job_id: existing.id,
+        job_number: existing.job_number,
       });
     }
 
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      customer_email: customerEmail,
-      line_items: lineItems,
-      success_url: `${baseUrl}/book/${encodeURIComponent(slug)}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/book/${encodeURIComponent(slug)}`,
-      metadata: {
-        booking_slug: slug,
-        subscriber_id: String(quote.subscriber.id),
-        postcode,
-        placement_type: placementType,
-        permit_setting_id: quote.permit?.id || "",
-        skip_type_id: String(quote.selectedSkip.skip_type_id),
-        scheduled_date: scheduledDate,
+    const customerId = await findOrCreateCustomer(supabase, quote.subscriber.id, md);
 
-        customer_first_name: customerFirstName,
-        customer_last_name: customerLastName,
-        customer_company_name: customerCompanyName || "",
-        customer_email: customerEmail,
-        customer_phone: customerPhone,
-
-        site_name: siteName || "",
-        site_address_line1: siteAddress1,
-        site_address_line2: siteAddress2 || "",
-        site_town: siteTown,
-        notes: notes || "",
-
-        skip_price_inc_vat: String(quote.pricing.skipPriceIncVat),
-        permit_price_no_vat: String(quote.pricing.permitPriceNoVat),
-        total_to_charge: String(quote.pricing.totalToCharge),
-      },
+    const { data: allocatedJobNumber, error: allocErr } = await supabase.rpc("alloc_job_number", {
+      p_subscriber_id: quote.subscriber.id,
     });
+
+    if (allocErr || !allocatedJobNumber) {
+      throw new Error("Could not allocate a job number");
+    }
+
+    const sessionToken = `[stripe_session:${session.id}]`;
+    const notes = [asText(md.notes), sessionToken].filter(Boolean).join("\n");
+
+    const insertPayload = {
+      subscriber_id: quote.subscriber.id,
+      customer_id: customerId,
+      skip_type_id: String(quote.selectedSkip.skip_type_id),
+
+      site_name: asText(md.site_name) || null,
+      site_address_line1: asText(md.site_address_line1) || null,
+      site_address_line2: asText(md.site_address_line2) || null,
+      site_town: asText(md.site_town) || null,
+      site_postcode: postcode || null,
+
+      scheduled_date: scheduledDate || null,
+      notes: notes || null,
+
+      payment_type: "card",
+      price_inc_vat: clampMoney(quote.pricing.skipPriceIncVat),
+
+      placement_type: placementType || "private",
+      permit_setting_id: quote.permit?.id || null,
+      permit_price_no_vat: quote.permit ? clampMoney(quote.pricing.permitPriceNoVat) : null,
+      permit_delay_business_days: quote.permit ? Number(quote.permit.delay_business_days || 0) : null,
+      permit_validity_days: quote.permit ? Number(quote.permit.validity_days || 0) : null,
+      permit_override: false,
+      weekend_override: false,
+
+      job_number: allocatedJobNumber,
+    };
+
+    const { data: job, error: insertErr } = await supabase
+      .from("jobs")
+      .insert([insertPayload])
+      .select("*")
+      .single();
+
+    if (insertErr || !job) {
+      throw new Error(insertErr?.message || "Could not create job");
+    }
+
+    const { error: eventError } = await supabase.rpc("create_job_event", {
+      _subscriber_id: quote.subscriber.id,
+      _job_id: job.id,
+      _event_type: "delivery",
+      _scheduled_at: null,
+      _completed_at: null,
+      _notes: "Initial delivery booked",
+    });
+
+    if (eventError) {
+      throw new Error(`Job created but delivery event failed: ${eventError.message}`);
+    }
+
+    let invoice = null;
+    try {
+      const inv = await createInvoiceForJob({
+        subscriberId: quote.subscriber.id,
+        jobId: job.id,
+      });
+      invoice = { ok: true, ...inv };
+    } catch (err) {
+      invoice = {
+        ok: false,
+        error: "Invoice failed",
+        details: String(err?.message || err),
+      };
+    }
+
+    await sendBookingEmail(req, job, md, quote.pricing.totalToCharge);
 
     return res.status(200).json({
       ok: true,
-      id: session.id,
-      url: session.url,
+      already_confirmed: false,
+      job_id: job.id,
+      job_number: job.job_number,
+      invoice,
     });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      error: String(err?.message || "Could not start checkout"),
+      error: String(err?.message || "Could not confirm booking"),
     });
   }
 }
