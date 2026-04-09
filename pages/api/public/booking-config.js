@@ -1,7 +1,7 @@
 // pages/api/public/booking-config.js
 
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
-import { buildAllowedWeekdays } from "../../../lib/booking/bookingAvailability";
+import { buildAllowedWeekdays } from "../../../lib/booking/bookingAvailability.js";
 
 function asSlug(value) {
   return String(value || "").trim().toLowerCase();
