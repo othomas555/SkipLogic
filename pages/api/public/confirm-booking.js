@@ -4,7 +4,7 @@ import Stripe from "stripe";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { createInvoiceForJob } from "../xero/xero_create_invoice";
 import { getSkipPricesForPostcodeAdmin } from "../../../lib/getSkipPricesForPostcode";
-import { calculateEarliestBookingDate } from "../../../lib/booking/bookingAvailability";
+import { calculateEarliestBookingDate } from "../../../lib/booking/bookingAvailability.js";
 
 function asText(value) {
   return typeof value === "string" ? value.trim() : "";
