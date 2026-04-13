@@ -1,1060 +1,275 @@
-// pages/app/jobs/[id].js
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import Link from "next/link";
 import { supabase } from "../../../lib/supabaseClient";
-import { useAuthProfile } from "../../../lib/useAuthProfile";
 
-function fmtDate(d) {
-  return d ? String(d) : "—";
-}
-function toInt(x, fallback = 0) {
-  const n = Number(x);
-  return Number.isFinite(n) ? Math.trunc(n) : fallback;
-}
-function addDays(ymd, days) {
-  if (!ymd) return null;
-  const dt = new Date(ymd + "T00:00:00Z");
-  if (Number.isNaN(dt.getTime())) return null;
-  dt.setUTCDate(dt.getUTCDate() + days);
-  const y = dt.getUTCFullYear();
-  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(dt.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-function daysBetween(aYmd, bYmd) {
-  if (!aYmd || !bYmd) return null;
-  const a = new Date(aYmd + "T00:00:00Z").getTime();
-  const b = new Date(bYmd + "T00:00:00Z").getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-  return Math.round((b - a) / (1000 * 60 * 60 * 24));
-}
-function todayYMDUTC() {
-  const dt = new Date();
-  const y = dt.getUTCFullYear();
-  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(dt.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-function asText(x) {
-  return typeof x === "string" ? x.trim() : "";
-}
 async function getAccessToken() {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) return null;
+  const { data } = await supabase.auth.getSession();
   return data?.session?.access_token || null;
 }
 
-export default function JobDetailPage() {
+export default function EditJobPage() {
   const router = useRouter();
   const { id } = router.query;
 
-  const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
-
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [acting, setActing] = useState("");
-
-  const [errorMsg, setErrorMsg] = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
 
   const [job, setJob] = useState(null);
-  const [customer, setCustomer] = useState(null);
-  const [subscriberSettings, setSubscriberSettings] = useState(null);
+  const [lookups, setLookups] = useState(null);
 
-  const [reminderLogs, setReminderLogs] = useState([]);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  // form fields
+  const [customerId, setCustomerId] = useState("");
+  const [skipTypeId, setSkipTypeId] = useState("");
+  const [scheduledDate, setScheduledDate] = useState("");
+  const [price, setPrice] = useState("");
+  const [notes, setNotes] = useState("");
 
   const [siteName, setSiteName] = useState("");
+  const [siteAddress1, setSiteAddress1] = useState("");
+  const [siteAddress2, setSiteAddress2] = useState("");
+  const [siteTown, setSiteTown] = useState("");
   const [sitePostcode, setSitePostcode] = useState("");
-  const [plannedDelivery, setPlannedDelivery] = useState("");
-  const [plannedCollection, setPlannedCollection] = useState("");
-  const [noteText, setNoteText] = useState("");
 
-  // Payment UI state
-  const [payReference, setPayReference] = useState("");
-  const [payWorking, setPayWorking] = useState(false);
-  const [payMsg, setPayMsg] = useState("");
-  const [payErr, setPayErr] = useState("");
+  const [paymentType, setPaymentType] = useState("card");
+  const [placementType, setPlacementType] = useState("private");
 
-  async function loadAll() {
-    if (checking) return;
-    if (!user || !subscriberId || !id) return;
-
-    setLoading(true);
-    setErrorMsg("");
-    setSuccessMsg("");
-    setPayMsg("");
-    setPayErr("");
-
-    const { data: j, error: jErr } = await supabase
-      .from("jobs")
-      .select(
-        `
-        id,
-        subscriber_id,
-        customer_id,
-        job_number,
-        job_status,
-        site_name,
-        site_postcode,
-        scheduled_date,
-        delivery_actual_date,
-        collection_date,
-        collection_actual_date,
-        hire_extension_days,
-        payment_type,
-        created_at,
-        delivery_photo_url,
-        collection_photo_url,
-        swap_full_photo_url,
-        swap_empty_photo_url,
-
-        xero_invoice_id,
-        xero_invoice_number,
-        xero_invoice_status,
-
-        paid_at,
-        paid_method,
-        paid_reference,
-        paid_by_user_id
-      `
-      )
-      .eq("id", id)
-      .eq("subscriber_id", subscriberId)
-      .maybeSingle();
-
-    if (jErr) {
-      console.error(jErr);
-      setErrorMsg("Could not load job.");
-      setLoading(false);
-      return;
-    }
-    if (!j) {
-      setErrorMsg("Job not found (or you don't have access).");
-      setLoading(false);
-      return;
-    }
-
-    const { data: c, error: cErr } = await supabase
-      .from("customers")
-      .select("id, first_name, last_name, company_name, term_hire_exempt, term_hire_days_override")
-      .eq("id", j.customer_id)
-      .eq("subscriber_id", subscriberId)
-      .maybeSingle();
-
-    if (cErr) console.error(cErr);
-
-    const { data: s, error: sErr } = await supabase
-      .from("subscribers")
-      .select("id, term_hire_days, term_hire_reminder_days_before")
-      .eq("id", subscriberId)
-      .maybeSingle();
-
-    if (sErr) console.error(sErr);
-
-    const { data: logs, error: lErr } = await supabase
-      .from("term_hire_reminder_log")
-      .select("reminder_date, sent_to")
-      .eq("subscriber_id", subscriberId)
-      .eq("job_id", j.id)
-      .order("reminder_date", { ascending: false });
-
-    if (lErr) console.error(lErr);
-
-    setJob(j);
-    setCustomer(c || null);
-    setSubscriberSettings(s || null);
-    setReminderLogs(Array.isArray(logs) ? logs : []);
-
-    setSiteName(j.site_name || "");
-    setSitePostcode(j.site_postcode || "");
-    setPlannedDelivery(j.scheduled_date || "");
-    setPlannedCollection(j.collection_date || "");
-
-    setLoading(false);
-  }
-
+  // load job
   useEffect(() => {
-    loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checking, user, subscriberId, id]);
+    if (!id) return;
 
-  const customerName = useMemo(() => {
-    if (!customer) return "—";
-    const base = `${customer.first_name || ""} ${customer.last_name || ""}`.trim();
-    if (customer.company_name) return `${customer.company_name}${base ? ` – ${base}` : ""}`;
-    return base || "—";
-  }, [customer]);
+    async function load() {
+      setLoading(true);
+      setError("");
 
-  const termHireDays = useMemo(() => {
-    const subDefault = toInt(subscriberSettings?.term_hire_days, 14);
-    const override = customer?.term_hire_days_override;
-    const exempt = !!customer?.term_hire_exempt;
+      try {
+        const token = await getAccessToken();
 
-    if (exempt) return null;
-    if (override != null && String(override) !== "") return toInt(override, subDefault);
-    return subDefault;
-  }, [subscriberSettings, customer]);
+        const res = await fetch(`/api/jobs/get?id=${id}`, {
+          headers: { Authorization: "Bearer " + token },
+        });
 
-  const reminderBeforeDays = useMemo(() => {
-    return toInt(subscriberSettings?.term_hire_reminder_days_before, 4);
-  }, [subscriberSettings]);
+        const json = await res.json();
 
-  const reminderDay = useMemo(() => {
-    const term = termHireDays;
-    if (!term) return null;
-    return Math.max(0, term - reminderBeforeDays);
-  }, [termHireDays, reminderBeforeDays]);
+        if (!res.ok || !json.ok) {
+          throw new Error(json.error || "Failed to load job");
+        }
 
-  const deliveryAnchor = useMemo(() => {
-    return job?.delivery_actual_date || job?.scheduled_date || null;
-  }, [job]);
+        const j = json.job;
 
-  const totalHireDays = useMemo(() => {
-    if (!termHireDays) return null;
-    return termHireDays + toInt(job?.hire_extension_days, 0);
-  }, [termHireDays, job]);
+        setJob(j);
+        setLookups(json.lookups);
 
-  const scheduledReminderDate = useMemo(() => {
-    if (!deliveryAnchor) return null;
-    if (!totalHireDays) return null;
-    return addDays(deliveryAnchor, Math.max(0, totalHireDays - reminderBeforeDays));
-  }, [deliveryAnchor, totalHireDays, reminderBeforeDays]);
+        // populate form
+        setCustomerId(j.customer_id || "");
+        setSkipTypeId(j.skip_type_id || "");
+        setScheduledDate(j.scheduled_date || "");
+        setPrice(j.price_inc_vat || "");
+        setNotes(j.notes || "");
 
-  const hireEndDate = useMemo(() => {
-    if (!deliveryAnchor) return null;
-    if (!totalHireDays) return null;
-    return addDays(deliveryAnchor, totalHireDays);
-  }, [deliveryAnchor, totalHireDays]);
+        setSiteName(j.site_name || "");
+        setSiteAddress1(j.site_address_line1 || "");
+        setSiteAddress2(j.site_address_line2 || "");
+        setSiteTown(j.site_town || "");
+        setSitePostcode(j.site_postcode || "");
 
-  const daysRemaining = useMemo(() => {
-    if (!hireEndDate) return null;
-    return daysBetween(todayYMDUTC(), hireEndDate);
-  }, [hireEndDate]);
+        setPaymentType(j.payment_type || "card");
+        setPlacementType(j.placement_type || "private");
+      } catch (err) {
+        setError(err.message);
+      }
 
-  const hireStateLabel = useMemo(() => {
-    if (termHireDays == null) return "Term hire: EXEMPT (contract / tip & returns)";
-    if (!deliveryAnchor) return "Term hire: pending (no delivery date yet)";
-    if (daysRemaining == null) return "Term hire: —";
-    if (daysRemaining < 0) return `OVERDUE by ${Math.abs(daysRemaining)} day(s)`;
-    if (daysRemaining === 0) return "Due today";
-    return `${daysRemaining} day(s) remaining`;
-  }, [termHireDays, deliveryAnchor, daysRemaining]);
-
-  const reminderLogMatch = useMemo(() => {
-    if (!scheduledReminderDate) return null;
-    const rows = Array.isArray(reminderLogs) ? reminderLogs : [];
-    return rows.find((r) => String(r?.reminder_date || "") === scheduledReminderDate) || null;
-  }, [reminderLogs, scheduledReminderDate]);
-
-  const reminderStatus = useMemo(() => {
-    if (termHireDays == null) return { label: "Exempt", tone: "muted" };
-    if (!deliveryAnchor) return { label: "Pending (no delivery date)", tone: "muted" };
-    if (!scheduledReminderDate) return { label: "—", tone: "muted" };
-
-    if (reminderLogMatch) {
-      return { label: `Sent (for ${scheduledReminderDate})`, tone: "good" };
+      setLoading(false);
     }
 
-    const diff = daysBetween(todayYMDUTC(), scheduledReminderDate);
-    if (diff == null) return { label: "—", tone: "muted" };
-    if (diff > 0) return { label: `Due in ${diff} day(s)`, tone: "muted" };
-    if (diff === 0) return { label: "Due today", tone: "warn" };
-    return { label: `Overdue by ${Math.abs(diff)} day(s)`, tone: "bad" };
-  }, [termHireDays, deliveryAnchor, scheduledReminderDate, reminderLogMatch]);
+    load();
+  }, [id]);
 
-  // Status helpers (YOUR statuses)
-  const status = job?.job_status || "";
-  const canMarkDelivered = status === "booked";
-  const canUndoDelivered = status === "delivered" || !!job?.delivery_actual_date;
-  const canRequestCollection = status === "delivered";
-  const canMarkCollected = status === "delivered" || status === "awaiting_collection";
-  const canUndoCollected = status === "collected" || !!job?.collection_actual_date;
-
-  const isPaid = useMemo(() => {
-    return !!job?.paid_at;
-  }, [job]);
-
-  const paymentType = useMemo(() => {
-    return String(job?.payment_type || "");
-  }, [job]);
-
-  const canMarkPaid = useMemo(() => {
-    if (!job) return false;
-    if (isPaid) return false;
-    if (!job.xero_invoice_id) return false;
-    if (paymentType === "account") return false; // monthly invoice flow
-    if (paymentType === "cash" || paymentType === "card") return true;
-    return false;
-  }, [job, isPaid, paymentType]);
-
-  async function saveJobEdits() {
-    if (!job?.id) return;
-
+  async function handleSave() {
     setSaving(true);
-    setErrorMsg("");
-    setSuccessMsg("");
+    setError("");
+    setSuccess("");
 
-    const patch = {
-      site_name: siteName || null,
-      site_postcode: sitePostcode || null,
-      scheduled_date: plannedDelivery || null,
-      collection_date: plannedCollection || null,
-    };
-
-    const { error } = await supabase.from("jobs").update(patch).eq("id", job.id).eq("subscriber_id", subscriberId);
-
-    setSaving(false);
-
-    if (error) {
-      console.error(error);
-      setErrorMsg("Could not save job: " + (error.message || "Unknown error"));
-      return;
-    }
-
-    setSuccessMsg("Saved.");
-    await loadAll();
-  }
-
-  async function clearPhoto(field) {
-    if (!job?.id) return;
-    const ok = confirm("Clear this photo?");
-    if (!ok) return;
-
-    setActing(`clear_${field}`);
-    setErrorMsg("");
-    setSuccessMsg("");
-
-    const patch = { [field]: null };
-
-    const { error } = await supabase.from("jobs").update(patch).eq("id", job.id).eq("subscriber_id", subscriberId);
-
-    setActing("");
-
-    if (error) {
-      console.error(error);
-      setErrorMsg("Could not clear photo: " + (error.message || "Unknown error"));
-      return;
-    }
-
-    setSuccessMsg("Photo cleared.");
-    await loadAll();
-  }
-
-  async function addNote() {
-    if (!job?.id) return;
-    const text = String(noteText || "").trim();
-    if (!text) return;
-
-    setActing("note");
-    setErrorMsg("");
-    setSuccessMsg("");
-
-    const { error } = await supabase.rpc("create_job_event", {
-      _job_id: job.id,
-      _subscriber_id: subscriberId,
-      _event_type: "note",
-      _event_time: new Date().toISOString(),
-      _scheduled_time: null,
-      _notes: text,
-    });
-
-    setActing("");
-    if (error) {
-      console.error(error);
-      setErrorMsg("Could not add note: " + (error.message || "Unknown error"));
-      return;
-    }
-
-    setNoteText("");
-    setSuccessMsg("Note added.");
-  }
-
-  async function runAction(eventType) {
-    if (!job?.id) return;
-
-    setActing(eventType);
-    setErrorMsg("");
-    setSuccessMsg("");
-
-    const { error } = await supabase.rpc("create_job_event", {
-      _job_id: job.id,
-      _subscriber_id: subscriberId,
-      _event_type: eventType,
-      _event_time: new Date().toISOString(),
-      _scheduled_time: null,
-      _notes: null,
-    });
-
-    setActing("");
-    if (error) {
-      console.error(error);
-      setErrorMsg("Could not update job: " + (error.message || "Unknown error"));
-      return;
-    }
-
-    setSuccessMsg(`Updated: ${eventType.replace(/_/g, " ")}`);
-    await loadAll();
-  }
-
-  async function extendHire(daysToAdd) {
-    if (!job?.id) return;
-    const add = toInt(daysToAdd, 0);
-    if (add <= 0) return;
-
-    setActing(`extend_${add}`);
-    setErrorMsg("");
-    setSuccessMsg("");
-
-    const newTotal = toInt(job.hire_extension_days, 0) + add;
-
-    const { error: uErr } = await supabase
-      .from("jobs")
-      .update({ hire_extension_days: newTotal })
-      .eq("id", job.id)
-      .eq("subscriber_id", subscriberId);
-
-    if (uErr) {
-      console.error(uErr);
-      setActing("");
-      setErrorMsg("Could not extend hire: " + (uErr.message || "Unknown error"));
-      return;
-    }
-
-    const { error: eErr } = await supabase.rpc("create_job_event", {
-      _job_id: job.id,
-      _subscriber_id: subscriberId,
-      _event_type: "hire_extended",
-      _event_time: new Date().toISOString(),
-      _scheduled_time: null,
-      _notes: `Extension added: +${add} days (total extension now ${newTotal})`,
-    });
-
-    setActing("");
-    if (eErr) {
-      console.error(eErr);
-      setErrorMsg("Extended hire saved, but could not log event: " + (eErr.message || "Unknown error"));
-      await loadAll();
-      return;
-    }
-
-    setSuccessMsg(`Hire extended by ${add} day(s).`);
-    await loadAll();
-  }
-
-  async function markAsPaid() {
-    if (!job?.id) return;
-
-    setPayMsg("");
-    setPayErr("");
-
-    if (!job.xero_invoice_id) {
-      setPayErr("Cannot mark as paid because this job has no Xero invoice linked yet.");
-      return;
-    }
-
-    const method = paymentType === "cash" ? "cash" : paymentType === "card" ? "card" : "";
-    if (!method) {
-      setPayErr(`Cannot mark as paid for payment_type "${paymentType || "—"}".`);
-      return;
-    }
-
-    const token = await getAccessToken();
-    if (!token) {
-      setPayErr("You must be signed in.");
-      return;
-    }
-
-    setPayWorking(true);
     try {
-      const res = await fetch("/api/xero/xero_apply_payment", {
+      const token = await getAccessToken();
+
+      const res = await fetch("/api/jobs/update", {
         method: "POST",
         headers: {
           Authorization: "Bearer " + token,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          job_id: job.id,
-          paid_method: method,
-          paid_reference: asText(payReference) || null,
+          id,
+          customer_id: customerId,
+          skip_type_id: skipTypeId,
+          scheduled_date: scheduledDate,
+          price_inc_vat: price,
+          notes,
+
+          site_name: siteName,
+          site_address_line1: siteAddress1,
+          site_address_line2: siteAddress2,
+          site_town: siteTown,
+          site_postcode: sitePostcode,
+
+          payment_type: paymentType,
+          placement_type: placementType,
         }),
       });
 
-      const json = await res.json().catch(() => ({}));
+      const json = await res.json();
+
       if (!res.ok || !json.ok) {
-        const msg = json?.error || "Failed to apply payment";
-        const details = json?.details ? `\n${typeof json.details === "string" ? json.details : JSON.stringify(json.details)}` : "";
-        throw new Error(`${msg}${details}`);
+        throw new Error(json.error || "Update failed");
       }
 
-      setPayMsg(
-        `Payment applied in Xero. Amount paid: £${Number(json?.xero?.amount_paid || 0).toFixed(2)}. Invoice status: ${
-          json?.xero?.invoice_status || "—"
-        }.`
-      );
-      setPayReference("");
-      await loadAll();
-    } catch (e) {
-      setPayErr(String(e?.message || e));
-    } finally {
-      setPayWorking(false);
+      if (json.invoice_review_flagged) {
+        setSuccess("Saved. ⚠ Invoice needs manual review.");
+      } else {
+        setSuccess("Saved.");
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+
+    setSaving(false);
+  }
+
+  async function handleCancelJob() {
+    if (!confirm("Cancel this job?")) return;
+
+    try {
+      const token = await getAccessToken();
+
+      const res = await fetch("/api/jobs/cancel", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          id,
+          cancellation_reason: "Cancelled via edit page",
+        }),
+      });
+
+      const json = await res.json();
+
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error);
+      }
+
+      alert("Job cancelled");
+      router.push("/app/jobs");
+    } catch (err) {
+      alert(err.message);
     }
   }
 
-  if (checking || loading) {
-    return (
-      <main style={centerStyle}>
-        <p>Loading…</p>
-      </main>
-    );
+  async function handleDeleteJob() {
+    if (!confirm("DELETE this job permanently?")) return;
+
+    try {
+      const token = await getAccessToken();
+
+      const res = await fetch("/api/jobs/delete", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ id }),
+      });
+
+      const json = await res.json();
+
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error);
+      }
+
+      alert("Job deleted");
+      router.push("/app/jobs");
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
-  if (!user) {
-    return (
-      <main style={pageStyle}>
-        <h1>Job</h1>
-        <p>You must be signed in.</p>
-        <button onClick={() => router.push("/login")} style={btnSecondary}>
-          Go to login
-        </button>
-      </main>
-    );
-  }
+  if (loading) return <div style={{ padding: 20 }}>Loading…</div>;
 
-  const reminderToneStyle =
-    reminderStatus.tone === "good"
-      ? { color: "green" }
-      : reminderStatus.tone === "warn"
-      ? { color: "#8a6d00" }
-      : reminderStatus.tone === "bad"
-      ? { color: "#8a1f1f" }
-      : { color: "#555" };
+  if (!job) return <div style={{ padding: 20 }}>Job not found</div>;
 
   return (
-    <main style={pageStyle}>
-      <header style={headerStyle}>
-        <div>
-          <Link href="/app/jobs" style={linkStyle}>
-            ← Back to jobs list
-          </Link>
-          <h1 style={{ margin: "10px 0 6px" }}>{job.job_number ? `Job ${job.job_number}` : "Job"}</h1>
-          <div style={{ color: "#555", fontSize: 13 }}>
-            <div>
-              <b>Status:</b> {job.job_status || "—"}
-            </div>
-            <div>
-              <b>Customer:</b> {customerName}
-            </div>
-            <div>
-              <b>Site:</b>{" "}
-              {job.site_name
-                ? `${job.site_name}${job.site_postcode ? `, ${job.site_postcode}` : ""}`
-                : job.site_postcode || "—"}
-            </div>
-          </div>
-        </div>
+    <div style={{ padding: 20, maxWidth: 900 }}>
+      <h1>Edit Job #{job.job_number}</h1>
 
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <button onClick={saveJobEdits} disabled={saving} style={btnPrimary}>
-            {saving ? "Saving…" : "Save changes"}
-          </button>
-        </div>
-      </header>
-
-      {(authError || errorMsg || successMsg) && (
-        <div style={{ marginBottom: 14 }}>
-          {authError || errorMsg ? <p style={{ color: "red", margin: 0 }}>{authError || errorMsg}</p> : null}
-          {successMsg ? <p style={{ color: "green", margin: 0 }}>{successMsg}</p> : null}
+      {job.xero_invoice_id && (
+        <div style={{ background: "#fff3cd", padding: 10, marginBottom: 20 }}>
+          ⚠ This job has an invoice. Changes will require manual review.
         </div>
       )}
 
-      {/* Payment panel */}
-      <section style={cardStyle}>
-        <h2 style={h2Style}>Payment</h2>
+      {error && <div style={{ color: "red" }}>{error}</div>}
+      {success && <div style={{ color: "green" }}>{success}</div>}
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-          <span
-            style={{
-              padding: "4px 10px",
-              borderRadius: 999,
-              fontSize: 12,
-              fontWeight: 900,
-              border: "1px solid",
-              borderColor: isPaid ? "#bfe7c0" : "#f0b4b4",
-              background: isPaid ? "#f2fff2" : "#fff5f5",
-              color: isPaid ? "#1f6b2a" : "#8a1f1f",
-            }}
-          >
-            {isPaid ? "PAID" : "UNPAID"}
-          </span>
+      <h3>Customer</h3>
+      <select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
+        {lookups.customers.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.company_name || `${c.first_name} ${c.last_name}`}
+          </option>
+        ))}
+      </select>
 
-          <div style={{ fontSize: 13, color: "#333" }}>
-            <b>payment_type:</b> {paymentType || "—"}
-          </div>
-        </div>
+      <h3>Skip</h3>
+      <select value={skipTypeId} onChange={(e) => setSkipTypeId(e.target.value)}>
+        {lookups.skip_types.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+          </option>
+        ))}
+      </select>
 
-        <div style={kvGrid}>
-          <div style={kv}>
-            <span style={k}>Xero invoice number</span>
-            <span style={v}>{job.xero_invoice_number || "—"}</span>
-          </div>
-          <div style={kv}>
-            <span style={k}>Xero invoice status</span>
-            <span style={v}>{job.xero_invoice_status || "—"}</span>
-          </div>
-          <div style={kv}>
-            <span style={k}>paid_at</span>
-            <span style={v}>{job.paid_at ? String(job.paid_at) : "—"}</span>
-          </div>
-          <div style={kv}>
-            <span style={k}>paid_method</span>
-            <span style={v}>{job.paid_method || "—"}</span>
-          </div>
-          <div style={kv}>
-            <span style={k}>paid_reference</span>
-            <span style={v}>{job.paid_reference || "—"}</span>
-          </div>
-          <div style={kv}>
-            <span style={k}>paid_by_user_id</span>
-            <span style={v} title={job.paid_by_user_id || ""} style={{ ...v, wordBreak: "break-all" }}>
-              {job.paid_by_user_id || "—"}
-            </span>
-          </div>
-        </div>
+      <h3>Date</h3>
+      <input type="date" value={scheduledDate} onChange={(e) => setScheduledDate(e.target.value)} />
 
-        {paymentType === "account" ? (
-          <div style={{ marginTop: 12, fontSize: 13, color: "#666" }}>
-            Account customer: payment is handled on the monthly draft invoice (not per job).
-          </div>
-        ) : null}
+      <h3>Price</h3>
+      <input value={price} onChange={(e) => setPrice(e.target.value)} />
 
-        <div style={{ marginTop: 12 }}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <label style={{ fontSize: 12, color: "#333", display: "flex", flexDirection: "column", gap: 6 }}>
-              Reference (optional)
-              <input
-                value={payReference}
-                onChange={(e) => setPayReference(e.target.value)}
-                placeholder="e.g. COD cash, receipt #123, phone payment"
-                style={{ ...inputStyle, minWidth: 320 }}
-              />
-            </label>
+      <h3>Notes</h3>
+      <textarea value={notes} onChange={(e) => setNotes(e.target.value)} />
 
-            <button
-              style={canMarkPaid && !payWorking ? btnPrimary : btnPrimaryDisabled}
-              disabled={!canMarkPaid || payWorking}
-              onClick={markAsPaid}
-              type="button"
-              title={
-                !job.xero_invoice_id
-                  ? "No Xero invoice linked"
-                  : isPaid
-                  ? "Already paid"
-                  : paymentType === "account"
-                  ? "Account jobs are paid on monthly invoice"
-                  : ""
-              }
-            >
-              {payWorking ? "Marking paid…" : paymentType === "cash" ? "Mark as paid (cash)" : "Mark as paid (card)"}
-            </button>
-          </div>
+      <h3>Address</h3>
+      <input placeholder="Site name" value={siteName} onChange={(e) => setSiteName(e.target.value)} />
+      <input value={siteAddress1} onChange={(e) => setSiteAddress1(e.target.value)} />
+      <input value={siteAddress2} onChange={(e) => setSiteAddress2(e.target.value)} />
+      <input value={siteTown} onChange={(e) => setSiteTown(e.target.value)} />
+      <input value={sitePostcode} onChange={(e) => setSitePostcode(e.target.value)} />
 
-          {(payMsg || payErr) && (
-            <div
-              style={{
-                marginTop: 10,
-                padding: 10,
-                borderRadius: 10,
-                border: "1px solid",
-                borderColor: payErr ? "#f0b4b4" : "#bfe7c0",
-                background: payErr ? "#fff5f5" : "#f2fff2",
-                color: payErr ? "#8a1f1f" : "#1f6b2a",
-                whiteSpace: "pre-wrap",
-                fontSize: 13,
-              }}
-            >
-              {payErr ? payErr : payMsg}
-            </div>
-          )}
-        </div>
-      </section>
+      <h3>Payment</h3>
+      <select value={paymentType} onChange={(e) => setPaymentType(e.target.value)}>
+        <option value="card">Card</option>
+        <option value="cash">Cash</option>
+        <option value="account">Account</option>
+      </select>
 
-      <div style={grid2}>
-        <section style={cardStyle}>
-          <h2 style={h2Style}>Dates</h2>
-          <div style={kvGrid}>
-            <div style={kv}>
-              <span style={k}>Planned delivery</span>
-              <span style={v}>{fmtDate(job.scheduled_date)}</span>
-            </div>
-            <div style={kv}>
-              <span style={k}>Actual delivery</span>
-              <span style={v}>{fmtDate(job.delivery_actual_date)}</span>
-            </div>
-            <div style={kv}>
-              <span style={k}>Planned collection</span>
-              <span style={v}>{fmtDate(job.collection_date)}</span>
-            </div>
-            <div style={kv}>
-              <span style={k}>Actual collection</span>
-              <span style={v}>{fmtDate(job.collection_actual_date)}</span>
-            </div>
-          </div>
+      <br /><br />
 
-          <div style={{ marginTop: 12 }}>
-            <h3 style={h3Style}>Edit planned dates</h3>
-            <div style={gridForm}>
-              <label style={labelStyle}>
-                Planned delivery
-                <input
-                  type="date"
-                  value={plannedDelivery || ""}
-                  onChange={(e) => setPlannedDelivery(e.target.value)}
-                  style={inputStyle}
-                />
-              </label>
-              <label style={labelStyle}>
-                Planned collection
-                <input
-                  type="date"
-                  value={plannedCollection || ""}
-                  onChange={(e) => setPlannedCollection(e.target.value)}
-                  style={inputStyle}
-                />
-              </label>
-            </div>
-          </div>
-        </section>
+      <button onClick={handleSave} disabled={saving}>
+        {saving ? "Saving…" : "Save Changes"}
+      </button>
 
-        <section style={cardStyle}>
-          <h2 style={h2Style}>Hire terms</h2>
-          <div style={{ fontSize: 13, color: "#333" }}>
-            <div style={{ marginBottom: 6 }}>
-              <b>{hireStateLabel}</b>
-            </div>
+      <hr />
 
-            {termHireDays == null ? (
-              <p style={{ margin: "8px 0", color: "#666" }}>This customer is exempt from term hire (contract / tip & returns).</p>
-            ) : (
-              <>
-                <div style={kvGrid}>
-                  <div style={kv}>
-                    <span style={k}>Term days</span>
-                    <span style={v}>{termHireDays}</span>
-                  </div>
-                  <div style={kv}>
-                    <span style={k}>Extension days</span>
-                    <span style={v}>{toInt(job.hire_extension_days, 0)}</span>
-                  </div>
-                  <div style={kv}>
-                    <span style={k}>Hire end date</span>
-                    <span style={v}>{hireEndDate ? hireEndDate : "—"}</span>
-                  </div>
-                  <div style={kv}>
-                    <span style={k}>Reminder day</span>
-                    <span style={v}>{reminderDay != null ? `Day ${reminderDay}` : "—"}</span>
-                  </div>
+      <button onClick={handleCancelJob} style={{ background: "orange" }}>
+        Cancel Job
+      </button>
 
-                  <div style={kv}>
-                    <span style={k}>Scheduled reminder date</span>
-                    <span style={v}>{scheduledReminderDate || "—"}</span>
-                  </div>
-
-                  <div style={kv}>
-                    <span style={k}>Reminder status</span>
-                    <span style={{ ...v, ...reminderToneStyle }}>{reminderStatus.label}</span>
-                  </div>
-
-                  <div style={kv}>
-                    <span style={k}>Reminder sent to</span>
-                    <span style={v}>{reminderLogMatch?.sent_to ? String(reminderLogMatch.sent_to) : "—"}</span>
-                  </div>
-                </div>
-
-                <p style={{ margin: "10px 0", color: "#666" }}>
-                  Reminder logic: scheduled for {scheduledReminderDate || "—"} (based on delivery + term days). If missed, cron will still send once when overdue.
-                </p>
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button style={btnSecondary} disabled={acting === "extend_7"} onClick={() => extendHire(7)}>
-                    {acting === "extend_7" ? "Working…" : "Extend +7 days"}
-                  </button>
-                  <button style={btnSecondary} disabled={acting === "extend_14"} onClick={() => extendHire(14)}>
-                    {acting === "extend_14" ? "Working…" : "Extend +14 days"}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </section>
-      </div>
-
-      <section style={cardStyle}>
-        <h2 style={h2Style}>Photos</h2>
-
-        <PhotoRow
-          label="Delivery photo"
-          url={job.delivery_photo_url}
-          onClear={() => clearPhoto("delivery_photo_url")}
-          clearing={acting === "clear_delivery_photo_url"}
-        />
-        <PhotoRow
-          label="Collection photo"
-          url={job.collection_photo_url}
-          onClear={() => clearPhoto("collection_photo_url")}
-          clearing={acting === "clear_collection_photo_url"}
-        />
-        <PhotoRow
-          label="Tip return (full skip)"
-          url={job.swap_full_photo_url}
-          onClear={() => clearPhoto("swap_full_photo_url")}
-          clearing={acting === "clear_swap_full_photo_url"}
-        />
-        <PhotoRow
-          label="Tip return (empty skip)"
-          url={job.swap_empty_photo_url}
-          onClear={() => clearPhoto("swap_empty_photo_url")}
-          clearing={acting === "clear_swap_empty_photo_url"}
-        />
-      </section>
-
-      <section style={cardStyle}>
-        <h2 style={h2Style}>Actions</h2>
-
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {canMarkDelivered && (
-            <button style={btnPrimary} disabled={acting === "delivered"} onClick={() => runAction("delivered")}>
-              {acting === "delivered" ? "Working…" : "Mark Delivered"}
-            </button>
-          )}
-
-          {canUndoDelivered && (
-            <button style={btnDanger} disabled={acting === "undo_delivered"} onClick={() => runAction("undo_delivered")}>
-              {acting === "undo_delivered" ? "Working…" : "Undo Delivered"}
-            </button>
-          )}
-
-          {canRequestCollection && (
-            <button
-              style={btnSecondary}
-              disabled={acting === "customer_requested_collection"}
-              onClick={() => runAction("customer_requested_collection")}
-            >
-              {acting === "customer_requested_collection" ? "Working…" : "Customer Requested Collection"}
-            </button>
-          )}
-
-          {canMarkCollected && (
-            <button style={btnPrimary} disabled={acting === "collected"} onClick={() => runAction("collected")}>
-              {acting === "collected" ? "Working…" : "Mark Collected"}
-            </button>
-          )}
-
-          {canUndoCollected && (
-            <button style={btnDanger} disabled={acting === "undo_collected"} onClick={() => runAction("undo_collected")}>
-              {acting === "undo_collected" ? "Working…" : "Undo Collected"}
-            </button>
-          )}
-        </div>
-
-        <div style={{ marginTop: 14 }}>
-          <h3 style={h3Style}>Add note</h3>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <input
-              value={noteText}
-              onChange={(e) => setNoteText(e.target.value)}
-              placeholder="Type a note (e.g. 'Customer asked to move skip left 1m')"
-              style={{ ...inputStyle, minWidth: 340 }}
-            />
-            <button style={btnSecondary} disabled={acting === "note"} onClick={addNote}>
-              {acting === "note" ? "Saving…" : "Add note"}
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section style={cardStyle}>
-        <h2 style={h2Style}>Edit details</h2>
-        <div style={gridForm}>
-          <label style={labelStyle}>
-            Site name
-            <input value={siteName} onChange={(e) => setSiteName(e.target.value)} style={inputStyle} />
-          </label>
-          <label style={labelStyle}>
-            Site postcode
-            <input value={sitePostcode} onChange={(e) => setSitePostcode(e.target.value)} style={inputStyle} />
-          </label>
-        </div>
-      </section>
-    </main>
-  );
-}
-
-function PhotoRow({ label, url, onClear, clearing }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: 10,
-        alignItems: "center",
-        flexWrap: "wrap",
-        padding: "8px 0",
-        borderTop: "1px solid #f0f0f0",
-      }}
-    >
-      <div style={{ minWidth: 180, fontWeight: 800 }}>{label}</div>
-
-      {url ? (
-        <>
-          <a href={url} target="_blank" rel="noreferrer" style={{ textDecoration: "underline", fontSize: 13 }}>
-            Download / open
-          </a>
-          <button onClick={onClear} disabled={clearing} style={btnDangerSmall}>
-            {clearing ? "Clearing…" : "Clear"}
-          </button>
-          <div style={{ fontSize: 12, color: "#777", wordBreak: "break-all" }}>{url}</div>
-        </>
-      ) : (
-        <div style={{ fontSize: 13, color: "#777" }}>None</div>
-      )}
+      <button onClick={handleDeleteJob} style={{ background: "red", marginLeft: 10 }}>
+        Delete Job
+      </button>
     </div>
   );
 }
-
-const pageStyle = {
-  minHeight: "100vh",
-  padding: 24,
-  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#f7f7f7",
-};
-
-const centerStyle = {
-  minHeight: "100vh",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontFamily: "system-ui, sans-serif",
-};
-
-const headerStyle = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "flex-start",
-  gap: 12,
-  flexWrap: "wrap",
-  marginBottom: 16,
-};
-
-const linkStyle = { textDecoration: "underline", color: "#0070f3", fontSize: 13 };
-
-const cardStyle = {
-  background: "#fff",
-  border: "1px solid #eee",
-  borderRadius: 12,
-  padding: 14,
-  marginBottom: 14,
-  boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
-};
-
-const grid2 = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
-  gap: 14,
-  marginBottom: 14,
-};
-
-const h2Style = { fontSize: 16, margin: "0 0 10px" };
-const h3Style = { fontSize: 13, margin: "0 0 8px", color: "#333" };
-
-const kvGrid = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-  gap: 10,
-};
-
-const kv = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-  padding: 10,
-  border: "1px solid #f0f0f0",
-  borderRadius: 10,
-  background: "#fafafa",
-};
-
-const k = { fontSize: 12, color: "#666" };
-const v = { fontSize: 13, color: "#111", fontWeight: 600 };
-
-const gridForm = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-  gap: 10,
-};
-
-const labelStyle = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 6,
-  fontSize: 12,
-  color: "#333",
-};
-
-const inputStyle = {
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid #ccc",
-  fontSize: 13,
-  background: "#fff",
-};
-
-const btnPrimary = {
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: "1px solid #0070f3",
-  background: "#0070f3",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-
-const btnPrimaryDisabled = {
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: "1px solid #0070f3",
-  background: "#0070f3",
-  color: "#fff",
-  cursor: "default",
-  fontSize: 13,
-  opacity: 0.55,
-};
-
-const btnSecondary = {
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: "1px solid #ccc",
-  background: "#f5f5f5",
-  color: "#111",
-  cursor: "pointer",
-  fontSize: 13,
-};
-
-const btnDanger = {
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: "1px solid #f0b4b4",
-  background: "#fff5f5",
-  color: "#8a1f1f",
-  cursor: "pointer",
-  fontSize: 13,
-};
-
-const btnDangerSmall = {
-  padding: "6px 10px",
-  borderRadius: 8,
-  border: "1px solid #f0b4b4",
-  background: "#fff5f5",
-  color: "#8a1f1f",
-  cursor: "pointer",
-  fontSize: 12,
-  fontWeight: 700,
-};
