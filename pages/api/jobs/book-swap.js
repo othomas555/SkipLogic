@@ -123,24 +123,6 @@ export default async function handler(req, res) {
     const swapGroupId = crypto.randomUUID();
     const driverRunGroup = await getNextDriverRunGroup(supabase, subscriberId, swapDate);
 
-    const { error: updErr } = await supabase
-      .from("jobs")
-      .update({
-        collection_date: swapDate,
-        job_status: "awaiting_collection",
-        swap_group_id: swapGroupId,
-        swap_role: "collect",
-        driver_run_group: driverRunGroup,
-        weekend_override: weekendOverride,
-      })
-      .eq("id", oldJob.id)
-      .eq("subscriber_id", subscriberId);
-
-    if (updErr) {
-      console.error("Failed to update old job for swap:", updErr);
-      throw new Error("Failed to update old job for swap");
-    }
-
     const newJobInsertPayload = {
       subscriber_id: subscriberId,
       customer_id: oldJob.customer_id,
@@ -155,12 +137,17 @@ export default async function handler(req, res) {
       site_lng: oldJob.site_lng || null,
 
       scheduled_date: swapDate,
+      delivery_actual_date: null,
+      collection_date: null,
+      collection_actual_date: null,
+
       notes: body.notes ? String(body.notes) : "Swap delivery booked",
       payment_type: body.payment_type ? String(body.payment_type) : oldJob.payment_type || "card",
       price_inc_vat: priceIncVat,
 
       assigned_driver_id: oldJob.assigned_driver_id || null,
 
+      job_status: "booked",
       swap_group_id: swapGroupId,
       swap_role: "deliver",
       driver_run_group: driverRunGroup,
@@ -179,8 +166,12 @@ export default async function handler(req, res) {
           customer_id,
           skip_type_id,
           scheduled_date,
+          delivery_actual_date,
+          collection_date,
+          collection_actual_date,
           price_inc_vat,
           payment_type,
+          job_status,
           swap_group_id,
           swap_role,
           driver_run_group,
@@ -215,6 +206,24 @@ export default async function handler(req, res) {
       if (!newJob?.id) {
         throw new Error("Failed to create new delivery job (override) — no job returned");
       }
+    }
+
+    const { error: updErr } = await supabase
+      .from("jobs")
+      .update({
+        collection_date: swapDate,
+        job_status: "awaiting_collection",
+        swap_group_id: swapGroupId,
+        swap_role: "collect",
+        driver_run_group: driverRunGroup,
+        weekend_override: weekendOverride,
+      })
+      .eq("id", oldJob.id)
+      .eq("subscriber_id", subscriberId);
+
+    if (updErr) {
+      console.error("Failed to update old job for swap:", updErr);
+      throw new Error("Failed to update old job for swap");
     }
 
     const { error: evErr } = await supabase.rpc("create_job_event", {
