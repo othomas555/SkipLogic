@@ -25,23 +25,9 @@ function asDateInput(v) {
 }
 
 function customerDisplay(job) {
-  const customer =
-    job?.customer ||
-    job?.customers ||
-    null;
-
-  const company =
-    asText(job?.customer_company_name).trim() ||
-    asText(customer?.company_name).trim();
-
-  const first =
-    asText(job?.customer_first_name).trim() ||
-    asText(customer?.first_name).trim();
-
-  const last =
-    asText(job?.customer_last_name).trim() ||
-    asText(customer?.last_name).trim();
-
+  const company = asText(job?.company_name).trim();
+  const first = asText(job?.first_name).trim();
+  const last = asText(job?.last_name).trim();
   const person = `${first} ${last}`.trim();
 
   if (company && person) return `${company} – ${person}`;
@@ -50,44 +36,18 @@ function customerDisplay(job) {
   return "Unknown customer";
 }
 
-function companyDisplay(job) {
-  const customer =
-    job?.customer ||
-    job?.customers ||
-    null;
-
-  return (
-    asText(job?.customer_company_name).trim() ||
-    asText(customer?.company_name).trim() ||
-    ""
-  );
-}
-
 function personDisplay(job) {
-  const customer =
-    job?.customer ||
-    job?.customers ||
-    null;
-
-  const first =
-    asText(job?.customer_first_name).trim() ||
-    asText(customer?.first_name).trim();
-
-  const last =
-    asText(job?.customer_last_name).trim() ||
-    asText(customer?.last_name).trim();
-
+  const first = asText(job?.first_name).trim();
+  const last = asText(job?.last_name).trim();
   return `${first} ${last}`.trim();
 }
 
-function skipTypeName(job, skipTypes) {
-  const direct =
-    asText(job?.skip_type_name).trim() ||
-    asText(job?.skip_name).trim() ||
-    asText(job?.skip_size_label).trim() ||
-    asText(job?.skip_type?.name).trim() ||
-    asText(job?.skip_types?.name).trim();
+function companyDisplay(job) {
+  return asText(job?.company_name).trim();
+}
 
+function skipTypeDisplay(job, skipTypes) {
+  const direct = asText(job?.name).trim();
   if (direct) return direct;
 
   const id = asId(job?.skip_type_id);
@@ -185,19 +145,9 @@ export default function EditJobPage() {
 
         setSkipTypeId(asId(nextJob?.skip_type_id));
         setScheduledDate(asDateInput(nextJob?.scheduled_date));
-        setCollectionDate(
-          asDateInput(
-            nextJob?.collection_date ||
-              nextJob?.planned_collection_date ||
-              nextJob?.target_collection_date
-          )
-        );
+        setCollectionDate(asDateInput(nextJob?.collection_date));
         setPrice(
-          nextJob?.price_inc_vat != null
-            ? String(nextJob.price_inc_vat)
-            : nextJob?.price != null
-            ? String(nextJob.price)
-            : ""
+          nextJob?.price_inc_vat != null ? String(nextJob.price_inc_vat) : ""
         );
         setNotes(asText(nextJob?.notes));
 
@@ -248,7 +198,7 @@ export default function EditJobPage() {
 
   const isCancelled = asText(job?.job_status).toLowerCase() === "cancelled";
   const hasInvoice = !!(job?.xero_invoice_id || job?.xero_invoice_number);
-  const canShowSkipTypeDropdown = skipTypes.length > 0;
+  const canEditSkipType = skipTypes.length > 0;
 
   async function handleSave() {
     if (!id) return;
@@ -268,11 +218,11 @@ export default function EditJobPage() {
         price_inc_vat: price === "" ? null : price,
         notes,
 
-        site_name: siteName,
-        site_address_line1: siteAddress1,
-        site_address_line2: siteAddress2,
-        site_town: siteTown,
-        site_postcode: sitePostcode,
+        site_name: siteName || null,
+        site_address_line1: siteAddress1 || null,
+        site_address_line2: siteAddress2 || null,
+        site_town: siteTown || null,
+        site_postcode: sitePostcode || null,
 
         payment_type: paymentType || null,
         placement_type: placementType || null,
@@ -302,8 +252,8 @@ export default function EditJobPage() {
         throw new Error(json?.error || "Update failed");
       }
 
-      const merged = {
-        ...(job || {}),
+      setJob((prev) => ({
+        ...(prev || {}),
         ...(json?.job || {}),
         skip_type_id: body.skip_type_id,
         scheduled_date: body.scheduled_date,
@@ -323,9 +273,7 @@ export default function EditJobPage() {
         permit_validity_days: body.permit_validity_days,
         permit_override: body.permit_override,
         weekend_override: body.weekend_override,
-      };
-
-      setJob(merged);
+      }));
 
       setSuccess(
         json?.invoice_review_flagged
@@ -429,40 +377,33 @@ export default function EditJobPage() {
   }
 
   if (loading) {
-    return <div style={styles.page}>Loading…</div>;
+    return <div style={{ padding: 20 }}>Loading…</div>;
   }
 
   if (error && !job) {
     return (
-      <div style={styles.page}>
-        <div style={styles.wrap}>
-          <h1 style={styles.title}>Edit job</h1>
-          <div style={styles.errorBox}>{error}</div>
-        </div>
+      <div style={{ padding: 20 }}>
+        <h1>Edit job</h1>
+        <div style={styles.errorBox}>{error}</div>
       </div>
     );
   }
 
   if (!job) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.wrap}>Job not found</div>
-      </div>
-    );
+    return <div style={{ padding: 20 }}>Job not found</div>;
   }
 
   return (
     <div style={styles.page}>
       <div style={styles.wrap}>
-        <div style={styles.headerRow}>
+        <div style={styles.header}>
           <div>
-            <div style={styles.eyebrow}>Jobs</div>
-            <h1 style={styles.title}>Edit Job #{job?.job_number || job?.id || ""}</h1>
-            <div style={styles.metaRow}>
-              <span style={styles.metaPill}>Status: {asText(job?.job_status) || "booked"}</span>
+            <h1 style={styles.title}>Edit Job #{job.job_number || job.id}</h1>
+            <div style={styles.badgeRow}>
+              <span style={styles.badge}>Status: {job.job_status || "booked"}</span>
               {hasInvoice ? (
-                <span style={styles.metaPill}>
-                  Invoice: {asText(job?.xero_invoice_number) || "Linked"}
+                <span style={styles.badge}>
+                  Invoice: {job.xero_invoice_number || "Linked"}
                 </span>
               ) : null}
             </div>
@@ -475,14 +416,14 @@ export default function EditJobPage() {
 
         {hasInvoice ? (
           <div style={styles.warnBox}>
-            <strong>Invoice warning:</strong> this job already has an invoice linked. Any
-            commercial changes should be reviewed manually in Xero.
+            <strong>Invoice warning:</strong> this job already has an invoice linked.
+            Any commercial changes should be reviewed manually in Xero.
           </div>
         ) : null}
 
         {isCancelled ? (
           <div style={styles.cancelledBox}>
-            This job is cancelled. You can still view the details, but editing is locked.
+            This job is cancelled. Editing is locked.
           </div>
         ) : null}
 
@@ -491,22 +432,26 @@ export default function EditJobPage() {
 
         <div style={styles.card}>
           <h3 style={styles.sectionTitle}>Customer</h3>
-          <div style={styles.summaryGrid}>
+          <div style={styles.grid}>
             <div>
-              <div style={styles.summaryLabel}>Customer</div>
-              <div style={styles.summaryValue}>{customerDisplay(job)}</div>
+              <label style={styles.staticLabel}>Customer</label>
+              <div style={styles.staticValue}>{customerDisplay(job)}</div>
             </div>
             <div>
-              <div style={styles.summaryLabel}>Company</div>
-              <div style={styles.summaryValue}>{companyDisplay(job) || "—"}</div>
+              <label style={styles.staticLabel}>Company</label>
+              <div style={styles.staticValue}>{companyDisplay(job) || "—"}</div>
             </div>
             <div>
-              <div style={styles.summaryLabel}>Contact</div>
-              <div style={styles.summaryValue}>{personDisplay(job) || "—"}</div>
+              <label style={styles.staticLabel}>Contact</label>
+              <div style={styles.staticValue}>{personDisplay(job) || "—"}</div>
             </div>
             <div>
-              <div style={styles.summaryLabel}>Payment</div>
-              <div style={styles.summaryValue}>{asText(paymentType) || "—"}</div>
+              <label style={styles.staticLabel}>Phone</label>
+              <div style={styles.staticValue}>{asText(job.phone) || "—"}</div>
+            </div>
+            <div>
+              <label style={styles.staticLabel}>Email</label>
+              <div style={styles.staticValue}>{asText(job.email) || "—"}</div>
             </div>
           </div>
         </div>
@@ -514,11 +459,10 @@ export default function EditJobPage() {
         <div style={styles.card}>
           <h3 style={styles.sectionTitle}>Job details</h3>
 
-          <div style={styles.fieldGrid}>
+          <div style={styles.grid}>
             <div>
               <label style={styles.label}>Skip type</label>
-
-              {canShowSkipTypeDropdown ? (
+              {canEditSkipType ? (
                 <select
                   value={skipTypeId}
                   onChange={(e) => setSkipTypeId(e.target.value)}
@@ -528,14 +472,14 @@ export default function EditJobPage() {
                   <option value="">Select skip type</option>
                   {skipTypes.map((s) => (
                     <option key={asId(s?.id)} value={asId(s?.id)}>
-                      {asText(s?.name) || `Skip ${asId(s?.id)}`}
+                      {asText(s?.name)}
                     </option>
                   ))}
                 </select>
               ) : (
                 <input
-                  value={skipTypeName(job, skipTypes) || ""}
-                  style={styles.inputReadOnly}
+                  value={skipTypeDisplay(job, skipTypes)}
+                  style={styles.input}
                   disabled
                 />
               )}
@@ -555,6 +499,31 @@ export default function EditJobPage() {
                 <option value="cod">COD</option>
                 <option value="account">Account</option>
               </select>
+            </div>
+
+            <div>
+              <label style={styles.label}>Placement</label>
+              <select
+                value={placementType}
+                onChange={(e) => setPlacementType(e.target.value)}
+                style={styles.input}
+                disabled={isCancelled}
+              >
+                <option value="private">Private</option>
+                <option value="permit">Permit</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={styles.label}>Price inc VAT</label>
+              <input
+                type="number"
+                step="0.01"
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+                style={styles.input}
+                disabled={isCancelled}
+              />
             </div>
 
             <div>
@@ -578,36 +547,11 @@ export default function EditJobPage() {
                 disabled={isCancelled}
               />
             </div>
-
-            <div>
-              <label style={styles.label}>Price inc VAT</label>
-              <input
-                type="number"
-                step="0.01"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                style={styles.input}
-                disabled={isCancelled}
-              />
-            </div>
-
-            <div>
-              <label style={styles.label}>Placement</label>
-              <select
-                value={placementType}
-                onChange={(e) => setPlacementType(e.target.value)}
-                style={styles.input}
-                disabled={isCancelled}
-              >
-                <option value="private">Private</option>
-                <option value="permit">Permit</option>
-              </select>
-            </div>
           </div>
 
           {placementType === "permit" ? (
-            <div style={{ marginTop: 10 }}>
-              <div style={styles.fieldGrid}>
+            <>
+              <div style={styles.grid}>
                 <div>
                   <label style={styles.label}>Permit setting</label>
                   <select
@@ -619,7 +563,7 @@ export default function EditJobPage() {
                     <option value="">Select permit</option>
                     {permitSettings.map((p) => (
                       <option key={asId(p?.id)} value={asId(p?.id)}>
-                        {asText(p?.name) || `Permit ${asId(p?.id)}`}
+                        {asText(p?.name)}
                       </option>
                     ))}
                   </select>
@@ -660,7 +604,7 @@ export default function EditJobPage() {
                 </div>
               </div>
 
-              <div style={styles.checkboxRow}>
+              <div style={styles.checkRow}>
                 <label style={styles.checkbox}>
                   <input
                     type="checkbox"
@@ -681,9 +625,9 @@ export default function EditJobPage() {
                   <span>Weekend override</span>
                 </label>
               </div>
-            </div>
+            </>
           ) : (
-            <div style={styles.checkboxRow}>
+            <div style={styles.checkRow}>
               <label style={styles.checkbox}>
                 <input
                   type="checkbox"
@@ -699,8 +643,7 @@ export default function EditJobPage() {
 
         <div style={styles.card}>
           <h3 style={styles.sectionTitle}>Site address</h3>
-
-          <div style={styles.fieldGrid}>
+          <div style={styles.grid}>
             <div>
               <label style={styles.label}>Site name</label>
               <input
@@ -712,16 +655,6 @@ export default function EditJobPage() {
             </div>
 
             <div>
-              <label style={styles.label}>Postcode</label>
-              <input
-                value={sitePostcode}
-                onChange={(e) => setSitePostcode(e.target.value)}
-                style={styles.input}
-                disabled={isCancelled}
-              />
-            </div>
-
-            <div style={styles.span2}>
               <label style={styles.label}>Address line 1</label>
               <input
                 value={siteAddress1}
@@ -731,7 +664,7 @@ export default function EditJobPage() {
               />
             </div>
 
-            <div style={styles.span2}>
+            <div>
               <label style={styles.label}>Address line 2</label>
               <input
                 value={siteAddress2}
@@ -750,6 +683,16 @@ export default function EditJobPage() {
                 disabled={isCancelled}
               />
             </div>
+
+            <div>
+              <label style={styles.label}>Postcode</label>
+              <input
+                value={sitePostcode}
+                onChange={(e) => setSitePostcode(e.target.value)}
+                style={styles.input}
+                disabled={isCancelled}
+              />
+            </div>
           </div>
         </div>
 
@@ -758,7 +701,7 @@ export default function EditJobPage() {
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            rows={6}
+            rows={5}
             style={styles.textarea}
             disabled={isCancelled}
           />
@@ -766,24 +709,24 @@ export default function EditJobPage() {
 
         <div style={styles.card}>
           <h3 style={styles.sectionTitle}>Summary</h3>
-          <div style={styles.summaryGrid}>
+          <div style={styles.grid}>
             <div>
-              <div style={styles.summaryLabel}>Skip</div>
-              <div style={styles.summaryValue}>
-                {skipTypeName({ ...job, skip_type_id: skipTypeId }, skipTypes) || "—"}
+              <label style={styles.staticLabel}>Skip</label>
+              <div style={styles.staticValue}>
+                {skipTypeDisplay({ ...job, skip_type_id: skipTypeId }, skipTypes) || "—"}
               </div>
             </div>
             <div>
-              <div style={styles.summaryLabel}>Delivery</div>
-              <div style={styles.summaryValue}>{scheduledDate || "—"}</div>
+              <label style={styles.staticLabel}>Delivery</label>
+              <div style={styles.staticValue}>{scheduledDate || "—"}</div>
             </div>
             <div>
-              <div style={styles.summaryLabel}>Collection</div>
-              <div style={styles.summaryValue}>{collectionDate || "—"}</div>
+              <label style={styles.staticLabel}>Collection</label>
+              <div style={styles.staticValue}>{collectionDate || "—"}</div>
             </div>
             <div>
-              <div style={styles.summaryLabel}>Price inc VAT</div>
-              <div style={styles.summaryValue}>
+              <label style={styles.staticLabel}>Price inc VAT</label>
+              <div style={styles.staticValue}>
                 {price === "" ? "—" : `£${formatMoney(price)}`}
               </div>
             </div>
@@ -827,145 +770,112 @@ const styles = {
   page: {
     minHeight: "100vh",
     padding: 24,
-    fontFamily:
-      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    background:
-      "radial-gradient(circle at top left, rgba(58,181,255,0.08), transparent 30%), #0b1020",
-    color: "#e5eefc",
+    fontFamily: "var(--font-sans, Arial, sans-serif)",
+    background: "#ffffff",
   },
   wrap: {
-    maxWidth: 1100,
+    maxWidth: 1000,
     margin: "0 auto",
   },
-  headerRow: {
+  header: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "flex-start",
     gap: 16,
-    marginBottom: 18,
     flexWrap: "wrap",
-  },
-  eyebrow: {
-    fontSize: 12,
-    letterSpacing: "0.12em",
-    textTransform: "uppercase",
-    color: "#8fb3ff",
-    marginBottom: 8,
-    fontWeight: 800,
+    marginBottom: 20,
   },
   title: {
     margin: 0,
     fontSize: 30,
     lineHeight: 1.1,
-    color: "#ffffff",
+    color: "#0f172a",
   },
   backLink: {
     display: "inline-block",
-    color: "#9ddcff",
-    textDecoration: "none",
-    fontWeight: 700,
-    padding: "10px 14px",
-    borderRadius: 12,
-    background: "rgba(255,255,255,0.06)",
-    border: "1px solid rgba(255,255,255,0.12)",
+    marginTop: 4,
+    color: "#0f172a",
+    textDecoration: "underline",
+    textUnderlineOffset: 3,
+    fontSize: 14,
+    fontWeight: 600,
   },
-  metaRow: {
+  badgeRow: {
     display: "flex",
-    flexWrap: "wrap",
     gap: 8,
-    marginTop: 12,
+    flexWrap: "wrap",
+    marginTop: 10,
   },
-  metaPill: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "8px 10px",
+  badge: {
+    display: "inline-block",
+    background: "#eef2ff",
+    border: "1px solid #c7d2fe",
+    color: "#3730a3",
     borderRadius: 999,
-    background: "rgba(255,255,255,0.07)",
-    border: "1px solid rgba(255,255,255,0.12)",
+    padding: "6px 10px",
     fontSize: 13,
-    color: "#dbe9ff",
+    fontWeight: 700,
   },
   card: {
-    background: "rgba(14, 22, 43, 0.88)",
-    border: "1px solid rgba(143, 179, 255, 0.18)",
-    borderRadius: 18,
-    padding: 18,
+    background: "#f8fafc",
+    border: "1px solid #dbe3f0",
+    borderRadius: 16,
+    padding: 16,
     marginBottom: 16,
-    boxShadow: "0 12px 40px rgba(0,0,0,0.18)",
   },
   sectionTitle: {
-    margin: "0 0 14px 0",
+    marginTop: 0,
+    marginBottom: 14,
     fontSize: 18,
-    color: "#ffffff",
+    color: "#0f172a",
   },
-  fieldGrid: {
+  grid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
     gap: 14,
-  },
-  span2: {
-    gridColumn: "span 2",
   },
   label: {
     display: "block",
     marginBottom: 6,
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#0f172a",
+  },
+  staticLabel: {
+    display: "block",
+    marginBottom: 6,
     fontSize: 13,
-    fontWeight: 800,
-    color: "#cfe0ff",
+    fontWeight: 700,
+    color: "#475569",
+  },
+  staticValue: {
+    minHeight: 20,
+    color: "#0f172a",
+    fontSize: 15,
   },
   input: {
     width: "100%",
     padding: 12,
-    borderRadius: 12,
-    border: "1px solid rgba(143, 179, 255, 0.25)",
-    background: "rgba(255,255,255,0.06)",
-    color: "#ffffff",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
     boxSizing: "border-box",
-    outline: "none",
-  },
-  inputReadOnly: {
-    width: "100%",
-    padding: 12,
-    borderRadius: 12,
-    border: "1px solid rgba(143, 179, 255, 0.18)",
-    background: "rgba(255,255,255,0.04)",
-    color: "#dbe9ff",
-    boxSizing: "border-box",
-    outline: "none",
   },
   textarea: {
     width: "100%",
     padding: 12,
-    borderRadius: 12,
-    border: "1px solid rgba(143, 179, 255, 0.25)",
-    background: "rgba(255,255,255,0.06)",
-    color: "#ffffff",
-    boxSizing: "border-box",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
     resize: "vertical",
-    outline: "none",
+    boxSizing: "border-box",
   },
-  summaryGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 14,
-  },
-  summaryLabel: {
-    fontSize: 12,
-    textTransform: "uppercase",
-    letterSpacing: "0.06em",
-    color: "#8fb3ff",
-    marginBottom: 6,
-    fontWeight: 800,
-  },
-  summaryValue: {
-    fontSize: 15,
-    color: "#ffffff",
-    wordBreak: "break-word",
-  },
-  checkboxRow: {
+  checkRow: {
     display: "flex",
+    gap: 14,
     flexWrap: "wrap",
-    gap: 16,
     marginTop: 14,
   },
   checkbox: {
@@ -973,37 +883,37 @@ const styles = {
     alignItems: "center",
     gap: 10,
     fontSize: 14,
-    fontWeight: 700,
-    color: "#dbe9ff",
+    fontWeight: 600,
+    color: "#0f172a",
   },
   warnBox: {
-    background: "rgba(255, 193, 7, 0.14)",
-    color: "#ffe69c",
-    border: "1px solid rgba(255, 193, 7, 0.35)",
+    background: "#fff3cd",
+    color: "#7a5a00",
+    border: "1px solid #ffe69c",
     padding: 12,
     borderRadius: 12,
     marginBottom: 16,
   },
   cancelledBox: {
-    background: "rgba(220, 38, 38, 0.16)",
-    color: "#fecaca",
-    border: "1px solid rgba(248, 113, 113, 0.4)",
+    background: "#f8d7da",
+    color: "#842029",
+    border: "1px solid #f1aeb5",
     padding: 12,
     borderRadius: 12,
     marginBottom: 16,
   },
   errorBox: {
-    background: "rgba(220, 38, 38, 0.16)",
-    color: "#fecaca",
-    border: "1px solid rgba(248, 113, 113, 0.35)",
+    background: "#fff1f0",
+    color: "#8a1f1f",
+    border: "1px solid #ffccc7",
     padding: 12,
     borderRadius: 12,
     marginBottom: 16,
   },
   successBox: {
-    background: "rgba(34, 197, 94, 0.14)",
-    color: "#bbf7d0",
-    border: "1px solid rgba(74, 222, 128, 0.35)",
+    background: "#e6ffed",
+    color: "#14532d",
+    border: "1px solid #b7eb8f",
     padding: 12,
     borderRadius: 12,
     marginBottom: 16,
@@ -1013,20 +923,20 @@ const styles = {
     gap: 12,
     flexWrap: "wrap",
     marginTop: 18,
-    paddingBottom: 24,
+    marginBottom: 24,
   },
   primaryBtn: {
-    padding: "12px 18px",
-    borderRadius: 12,
+    padding: "12px 16px",
+    borderRadius: 10,
     border: "none",
-    background: "linear-gradient(135deg, #71f0c5, #4eb7ff)",
+    background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
     color: "#071013",
     fontWeight: 900,
     cursor: "pointer",
   },
   cancelBtn: {
-    padding: "12px 18px",
-    borderRadius: 12,
+    padding: "12px 16px",
+    borderRadius: 10,
     border: "none",
     background: "#f59e0b",
     color: "#111827",
@@ -1034,8 +944,8 @@ const styles = {
     cursor: "pointer",
   },
   deleteBtn: {
-    padding: "12px 18px",
-    borderRadius: 12,
+    padding: "12px 16px",
+    borderRadius: 10,
     border: "none",
     background: "#dc2626",
     color: "#fff",
