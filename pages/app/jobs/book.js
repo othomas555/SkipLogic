@@ -783,7 +783,7 @@ export default function BookJobPage() {
         site_postcode: sitePostcode || null,
 
         scheduled_date: scheduledDate || null,
-        notes: notes || `Standard skip: ${selectedSkip.name}`,
+        notes: notes.trim () || null,
 
         payment_type: paymentType || null,
         price_inc_vat: numericPrice,
