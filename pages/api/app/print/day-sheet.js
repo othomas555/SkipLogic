@@ -48,10 +48,33 @@ function deriveSkipName(job, skipTypeMap) {
   return "";
 }
 
+function deriveCustomerLabel(customer) {
+  if (!customer) return "";
+
+  const firstName = asText(customer.first_name);
+  const lastName = asText(customer.last_name);
+  const fullName = [firstName, lastName].filter(Boolean).join(" ");
+
+  return (
+    asText(customer.company_name) ||
+    asText(customer.contact_name) ||
+    asText(customer.full_name) ||
+    asText(customer.name) ||
+    fullName ||
+    asText(customer.email) ||
+    ""
+  );
+}
+
 function deriveCustomerName(job, customerMap) {
   const customerId = job.customer_id;
   if (customerId && customerMap[customerId]) return customerMap[customerId];
   return "";
+}
+
+function deriveDriverLabel(driver) {
+  if (!driver) return "";
+  return asText(driver.full_name) || asText(driver.name) || "";
 }
 
 function deriveDriverName(job, driverMap) {
@@ -142,7 +165,7 @@ export default async function handler(req, res) {
     if (customerIds.length) {
       const { data: customers, error: customersError } = await supabase
         .from("customers")
-        .select("id,name,company_name,contact_name")
+        .select("*")
         .in("id", customerIds);
 
       if (customersError) {
@@ -153,17 +176,14 @@ export default async function handler(req, res) {
       }
 
       customerMap = Object.fromEntries(
-        (customers || []).map((c) => [
-          c.id,
-          asText(c.name) || asText(c.company_name) || asText(c.contact_name) || "",
-        ])
+        (customers || []).map((customer) => [customer.id, deriveCustomerLabel(customer)])
       );
     }
 
     if (skipTypeIds.length) {
       const { data: skipTypes, error: skipTypesError } = await supabase
         .from("skip_types")
-        .select("id,name")
+        .select("*")
         .in("id", skipTypeIds);
 
       if (skipTypesError) {
@@ -174,14 +194,14 @@ export default async function handler(req, res) {
       }
 
       skipTypeMap = Object.fromEntries(
-        (skipTypes || []).map((s) => [s.id, asText(s.name)])
+        (skipTypes || []).map((s) => [s.id, asText(s.name) || asText(s.label) || ""])
       );
     }
 
     if (driverIds.length) {
       const { data: drivers, error: driversError } = await supabase
         .from("drivers")
-        .select("id,name,full_name")
+        .select("*")
         .in("id", driverIds);
 
       if (driversError) {
@@ -192,10 +212,7 @@ export default async function handler(req, res) {
       }
 
       driverMap = Object.fromEntries(
-        (drivers || []).map((d) => [
-          d.id,
-          asText(d.full_name) || asText(d.name) || "",
-        ])
+        (drivers || []).map((driver) => [driver.id, deriveDriverLabel(driver)])
       );
     }
 
