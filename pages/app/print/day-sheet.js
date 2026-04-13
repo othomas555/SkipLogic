@@ -15,13 +15,19 @@ function humanDate(ymd) {
   return `${d}/${m}/${y}`;
 }
 
+function getDriverLabelById(drivers, driverId) {
+  if (!driverId) return "All drivers";
+  const match = (drivers || []).find((d) => d.id === driverId);
+  return match?.name || driverId;
+}
+
 export default function PrintDaySheetPage() {
   const today = useMemo(() => ymdTodayLocal(), []);
   const [date, setDate] = useState(today);
   const [driverId, setDriverId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [data, setData] = useState({ rows: [], total: 0 });
+  const [data, setData] = useState({ rows: [], total: 0, drivers: [] });
 
   async function loadData(nextDate = date, nextDriverId = driverId) {
     setLoading(true);
@@ -58,10 +64,16 @@ export default function PrintDaySheetPage() {
         throw new Error(json?.error || "Failed to load day sheet");
       }
 
-      setData(json);
+      setData({
+        rows: Array.isArray(json.rows) ? json.rows : [],
+        total: Number(json.total || 0),
+        drivers: Array.isArray(json.drivers) ? json.drivers : [],
+        date: json.date || nextDate,
+        driver_id: json.driver_id || "",
+      });
     } catch (err) {
       setError(err?.message || "Failed to load day sheet");
-      setData({ rows: [], total: 0 });
+      setData({ rows: [], total: 0, drivers: [] });
     } finally {
       setLoading(false);
     }
@@ -88,18 +100,23 @@ export default function PrintDaySheetPage() {
             </label>
 
             <label style={styles.label}>
-              <span>Driver ID (optional for now)</span>
-              <input
-                type="text"
+              <span>Driver</span>
+              <select
                 value={driverId}
                 onChange={(e) => setDriverId(e.target.value)}
-                placeholder="Leave blank for all"
                 style={styles.input}
-              />
+              >
+                <option value="">All drivers</option>
+                {(data.drivers || []).map((driver) => (
+                  <option key={driver.id} value={driver.id}>
+                    {driver.name}
+                  </option>
+                ))}
+              </select>
             </label>
 
             <button
-              onClick={() => loadData()}
+              onClick={() => loadData(date, driverId)}
               style={styles.button}
               disabled={loading}
             >
@@ -125,7 +142,7 @@ export default function PrintDaySheetPage() {
             <div style={styles.company}>Day Sheet</div>
             <div style={styles.meta}>Date: {humanDate(data.date || date)}</div>
             <div style={styles.meta}>
-              Driver: {data.driver_id ? data.driver_id : "All drivers"}
+              Driver: {getDriverLabelById(data.drivers, data.driver_id || driverId)}
             </div>
           </div>
 
