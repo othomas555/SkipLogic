@@ -1,7 +1,6 @@
 // pages/api/public/booking-config.js
 
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
-import { buildAllowedWeekdays } from "../../../lib/booking/bookingAvailability.js";
 
 function asSlug(value) {
   return String(value || "").trim().toLowerCase();
@@ -18,6 +17,16 @@ function clampMoney(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.round(n * 100) / 100;
+}
+
+function buildAllowedWeekdays({
+  allowSaturday = false,
+  allowSunday = false,
+}) {
+  const days = [1, 2, 3, 4, 5];
+  if (allowSaturday) days.push(6);
+  if (allowSunday) days.push(0);
+  return days;
 }
 
 export default async function handler(req, res) {
