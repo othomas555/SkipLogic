@@ -132,7 +132,7 @@ export default async function handler(req, res) {
 
     const supabase = getSupabaseAdmin();
 
-    let jobsQuery = supabase
+    const { data: dayJobs, error: dayJobsError } = await supabase
       .from("jobs")
       .select("*")
       .eq("subscriber_id", subscriberId)
@@ -141,22 +141,21 @@ export default async function handler(req, res) {
       .order("driver_sort_key", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true });
 
-    if (driverId) {
-      jobsQuery = jobsQuery.eq("assigned_driver_id", driverId);
-    }
-
-    const { data: jobs, error: jobsError } = await jobsQuery;
-
-    if (jobsError) {
+    if (dayJobsError) {
       return res.status(500).json({
         ok: false,
-        error: jobsError.message,
+        error: dayJobsError.message,
       });
     }
 
-    const customerIds = [...new Set((jobs || []).map((j) => j.customer_id).filter(Boolean))];
-    const skipTypeIds = [...new Set((jobs || []).map((j) => j.skip_type_id).filter(Boolean))];
-    const driverIds = [...new Set((jobs || []).map((j) => j.assigned_driver_id).filter(Boolean))];
+    const allJobsForDate = dayJobs || [];
+    const filteredJobs = driverId
+      ? allJobsForDate.filter((job) => String(job.assigned_driver_id || "") === driverId)
+      : allJobsForDate;
+
+    const customerIds = [...new Set(filteredJobs.map((j) => j.customer_id).filter(Boolean))];
+    const skipTypeIds = [...new Set(filteredJobs.map((j) => j.skip_type_id).filter(Boolean))];
+    const driverIdsForDate = [...new Set(allJobsForDate.map((j) => j.assigned_driver_id).filter(Boolean))];
 
     let customerMap = {};
     let skipTypeMap = {};
@@ -198,11 +197,11 @@ export default async function handler(req, res) {
       );
     }
 
-    if (driverIds.length) {
+    if (driverIdsForDate.length) {
       const { data: drivers, error: driversError } = await supabase
         .from("drivers")
         .select("*")
-        .in("id", driverIds);
+        .in("id", driverIdsForDate);
 
       if (driversError) {
         return res.status(500).json({
@@ -216,7 +215,7 @@ export default async function handler(req, res) {
       );
     }
 
-    const rows = (jobs || []).map((job, idx) => ({
+    const rows = filteredJobs.map((job, idx) => ({
       id: job.id,
       run_order: job.driver_sort_key ?? idx + 1,
       run_group: job.driver_run_group ?? null,
@@ -232,12 +231,20 @@ export default async function handler(req, res) {
       status: deriveStatus(job),
     }));
 
+    const drivers = driverIdsForDate
+      .map((id) => ({
+        id,
+        name: driverMap[id] || id,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
     return res.status(200).json({
       ok: true,
       date,
-      driver_id: driverId || null,
+      driver_id: driverId || "",
       total: rows.length,
       rows,
+      drivers,
     });
   } catch (err) {
     return res.status(500).json({
