@@ -66,9 +66,21 @@ function deriveCustomerLabel(customer) {
   );
 }
 
+function deriveCustomerPhone(customer) {
+  if (!customer) return "";
+  return (
+    asText(customer.phone) ||
+    asText(customer.mobile) ||
+    asText(customer.telephone) ||
+    ""
+  );
+}
+
 function deriveCustomerName(job, customerMap) {
   const customerId = job.customer_id;
-  if (customerId && customerMap[customerId]) return customerMap[customerId];
+  if (customerId && customerMap[customerId]) {
+    return deriveCustomerLabel(customerMap[customerId]);
+  }
   return "";
 }
 
@@ -175,7 +187,7 @@ export default async function handler(req, res) {
       }
 
       customerMap = Object.fromEntries(
-        (customers || []).map((customer) => [customer.id, deriveCustomerLabel(customer)])
+        (customers || []).map((customer) => [customer.id, customer])
       );
     }
 
@@ -222,6 +234,7 @@ export default async function handler(req, res) {
       job_number: asText(job.job_number),
       job_type: deriveJobType(job),
       customer_name: deriveCustomerName(job, customerMap),
+      customer_phone: deriveCustomerPhone(customerMap[job.customer_id]),
       address: formatAddress(job),
       skip_name: deriveSkipName(job, skipTypeMap),
       notes: asText(job.notes),
