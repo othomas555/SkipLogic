@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "../../../lib/supabaseClient";
 
 function ymdTodayLocal() {
   const dt = new Date();
@@ -27,10 +28,30 @@ export default function PrintDaySheetPage() {
     setError("");
 
     try {
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) {
+        throw new Error(sessionError.message || "Failed to get session");
+      }
+
+      const accessToken = session?.access_token;
+      if (!accessToken) {
+        throw new Error("You are not signed in");
+      }
+
       const qs = new URLSearchParams({ date: nextDate });
       if (nextDriverId) qs.set("driver_id", nextDriverId);
 
-      const res = await fetch(`/api/app/print/day-sheet?${qs.toString()}`);
+      const res = await fetch(`/api/app/print/day-sheet?${qs.toString()}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
       const json = await res.json();
 
       if (!res.ok || !json?.ok) {
@@ -53,7 +74,7 @@ export default function PrintDaySheetPage() {
 
   return (
     <div style={styles.page}>
-      <div style={styles.noPrint}>
+      <div className="no-print" style={styles.noPrint}>
         <div style={styles.toolbar}>
           <div style={styles.leftControls}>
             <label style={styles.label}>
@@ -157,9 +178,7 @@ export default function PrintDaySheetPage() {
           </tbody>
         </table>
 
-        <div style={styles.footerNote}>
-          Printed from SkipLogic
-        </div>
+        <div style={styles.footerNote}>Printed from SkipLogic</div>
       </div>
 
       <style jsx global>{`
