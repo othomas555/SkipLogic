@@ -16,6 +16,7 @@ const NAV_SECTIONS = [
       { href: "/app/jobs/book-swap", label: "Book Swap", match: ["/app/jobs/book-swap"] },
       { href: "/app/jobs/book-custom", label: "Book Custom Skip", match: ["/app/jobs/book-custom"] },
       { href: "/app/jobs/scheduler", label: "Scheduler", match: ["/app/jobs/scheduler"] },
+      { href: "/app/print/day-sheet", label: "Day Sheet", match: ["/app/print/day-sheet"] },
     ],
   },
 
