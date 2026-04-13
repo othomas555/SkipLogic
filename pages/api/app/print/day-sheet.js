@@ -75,8 +75,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const auth = await requireOfficeUser(req, res);
-    if (!auth || auth.ok === false) return;
+    const auth = await requireOfficeUser(req);
+
+    if (!auth?.ok) {
+      return res.status(401).json({
+        ok: false,
+        error: auth?.error || "Unauthorised",
+      });
+    }
 
     const subscriberId =
       auth.subscriberId ||
