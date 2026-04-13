@@ -21,6 +21,10 @@ function getDriverLabelById(drivers, driverId) {
   return match?.name || driverId;
 }
 
+function cleanText(value) {
+  return String(value || "").trim();
+}
+
 export default function PrintDaySheetPage() {
   const today = useMemo(() => ymdTodayLocal(), []);
   const [date, setDate] = useState(today);
@@ -159,6 +163,7 @@ export default function PrintDaySheetPage() {
               <th style={styles.th}>Job no.</th>
               <th style={styles.th}>Type</th>
               <th style={styles.th}>Customer</th>
+              <th style={styles.th}>Phone</th>
               <th style={styles.th}>Address</th>
               <th style={styles.th}>Skip</th>
               <th style={styles.th}>Notes</th>
@@ -171,26 +176,32 @@ export default function PrintDaySheetPage() {
           <tbody>
             {(data.rows || []).length === 0 ? (
               <tr>
-                <td colSpan={11} style={styles.empty}>
+                <td colSpan={12} style={styles.empty}>
                   No jobs found for this date
                 </td>
               </tr>
             ) : (
-              data.rows.map((row) => (
-                <tr key={row.id}>
-                  <td style={styles.tdCenter}>{row.run_order}</td>
-                  <td style={styles.td}>{row.job_number}</td>
-                  <td style={styles.td}>{row.job_type}</td>
-                  <td style={styles.td}>{row.customer_name}</td>
-                  <td style={styles.td}>{row.address}</td>
-                  <td style={styles.td}>{row.skip_name}</td>
-                  <td style={styles.td}>{row.notes}</td>
-                  <td style={styles.tdCenter}>{row.permit}</td>
-                  <td style={styles.tdCenter}>{row.placement}</td>
-                  <td style={styles.td}>{row.driver_name}</td>
-                  <td style={styles.td}>{row.status}</td>
-                </tr>
-              ))
+              data.rows.map((row) => {
+                const notes = cleanText(row.notes);
+                const phone = cleanText(row.customer_phone || row.phone);
+
+                return (
+                  <tr key={row.id}>
+                    <td style={styles.tdCenter}>{row.run_order}</td>
+                    <td style={styles.td}>{row.job_number}</td>
+                    <td style={styles.td}>{row.job_type}</td>
+                    <td style={styles.td}>{row.customer_name}</td>
+                    <td style={styles.td}>{phone || "—"}</td>
+                    <td style={styles.td}>{row.address}</td>
+                    <td style={styles.td}>{row.skip_name}</td>
+                    <td style={styles.td}>{notes || ""}</td>
+                    <td style={styles.tdCenter}>{row.permit}</td>
+                    <td style={styles.tdCenter}>{row.placement}</td>
+                    <td style={styles.td}>{row.driver_name}</td>
+                    <td style={styles.td}>{row.status}</td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
