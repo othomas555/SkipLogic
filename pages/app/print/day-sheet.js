@@ -85,7 +85,7 @@ export default function PrintDaySheetPage() {
   }, [today]);
 
   return (
-    <div style={styles.page}>
+    <div style={styles.page} data-print-page="day-sheet">
       <div className="no-print" style={styles.noPrint}>
         <div style={styles.toolbar}>
           <div style={styles.leftControls}>
@@ -136,7 +136,7 @@ export default function PrintDaySheetPage() {
         {error ? <div style={styles.error}>{error}</div> : null}
       </div>
 
-      <div style={styles.sheet}>
+      <div style={styles.sheet} className="print-sheet">
         <div style={styles.header}>
           <div>
             <div style={styles.company}>Day Sheet</div>
@@ -200,17 +200,79 @@ export default function PrintDaySheetPage() {
 
       <style jsx global>{`
         @media print {
-          body {
-            background: #fff !important;
+          @page {
+            size: A4 landscape;
+            margin: 8mm;
           }
 
-          .no-print {
+          html,
+          body {
+            background: #fff !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+            height: auto !important;
+            overflow: visible !important;
+          }
+
+          body * {
+            visibility: hidden;
+          }
+
+          [data-print-page='day-sheet'],
+          [data-print-page='day-sheet'] * {
+            visibility: visible;
+          }
+
+          aside,
+          nav,
+          header,
+          .no-print,
+          button {
             display: none !important;
           }
 
-          @page {
-            size: A4 landscape;
-            margin: 10mm;
+          [data-print-page='day-sheet'] {
+            position: static !important;
+            display: block !important;
+            width: 100% !important;
+            min-height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+            box-shadow: none !important;
+          }
+
+          .print-sheet {
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            background: #fff !important;
+          }
+
+          table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            page-break-inside: auto;
+          }
+
+          thead {
+            display: table-header-group;
+          }
+
+          tr,
+          td,
+          th {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+
+          th,
+          td {
+            padding: 6px !important;
+            font-size: 11px !important;
           }
         }
       `}</style>
