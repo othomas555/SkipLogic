@@ -1,231 +1,354 @@
-import { requireOfficeUser } from "../../../../lib/requireOfficeUser";
-import { getSupabaseAdmin } from "../../../../lib/supabaseAdmin";
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "../../../lib/supabaseClient";
 
-function asText(v) {
-  return typeof v === "string" ? v.trim() : "";
+function ymdTodayLocal() {
+  const dt = new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
-function isYmd(v) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+function humanDate(ymd) {
+  if (!ymd) return "";
+  const [y, m, d] = ymd.split("-");
+  return `${d}/${m}/${y}`;
 }
 
-function formatAddress(job) {
-  const parts = [
-    job.site_name,
-    job.site_address_line1,
-    job.site_address_line2,
-    job.site_town,
-    job.site_postcode,
-  ]
-    .map((x) => asText(x))
-    .filter(Boolean);
+export default function PrintDaySheetPage() {
+  const today = useMemo(() => ymdTodayLocal(), []);
+  const [date, setDate] = useState(today);
+  const [driverId, setDriverId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [data, setData] = useState({ rows: [], total: 0 });
 
-  return parts.join(", ");
-}
+  async function loadData(nextDate = date, nextDriverId = driverId) {
+    setLoading(true);
+    setError("");
 
-function deriveJobType(job) {
-  if (job.swap_group_id || job.swap_parent_job_id || asText(job.swap_role)) {
-    return "Swap";
-  }
+    try {
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
 
-  if (job.job_status === "collected" || job.collection_actual_date) {
-    return "Collection";
-  }
-
-  return "Delivery";
-}
-
-function deriveStatus(job) {
-  return asText(job.job_status) || "booked";
-}
-
-function deriveSkipName(job, skipTypeMap) {
-  if (asText(job.custom_skip_description)) return asText(job.custom_skip_description);
-
-  const skipTypeId = job.skip_type_id;
-  if (skipTypeId && skipTypeMap[skipTypeId]) return skipTypeMap[skipTypeId];
-
-  return "";
-}
-
-function deriveCustomerName(job, customerMap) {
-  const customerId = job.customer_id;
-  if (customerId && customerMap[customerId]) return customerMap[customerId];
-  return "";
-}
-
-function deriveDriverName(job, driverMap) {
-  const driverId = job.assigned_driver_id;
-  if (driverId && driverMap[driverId]) return driverMap[driverId];
-  return "";
-}
-
-function derivePermit(job) {
-  return job.permit_setting_id || job.permit_override ? "Yes" : "";
-}
-
-function deriveRoadPlacement(job) {
-  return asText(job.placement_type).toLowerCase() === "road" ? "Road" : "";
-}
-
-export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    res.setHeader("Allow", ["GET"]);
-    return res.status(405).json({ ok: false, error: "Method not allowed" });
-  }
-
-  try {
-    const auth = await requireOfficeUser(req);
-
-    if (!auth?.ok) {
-      return res.status(401).json({
-        ok: false,
-        error: auth?.error || "Unauthorised",
-      });
-    }
-
-    const subscriberId =
-      auth.subscriberId ||
-      auth.subscriber_id ||
-      auth.profile?.subscriber_id ||
-      null;
-
-    if (!subscriberId) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing subscriber id",
-      });
-    }
-
-    const date = asText(req.query.date);
-    const driverId = asText(req.query.driver_id);
-
-    if (!isYmd(date)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid date. Use YYYY-MM-DD",
-      });
-    }
-
-    const supabase = getSupabaseAdmin();
-
-    let jobsQuery = supabase
-      .from("jobs")
-      .select("*")
-      .eq("subscriber_id", subscriberId)
-      .eq("scheduled_date", date)
-      .order("driver_run_group", { ascending: true, nullsFirst: false })
-      .order("driver_sort_key", { ascending: true, nullsFirst: false })
-      .order("created_at", { ascending: true });
-
-    if (driverId) {
-      jobsQuery = jobsQuery.eq("assigned_driver_id", driverId);
-    }
-
-    const { data: jobs, error: jobsError } = await jobsQuery;
-
-    if (jobsError) {
-      return res.status(500).json({
-        ok: false,
-        error: jobsError.message,
-      });
-    }
-
-    const customerIds = [...new Set((jobs || []).map((j) => j.customer_id).filter(Boolean))];
-    const skipTypeIds = [...new Set((jobs || []).map((j) => j.skip_type_id).filter(Boolean))];
-    const driverIds = [...new Set((jobs || []).map((j) => j.assigned_driver_id).filter(Boolean))];
-
-    let customerMap = {};
-    let skipTypeMap = {};
-    let driverMap = {};
-
-    if (customerIds.length) {
-      const { data: customers, error: customersError } = await supabase
-        .from("customers")
-        .select("id,name,company_name,contact_name")
-        .in("id", customerIds);
-
-      if (customersError) {
-        return res.status(500).json({
-          ok: false,
-          error: customersError.message,
-        });
+      if (sessionError) {
+        throw new Error(sessionError.message || "Failed to get session");
       }
 
-      customerMap = Object.fromEntries(
-        (customers || []).map((c) => [
-          c.id,
-          asText(c.name) || asText(c.company_name) || asText(c.contact_name) || "",
-        ])
-      );
-    }
-
-    if (skipTypeIds.length) {
-      const { data: skipTypes, error: skipTypesError } = await supabase
-        .from("skip_types")
-        .select("id,name")
-        .in("id", skipTypeIds);
-
-      if (skipTypesError) {
-        return res.status(500).json({
-          ok: false,
-          error: skipTypesError.message,
-        });
+      const accessToken = session?.access_token;
+      if (!accessToken) {
+        throw new Error("You are not signed in");
       }
 
-      skipTypeMap = Object.fromEntries(
-        (skipTypes || []).map((s) => [s.id, asText(s.name)])
-      );
-    }
+      const qs = new URLSearchParams({ date: nextDate });
+      if (nextDriverId) qs.set("driver_id", nextDriverId);
 
-    if (driverIds.length) {
-      const { data: drivers, error: driversError } = await supabase
-        .from("drivers")
-        .select("id,name,full_name")
-        .in("id", driverIds);
+      const res = await fetch(`/api/app/print/day-sheet?${qs.toString()}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
 
-      if (driversError) {
-        return res.status(500).json({
-          ok: false,
-          error: driversError.message,
-        });
+      const json = await res.json();
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to load day sheet");
       }
 
-      driverMap = Object.fromEntries(
-        (drivers || []).map((d) => [
-          d.id,
-          asText(d.full_name) || asText(d.name) || "",
-        ])
-      );
+      setData(json);
+    } catch (err) {
+      setError(err?.message || "Failed to load day sheet");
+      setData({ rows: [], total: 0 });
+    } finally {
+      setLoading(false);
     }
-
-    const rows = (jobs || []).map((job, idx) => ({
-      id: job.id,
-      run_order: job.driver_sort_key ?? idx + 1,
-      run_group: job.driver_run_group ?? null,
-      job_number: asText(job.job_number),
-      job_type: deriveJobType(job),
-      customer_name: deriveCustomerName(job, customerMap),
-      address: formatAddress(job),
-      skip_name: deriveSkipName(job, skipTypeMap),
-      notes: asText(job.notes),
-      permit: derivePermit(job),
-      placement: deriveRoadPlacement(job),
-      driver_name: deriveDriverName(job, driverMap),
-      status: deriveStatus(job),
-    }));
-
-    return res.status(200).json({
-      ok: true,
-      date,
-      driver_id: driverId || null,
-      total: rows.length,
-      rows,
-    });
-  } catch (err) {
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || "Unexpected error",
-    });
   }
+
+  useEffect(() => {
+    loadData(today, "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [today]);
+
+  return (
+    <div style={styles.page}>
+      <div className="no-print" style={styles.noPrint}>
+        <div style={styles.toolbar}>
+          <div style={styles.leftControls}>
+            <label style={styles.label}>
+              <span>Date</span>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                style={styles.input}
+              />
+            </label>
+
+            <label style={styles.label}>
+              <span>Driver ID (optional for now)</span>
+              <input
+                type="text"
+                value={driverId}
+                onChange={(e) => setDriverId(e.target.value)}
+                placeholder="Leave blank for all"
+                style={styles.input}
+              />
+            </label>
+
+            <button
+              onClick={() => loadData()}
+              style={styles.button}
+              disabled={loading}
+            >
+              {loading ? "Loading..." : "Load"}
+            </button>
+
+            <button
+              onClick={() => window.print()}
+              style={styles.buttonPrimary}
+              disabled={loading}
+            >
+              Print
+            </button>
+          </div>
+        </div>
+
+        {error ? <div style={styles.error}>{error}</div> : null}
+      </div>
+
+      <div style={styles.sheet}>
+        <div style={styles.header}>
+          <div>
+            <div style={styles.company}>Day Sheet</div>
+            <div style={styles.meta}>Date: {humanDate(data.date || date)}</div>
+            <div style={styles.meta}>
+              Driver: {data.driver_id ? data.driver_id : "All drivers"}
+            </div>
+          </div>
+
+          <div style={styles.summaryBox}>
+            <div style={styles.summaryLabel}>Total jobs</div>
+            <div style={styles.summaryValue}>{data.total || 0}</div>
+          </div>
+        </div>
+
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.thSmall}>#</th>
+              <th style={styles.th}>Job no.</th>
+              <th style={styles.th}>Type</th>
+              <th style={styles.th}>Customer</th>
+              <th style={styles.th}>Address</th>
+              <th style={styles.th}>Skip</th>
+              <th style={styles.th}>Notes</th>
+              <th style={styles.th}>Permit</th>
+              <th style={styles.th}>Placement</th>
+              <th style={styles.th}>Driver</th>
+              <th style={styles.th}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data.rows || []).length === 0 ? (
+              <tr>
+                <td colSpan={11} style={styles.empty}>
+                  No jobs found for this date
+                </td>
+              </tr>
+            ) : (
+              data.rows.map((row) => (
+                <tr key={row.id}>
+                  <td style={styles.tdCenter}>{row.run_order}</td>
+                  <td style={styles.td}>{row.job_number}</td>
+                  <td style={styles.td}>{row.job_type}</td>
+                  <td style={styles.td}>{row.customer_name}</td>
+                  <td style={styles.td}>{row.address}</td>
+                  <td style={styles.td}>{row.skip_name}</td>
+                  <td style={styles.td}>{row.notes}</td>
+                  <td style={styles.tdCenter}>{row.permit}</td>
+                  <td style={styles.tdCenter}>{row.placement}</td>
+                  <td style={styles.td}>{row.driver_name}</td>
+                  <td style={styles.td}>{row.status}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+
+        <div style={styles.footerNote}>Printed from SkipLogic</div>
+      </div>
+
+      <style jsx global>{`
+        @media print {
+          body {
+            background: #fff !important;
+          }
+
+          .no-print {
+            display: none !important;
+          }
+
+          @page {
+            size: A4 landscape;
+            margin: 10mm;
+          }
+        }
+      `}</style>
+    </div>
+  );
 }
+
+const styles = {
+  page: {
+    padding: 20,
+    background: "#f5f7fb",
+    minHeight: "100vh",
+    color: "#111827",
+    fontFamily:
+      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  },
+  noPrint: {
+    marginBottom: 16,
+  },
+  toolbar: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "end",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  leftControls: {
+    display: "flex",
+    gap: 12,
+    flexWrap: "wrap",
+    alignItems: "end",
+  },
+  label: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    fontSize: 13,
+    fontWeight: 600,
+  },
+  input: {
+    height: 40,
+    minWidth: 180,
+    padding: "0 12px",
+    borderRadius: 10,
+    border: "1px solid #d1d5db",
+    background: "#fff",
+  },
+  button: {
+    height: 40,
+    padding: "0 16px",
+    borderRadius: 10,
+    border: "1px solid #d1d5db",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 600,
+  },
+  buttonPrimary: {
+    height: 40,
+    padding: "0 16px",
+    borderRadius: 10,
+    border: "1px solid #111827",
+    background: "#111827",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  error: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    background: "#fee2e2",
+    color: "#991b1b",
+    fontWeight: 600,
+  },
+  sheet: {
+    background: "#fff",
+    borderRadius: 16,
+    padding: 20,
+    boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 20,
+    marginBottom: 16,
+  },
+  company: {
+    fontSize: 28,
+    fontWeight: 800,
+    lineHeight: 1.1,
+  },
+  meta: {
+    marginTop: 6,
+    fontSize: 14,
+    color: "#4b5563",
+  },
+  summaryBox: {
+    minWidth: 140,
+    border: "1px solid #d1d5db",
+    borderRadius: 12,
+    padding: 12,
+    textAlign: "center",
+  },
+  summaryLabel: {
+    fontSize: 12,
+    color: "#6b7280",
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+  },
+  summaryValue: {
+    fontSize: 28,
+    fontWeight: 800,
+    marginTop: 4,
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+    fontSize: 12,
+  },
+  th: {
+    border: "1px solid #d1d5db",
+    background: "#f9fafb",
+    textAlign: "left",
+    padding: 8,
+    fontWeight: 800,
+  },
+  thSmall: {
+    border: "1px solid #d1d5db",
+    background: "#f9fafb",
+    textAlign: "center",
+    padding: 8,
+    width: 40,
+    fontWeight: 800,
+  },
+  td: {
+    border: "1px solid #e5e7eb",
+    padding: 8,
+    verticalAlign: "top",
+  },
+  tdCenter: {
+    border: "1px solid #e5e7eb",
+    padding: 8,
+    verticalAlign: "top",
+    textAlign: "center",
+  },
+  empty: {
+    padding: 30,
+    textAlign: "center",
+    color: "#6b7280",
+    border: "1px solid #e5e7eb",
+  },
+  footerNote: {
+    marginTop: 12,
+    fontSize: 12,
+    color: "#6b7280",
+  },
+};
