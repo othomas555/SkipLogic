@@ -307,7 +307,7 @@ export default function EditJobPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          id,
+          job_id: id,
           cancellation_reason: reason || "Cancelled via edit page",
         }),
       });
