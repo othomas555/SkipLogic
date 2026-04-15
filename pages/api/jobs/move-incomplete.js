@@ -39,6 +39,32 @@ function shouldMoveCollection(job, sourceDate) {
   return true;
 }
 
+function extractSubscriberId(officeUser) {
+  return (
+    officeUser?.subscriberId ||
+    officeUser?.subscriber_id ||
+    officeUser?.profile?.subscriber_id ||
+    officeUser?.officeUser?.subscriber_id ||
+    officeUser?.officeUser?.subscriberId ||
+    officeUser?.membership?.subscriber_id ||
+    officeUser?.membership?.subscriberId ||
+    officeUser?.data?.subscriber_id ||
+    officeUser?.data?.subscriberId ||
+    null
+  );
+}
+
+function extractUserId(officeUser) {
+  return (
+    officeUser?.user?.id ||
+    officeUser?.userId ||
+    officeUser?.user_id ||
+    officeUser?.profile?.id ||
+    officeUser?.id ||
+    null
+  );
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -48,16 +74,6 @@ export default async function handler(req, res) {
   try {
     const officeUser = await requireOfficeUser(req, res);
     if (!officeUser) return;
-
-    const subscriberId =
-      officeUser?.subscriberId ||
-      officeUser?.subscriber_id ||
-      officeUser?.profile?.subscriber_id ||
-      null;
-
-    if (!subscriberId) {
-      return res.status(400).json({ error: "Missing subscriber" });
-    }
 
     const sourceDate = String(req.body?.source_date || "").trim();
     const targetDate = String(req.body?.target_date || "").trim();
@@ -75,6 +91,32 @@ export default async function handler(req, res) {
     }
 
     const supabase = getSupabaseAdmin();
+
+    let subscriberId = extractSubscriberId(officeUser);
+
+    if (!subscriberId) {
+      const userId = extractUserId(officeUser);
+
+      if (userId) {
+        const { data: profileRow, error: profileErr } = await supabase
+          .from("profiles")
+          .select("subscriber_id")
+          .eq("id", userId)
+          .maybeSingle();
+
+        if (!profileErr && profileRow?.subscriber_id) {
+          subscriberId = profileRow.subscriber_id;
+        }
+      }
+    }
+
+    if (!subscriberId) {
+      console.error("move-incomplete missing subscriber", {
+        officeUserKeys: officeUser && typeof officeUser === "object" ? Object.keys(officeUser) : [],
+        officeUser,
+      });
+      return res.status(400).json({ error: "Missing subscriber" });
+    }
 
     const { data: rows, error: loadErr } = await supabase
       .from("jobs")
@@ -140,8 +182,12 @@ export default async function handler(req, res) {
         job_number: job.job_number || "",
         moved_scheduled_date: !!moveScheduled,
         moved_collection_date: !!moveCollection,
-        delivery_rollover_count: moveScheduled ? patch.delivery_rollover_count : numOrZero(job.delivery_rollover_count),
-        collection_rollover_count: moveCollection ? patch.collection_rollover_count : numOrZero(job.collection_rollover_count),
+        delivery_rollover_count: moveScheduled
+          ? patch.delivery_rollover_count
+          : numOrZero(job.delivery_rollover_count),
+        collection_rollover_count: moveCollection
+          ? patch.collection_rollover_count
+          : numOrZero(job.collection_rollover_count),
       });
     }
 
