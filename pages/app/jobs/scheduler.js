@@ -26,6 +26,16 @@ function ymdAddDays(ymd, deltaDays) {
   }
 }
 
+function isYmd(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
+}
+
+function fmtDateUk(ymd) {
+  if (!isYmd(ymd)) return String(ymd || "");
+  const [y, m, d] = ymd.split("-");
+  return `${d}/${m}/${y}`;
+}
+
 function fmtGBP(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "—";
@@ -74,20 +84,15 @@ function isWorkToDo(job, selectedDate) {
 
   const status = String(job.job_status || "");
 
-  // COLLECTIONS:
-  // Any job with a collection planned for the selected date should appear,
-  // whether it is a normal collection or the collect leg of a swap.
   if (String(job.collection_date || "") === String(selectedDate)) {
     if (job.collection_actual_date) return false;
-    if (status === "collected" || status === "completed") return false;
+    if (status === "collected" || status === "completed" || status === "cancelled") return false;
     return true;
   }
 
-  // DELIVERIES:
-  // Only jobs scheduled for the selected date and not already delivered/completed.
   if (String(job.scheduled_date || "") !== String(selectedDate)) return false;
   if (job.delivery_actual_date) return false;
-  if (status === "delivered" || status === "collected" || status === "completed") return false;
+  if (status === "delivered" || status === "collected" || status === "completed" || status === "cancelled") return false;
 
   return true;
 }
@@ -187,7 +192,7 @@ export default function SchedulerPage() {
   const [driverRuns, setDriverRuns] = useState([]);
   const [hasLayoutEdits, setHasLayoutEdits] = useState(false);
 
-  const [rolling, setRolling] = useState(false);
+  const [movingIncomplete, setMovingIncomplete] = useState(false);
   const [savingRuns, setSavingRuns] = useState(false);
 
   const [yardPostcode, setYardPostcode] = useState("");
@@ -204,8 +209,6 @@ export default function SchedulerPage() {
   const [computing, setComputing] = useState(false);
   const [sending, setSending] = useState(false);
   const [showTimingHelp, setShowTimingHelp] = useState(false);
-
-  const prevDate = useMemo(() => ymdAddDays(date, -1), [date]);
 
   const customerById = useMemo(() => {
     const m = {};
@@ -879,74 +882,62 @@ export default function SchedulerPage() {
     }
   }
 
-  async function rollForwardFromYesterday() {
+  async function moveIncompleteJobs() {
     if (!subscriberId) return;
+
+    const suggested = ymdAddDays(date, 1);
+    const rawTarget = window.prompt(
+      `Move incomplete jobs from ${fmtDateUk(date)} to which date?\n\nUse YYYY-MM-DD`,
+      suggested
+    );
+
+    if (rawTarget == null) return;
+
+    const targetDate = String(rawTarget || "").trim();
+
+    if (!isYmd(targetDate)) {
+      setErr("Please enter a valid target date in YYYY-MM-DD format.");
+      return;
+    }
+
+    if (String(targetDate) === String(date)) {
+      setErr("Target date must be different from the selected scheduler date.");
+      return;
+    }
+
+    const ok = window.confirm(
+      `Move incomplete jobs from ${fmtDateUk(date)} to ${fmtDateUk(targetDate)}?\n\nThis will move unfinished deliveries, collections, and swaps due on the selected date, and will clear their driver assignment/run order so they can be re-planned.`
+    );
+    if (!ok) return;
+
     setErr("");
-    setRolling(true);
+    setMovingIncomplete(true);
 
     try {
-      const { data: yRows, error: yErr } = await supabase
-        .from("jobs")
-        .select(
-          [
-            "id",
-            "job_status",
-            "scheduled_date",
-            "collection_date",
-            "delivery_actual_date",
-            "collection_actual_date",
-            "assigned_driver_id",
-            "driver_run_group",
-            "swap_group_id",
-            "swap_role",
-          ].join(",")
-        )
-        .eq("subscriber_id", subscriberId)
-        .or(`scheduled_date.eq.${prevDate},collection_date.eq.${prevDate}`);
-      if (yErr) throw new Error("Failed to load previous day jobs");
-
-      const rows = (yRows || []).filter((j) => {
-        const status = String(j.job_status || "");
-
-        if (String(j.collection_date || "") === String(prevDate)) {
-          if (j.collection_actual_date) return false;
-          if (status === "collected" || status === "completed") return false;
-          return true;
-        }
-
-        if (String(j.scheduled_date || "") === String(prevDate)) {
-          if (j.delivery_actual_date) return false;
-          if (status === "delivered" || status === "collected" || status === "completed") return false;
-          return true;
-        }
-
-        return false;
+      const resp = await fetch("/api/jobs/move-incomplete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_date: date,
+          target_date: targetDate,
+        }),
       });
 
-      for (const j of rows) {
-        const patch = {};
-        if (String(j.collection_date || "") === String(prevDate) && !j.collection_actual_date) {
-          patch.collection_date = date;
-        }
-        if (String(j.scheduled_date || "") === String(prevDate) && !j.delivery_actual_date) {
-          patch.scheduled_date = date;
-        }
-        if (!Object.keys(patch).length) continue;
-
-        const { error } = await supabase
-          .from("jobs")
-          .update(patch)
-          .eq("subscriber_id", subscriberId)
-          .eq("id", j.id);
-        if (error) throw error;
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data?.error || "Failed to move incomplete jobs");
       }
 
-      setRolling(false);
       await loadAll();
+
+      alert(
+        `Moved ${Number(data?.moved_count || 0)} incomplete job(s) from ${fmtDateUk(date)} to ${fmtDateUk(targetDate)}.`
+      );
     } catch (e) {
       console.error(e);
-      setErr(e?.message || "Failed to roll forward");
-      setRolling(false);
+      setErr(e?.message || "Failed to move incomplete jobs");
+    } finally {
+      setMovingIncomplete(false);
     }
   }
 
@@ -1499,8 +1490,13 @@ export default function SchedulerPage() {
               {sending ? "Sending…" : "Send messages"}
             </button>
 
-            <button type="button" style={btnSecondary} onClick={rollForwardFromYesterday} disabled={rolling}>
-              {rolling ? "Rolling…" : `Roll forward unfinished from ${prevDate}`}
+            <button
+              type="button"
+              style={btnSecondary}
+              onClick={moveIncompleteJobs}
+              disabled={movingIncomplete}
+            >
+              {movingIncomplete ? "Moving…" : "Move incomplete jobs…"}
             </button>
 
             <div style={timingStatusText}>
