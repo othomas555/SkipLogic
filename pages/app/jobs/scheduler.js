@@ -907,7 +907,10 @@ export default function SchedulerPage() {
   }
 
   async function moveIncompleteJobs() {
-    if (!subscriberId) return;
+    if (!subscriberId) {
+      setErr("Missing subscriber on page");
+      return;
+    }
 
     const suggested = ymdAddDays(date, 1);
     const rawTarget = window.prompt(
@@ -942,6 +945,7 @@ export default function SchedulerPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          subscriber_id: subscriberId,
           source_date: date,
           target_date: targetDate,
         }),
