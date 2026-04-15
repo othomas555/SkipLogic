@@ -49,7 +49,12 @@ export default async function handler(req, res) {
     const officeUser = await requireOfficeUser(req, res);
     if (!officeUser) return;
 
-    const subscriberId = officeUser.subscriber_id;
+    const subscriberId =
+      officeUser?.subscriberId ||
+      officeUser?.subscriber_id ||
+      officeUser?.profile?.subscriber_id ||
+      null;
+
     if (!subscriberId) {
       return res.status(400).json({ error: "Missing subscriber" });
     }
