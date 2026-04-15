@@ -10,6 +10,11 @@ function asText(v) {
   return typeof v === "string" ? v.trim() : "";
 }
 
+function numOrZero(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function shouldMoveScheduled(job, sourceDate) {
   const status = asText(job.job_status).toLowerCase();
 
@@ -81,6 +86,8 @@ export default async function handler(req, res) {
           "driver_run_group",
           "swap_group_id",
           "swap_role",
+          "delivery_rollover_count",
+          "collection_rollover_count",
         ].join(",")
       )
       .eq("subscriber_id", subscriberId)
@@ -103,8 +110,15 @@ export default async function handler(req, res) {
         driver_run_group: null,
       };
 
-      if (moveScheduled) patch.scheduled_date = targetDate;
-      if (moveCollection) patch.collection_date = targetDate;
+      if (moveScheduled) {
+        patch.scheduled_date = targetDate;
+        patch.delivery_rollover_count = numOrZero(job.delivery_rollover_count) + 1;
+      }
+
+      if (moveCollection) {
+        patch.collection_date = targetDate;
+        patch.collection_rollover_count = numOrZero(job.collection_rollover_count) + 1;
+      }
 
       const { error: updateErr } = await supabase
         .from("jobs")
@@ -121,6 +135,8 @@ export default async function handler(req, res) {
         job_number: job.job_number || "",
         moved_scheduled_date: !!moveScheduled,
         moved_collection_date: !!moveCollection,
+        delivery_rollover_count: moveScheduled ? patch.delivery_rollover_count : numOrZero(job.delivery_rollover_count),
+        collection_rollover_count: moveCollection ? patch.collection_rollover_count : numOrZero(job.collection_rollover_count),
       });
     }
 
