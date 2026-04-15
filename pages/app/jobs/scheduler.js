@@ -177,6 +177,28 @@ function getCardKind(card, date) {
   return "job";
 }
 
+function getCardRolloverCount(card, date) {
+  if (!card || card.type === "block") return 0;
+
+  if (card.type === "job") {
+    const j = card.job || {};
+    const isCollection = String(j.collection_date || "") === String(date);
+    return clampInt(
+      isCollection ? j.collection_rollover_count ?? 0 : j.delivery_rollover_count ?? 0,
+      0,
+      999
+    );
+  }
+
+  if (card.type === "swap") {
+    const deliverCount = clampInt(card.deliver?.delivery_rollover_count ?? 0, 0, 999);
+    const collectCount = clampInt(card.collect?.collection_rollover_count ?? 0, 0, 999);
+    return Math.max(deliverCount, collectCount);
+  }
+
+  return 0;
+}
+
 export default function SchedulerPage() {
   const router = useRouter();
   const { checking, user, subscriberId, errorMsg: authError } = useAuthProfile();
@@ -286,6 +308,8 @@ export default function SchedulerPage() {
             "driver_run_group",
             "swap_group_id",
             "swap_role",
+            "delivery_rollover_count",
+            "collection_rollover_count",
           ].join(",")
         )
         .eq("subscriber_id", subscriberId)
@@ -906,7 +930,7 @@ export default function SchedulerPage() {
     }
 
     const ok = window.confirm(
-      `Move incomplete jobs from ${fmtDateUk(date)} to ${fmtDateUk(targetDate)}?\n\nThis will move unfinished deliveries, collections, and swaps due on the selected date, and will clear their driver assignment/run order so they can be re-planned.`
+      `Move incomplete jobs from ${fmtDateUk(date)} to ${fmtDateUk(targetDate)}?\n\nThis will move unfinished deliveries, collections, and swaps due on the selected date, increase their rollover counters, and clear their driver assignment/run order so they can be re-planned.`
     );
     if (!ok) return;
 
@@ -1644,6 +1668,7 @@ function SchedulerCard({
   onMoveDown,
 }) {
   const kind = getCardKind(card, date);
+  const rolloverCount = getCardRolloverCount(card, date);
   const isSwap = card.type === "swap";
   const isJob = card.type === "job";
   const isBlock = card.type === "block";
@@ -1685,8 +1710,18 @@ function SchedulerCard({
       onDragStart={(e) => onDragStart(e, card)}
     >
       <div style={cardTopRow}>
-        <div style={{ minWidth: 0 }}>
-          <div style={smallBadge(kind)}>{kind === "block" ? "Yard" : title.split("·")[1]?.trim() || title.split(" ")[0]}</div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={badgeRow}>
+            <div style={smallBadge(kind)}>
+              {kind === "block" ? "Yard" : title.split("·")[1]?.trim() || title.split(" ")[0]}
+            </div>
+            {rolloverCount > 0 ? (
+              <div style={rolloverBubble} title={`Rolled over ${rolloverCount} time(s)`}>
+                {rolloverCount}
+              </div>
+            ) : null}
+          </div>
+
           <div style={cardTitleCompact}>{title}</div>
           <div style={cardSubCompact}>{sub || "—"}</div>
           {compactMeta ? <div style={cardMetaCompact}>{compactMeta}</div> : null}
@@ -2053,6 +2088,29 @@ const cardTopRow = {
   justifyContent: "space-between",
   gap: 8,
   alignItems: "flex-start",
+};
+
+const badgeRow = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  flexWrap: "wrap",
+};
+
+const rolloverBubble = {
+  minWidth: 20,
+  height: 20,
+  borderRadius: 999,
+  background: "#dc2626",
+  color: "#fff",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: 11,
+  fontWeight: 800,
+  padding: "0 6px",
+  marginBottom: 6,
+  lineHeight: 1,
 };
 
 const cardTitleCompact = {
