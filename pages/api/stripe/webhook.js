@@ -1,4 +1,3 @@
-// pages/api/stripe/webhook.js
 import Stripe from "stripe";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
@@ -27,6 +26,14 @@ function toIsoFromUnixSeconds(sec) {
   return new Date(ms).toISOString();
 }
 
+function addDays(ymd, days) {
+  if (!ymd) return null;
+  const d = new Date(`${ymd}T00:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return null;
+  d.setUTCDate(d.getUTCDate() + Number(days || 0));
+  return d.toISOString().slice(0, 10);
+}
+
 async function findSubscriberByStripeCustomerId(supabase, stripeCustomerId) {
   const { data, error } = await supabase
     .from("subscribers")
@@ -48,6 +55,134 @@ async function findPlanVariantByPriceId(supabase, priceId) {
   return data?.id || null;
 }
 
+async function insertTermHireEvent(supabase, payload) {
+  try {
+    await supabase.from("term_hire_events").insert(payload);
+  } catch (e) {
+    console.error("term_hire_events insert failed", e);
+  }
+}
+
+async function handleTermHireCheckoutCompleted(supabase, session) {
+  const flow = String(session?.metadata?.flow || "");
+  if (flow !== "term_hire_extension") {
+    return { handled: false };
+  }
+
+  const jobId = String(session?.metadata?.job_id || "");
+  const subscriberId = String(session?.metadata?.subscriber_id || "");
+  const customerId = String(session?.metadata?.customer_id || "");
+  const weeks = Math.max(1, Number(session?.metadata?.weeks || 1) || 1);
+
+  if (!jobId || !subscriberId) {
+    return { handled: true, ok: false, reason: "Missing term-hire metadata" };
+  }
+
+  const { data: job, error: jobErr } = await supabase
+    .from("jobs")
+    .select("*")
+    .eq("id", jobId)
+    .eq("subscriber_id", subscriberId)
+    .maybeSingle();
+
+  if (jobErr) throw jobErr;
+  if (!job) {
+    return { handled: true, ok: false, reason: "Job not found" };
+  }
+
+  const { data: existingPaid, error: existingPaidErr } = await supabase
+    .from("term_hire_extensions")
+    .select("id")
+    .eq("stripe_session_id", session.id)
+    .eq("status", "paid")
+    .limit(1);
+
+  if (existingPaidErr) throw existingPaidErr;
+  if (Array.isArray(existingPaid) && existingPaid.length > 0) {
+    return { handled: true, ok: true, reason: "Already processed" };
+  }
+
+  const { data: settings, error: settingsErr } = await supabase
+    .from("email_settings")
+    .select("term_hire_default_days")
+    .eq("subscriber_id", subscriberId)
+    .maybeSingle();
+
+  if (settingsErr) throw settingsErr;
+
+  const deliveryBase = job.delivery_actual_date || job.scheduled_date || null;
+
+  let baseEndDate =
+    job.term_hire_extended_until ||
+    (deliveryBase ? addDays(deliveryBase, Number(settings?.term_hire_default_days || 14)) : null);
+
+  if (!baseEndDate) {
+    return { handled: true, ok: false, reason: "No base hire end date" };
+  }
+
+  const newHireEndDate = addDays(baseEndDate, weeks * 7);
+  const amountPaid = Number(session?.amount_total || 0) / 100;
+
+  const upsertExtension = {
+    subscriber_id: subscriberId,
+    job_id: job.id,
+    customer_id: customerId || job.customer_id || null,
+    weeks,
+    amount: amountPaid,
+    old_hire_end_date: baseEndDate,
+    new_hire_end_date: newHireEndDate,
+    stripe_session_id: session.id,
+    stripe_payment_intent_id: session.payment_intent || null,
+    status: "paid",
+    paid_at: new Date().toISOString(),
+  };
+
+  const { error: extensionInsertErr } = await supabase
+    .from("term_hire_extensions")
+    .upsert(upsertExtension, { onConflict: "stripe_session_id" });
+
+  if (extensionInsertErr) throw extensionInsertErr;
+
+  const { error: jobUpdateErr } = await supabase
+    .from("jobs")
+    .update({
+      term_hire_extended_until: newHireEndDate,
+      term_hire_status: "extended",
+      term_hire_suppressed: false,
+      term_hire_suppressed_at: null,
+      term_hire_suppressed_reason: null,
+      term_hire_extension_pending: false,
+      term_hire_extension_pending_at: null,
+      term_hire_auto_collection_due: false,
+      collection_date: null,
+      last_edited_at: new Date().toISOString(),
+    })
+    .eq("id", job.id)
+    .eq("subscriber_id", subscriberId);
+
+  if (jobUpdateErr) throw jobUpdateErr;
+
+  await insertTermHireEvent(supabase, {
+    subscriber_id: subscriberId,
+    job_id: job.id,
+    customer_id: customerId || job.customer_id || null,
+    channel: "stripe",
+    event_type: "extension_paid",
+    template_key: null,
+    recipient: session.customer_details?.email || session.customer_email || null,
+    metadata: {
+      stripe_session_id: session.id,
+      stripe_payment_intent_id: session.payment_intent || null,
+      weeks,
+      amount: amountPaid,
+      old_hire_end_date: baseEndDate,
+      new_hire_end_date: newHireEndDate,
+    },
+  });
+
+  return { handled: true, ok: true };
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("Method not allowed");
 
@@ -66,34 +201,33 @@ export default async function handler(req, res) {
 
     const supabase = getSupabaseAdmin();
 
-    // ---- Subscription lifecycle events ----
-    if (
-      event.type === "checkout.session.completed" ||
-      event.type === "customer.subscription.created" ||
-      event.type === "customer.subscription.updated" ||
-      event.type === "customer.subscription.deleted"
-    ) {
-      let subscription = null;
-      let stripeCustomerId = null;
+    // ---- checkout.session.completed ----
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
 
-      if (event.type === "checkout.session.completed") {
-        const session = event.data.object;
-        stripeCustomerId = session.customer || null;
-
-        if (session.subscription) {
-          subscription = await stripe.subscriptions.retrieve(session.subscription);
-        }
-      } else {
-        subscription = event.data.object;
-        stripeCustomerId = subscription.customer || null;
+      // Term-hire extension checkout
+      const termHireResult = await handleTermHireCheckoutCompleted(supabase, session);
+      if (termHireResult.handled) {
+        return res.status(200).json({ ok: true, term_hire: termHireResult });
       }
 
-      if (!stripeCustomerId) return res.status(200).json({ ok: true, ignored: true, reason: "No customer id" });
+      // Existing subscription lifecycle logic
+      let subscription = null;
+      let stripeCustomerId = session.customer || null;
+
+      if (session.subscription) {
+        subscription = await stripe.subscriptions.retrieve(session.subscription);
+      }
+
+      if (!stripeCustomerId) {
+        return res.status(200).json({ ok: true, ignored: true, reason: "No customer id" });
+      }
 
       const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
-      if (!subscriberId) return res.status(200).json({ ok: true, ignored: true, reason: "No matching subscriber" });
+      if (!subscriberId) {
+        return res.status(200).json({ ok: true, ignored: true, reason: "No matching subscriber" });
+      }
 
-      // Map Stripe price -> plan_variants.id
       let planVariantId = null;
       const priceId = subscription?.items?.data?.[0]?.price?.id || null;
       planVariantId = await findPlanVariantByPriceId(supabase, priceId);
@@ -105,7 +239,45 @@ export default async function handler(req, res) {
         subscription_status: status,
         trial_ends_at: trialEndsAt,
         plan_variant_id: planVariantId || null,
-        locked_at: null, // if they re-subscribe, unlock
+        locked_at: null,
+      };
+
+      const { error: upErr } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
+      if (upErr) throw upErr;
+
+      return res.status(200).json({ ok: true });
+    }
+
+    // ---- Subscription lifecycle events ----
+    if (
+      event.type === "customer.subscription.created" ||
+      event.type === "customer.subscription.updated" ||
+      event.type === "customer.subscription.deleted"
+    ) {
+      const subscription = event.data.object;
+      const stripeCustomerId = subscription.customer || null;
+
+      if (!stripeCustomerId) {
+        return res.status(200).json({ ok: true, ignored: true, reason: "No customer id" });
+      }
+
+      const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
+      if (!subscriberId) {
+        return res.status(200).json({ ok: true, ignored: true, reason: "No matching subscriber" });
+      }
+
+      let planVariantId = null;
+      const priceId = subscription?.items?.data?.[0]?.price?.id || null;
+      planVariantId = await findPlanVariantByPriceId(supabase, priceId);
+
+      const status = subscription?.status || "unknown";
+      const trialEndsAt = toIsoFromUnixSeconds(subscription?.trial_end || null);
+
+      const patch = {
+        subscription_status: status,
+        trial_ends_at: trialEndsAt,
+        plan_variant_id: planVariantId || null,
+        locked_at: null,
       };
 
       const { error: upErr } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
