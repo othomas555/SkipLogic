@@ -1,211 +1,184 @@
-import { getSupabaseAdmin } from "../../../../lib/supabaseAdmin";
+import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
+import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 
-function getBearer(req) {
-  const h = req.headers.authorization || "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m ? m[1] : null;
+function mergeTags() {
+  return [
+    "{{customer_name}}",
+    "{{job_number}}",
+    "{{skip_type}}",
+    "{{site_address}}",
+    "{{scheduled_date}}",
+    "{{collection_date}}",
+    "{{days_remaining}}",
+    "{{hire_end_date}}",
+    "{{extension_price}}",
+    "{{extend_url}}",
+    "{{collection_url}}",
+  ];
 }
 
-async function requireUser(req, supabaseAdmin) {
-  const token = getBearer(req);
-  if (!token) return { ok: false, status: 401, error: "Missing Authorization bearer token" };
+function defaultTemplates() {
+  return {
+    booking_confirmed: {
+      subject: "Your skip booking is confirmed",
+      body_html:
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip booking for job <b>{{job_number}}</b> is confirmed.</p></div>",
+    },
+    skip_due_for_collection: {
+      subject: "Your skip is booked for collection",
+      body_html:
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip for job <b>{{job_number}}</b> has been booked for collection.</p></div>",
+    },
+    swap_scheduled: {
+      subject: "Your skip swap is booked",
+      body_html:
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip swap for job <b>{{job_number}}</b> has been booked.</p></div>",
+    },
+    collected_confirmation: {
+      subject: "Your skip has been collected",
+      body_html:
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip for job <b>{{job_number}}</b> has been collected.</p></div>",
+    },
+    term_ending_reminder: {
+      subject: "Your skip hire is ending soon",
+      body_html:
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip hire for job <b>{{job_number}}</b> is ending soon.</p></div>",
+    },
+    term_hire_reminder_1: {
+      subject: "Your skip hire is ending in {{days_remaining}} days",
+      body_html:
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip hire for job <b>{{job_number}}</b> is ending in <b>{{days_remaining}} days</b>.</p><p>If you still need the skip, you can extend it for <b>£{{extension_price}} per week</b>.</p><p style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#111;color:#fff;text-decoration:none;font-weight:bold;margin-right:10px;\">Extend hire</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#f3f4f6;color:#111;text-decoration:none;font-weight:bold;\">Book collection</a></p><p>Site: {{site_address}}</p><p>Hire end date: {{hire_end_date}}</p></div>",
+    },
+    term_hire_reminder_2: {
+      subject: "Reminder: your skip hire is ending soon",
+      body_html:
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>This is a reminder that your skip hire for job <b>{{job_number}}</b> is ending in <b>{{days_remaining}} days</b>.</p><p>To keep the skip, extend now for <b>£{{extension_price}} per week</b>.</p><p style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#111;color:#fff;text-decoration:none;font-weight:bold;margin-right:10px;\">Extend hire</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#f3f4f6;color:#111;text-decoration:none;font-weight:bold;\">Book collection</a></p><p>Site: {{site_address}}</p><p>Hire end date: {{hire_end_date}}</p></div>",
+    },
+    term_hire_final_notice: {
+      subject: "Final notice: your skip is now due for collection",
+      body_html:
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip hire for job <b>{{job_number}}</b> is now due to end.</p><p>If you still need the skip, you must extend now for <b>£{{extension_price}} per week</b>. Otherwise it may be booked for collection.</p><p style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#111;color:#fff;text-decoration:none;font-weight:bold;margin-right:10px;\">Extend now</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#f3f4f6;color:#111;text-decoration:none;font-weight:bold;\">Book collection</a></p><p>Site: {{site_address}}</p><p>Hire end date: {{hire_end_date}}</p></div>",
+    },
+  };
+}
 
-  const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
-  if (userErr || !userData?.user?.id) return { ok: false, status: 401, error: "Invalid token" };
-
-  const userId = userData.user.id;
-
-  const { data: prof, error: profErr } = await supabaseAdmin
-    .from("profiles")
-    .select("id, subscriber_id, role, is_active, email")
-    .eq("id", userId)
+async function ensureSettingsRow(supabase, subscriberId) {
+  const { data: existing, error: selectError } = await supabase
+    .from("email_settings")
+    .select("*")
+    .eq("subscriber_id", subscriberId)
     .maybeSingle();
 
-  if (profErr) return { ok: false, status: 500, error: profErr.message };
-  if (!prof || prof.is_active === false) return { ok: false, status: 403, error: "Profile inactive" };
-  if (!prof.subscriber_id) return { ok: false, status: 403, error: "Profile missing subscriber_id" };
+  if (selectError) throw selectError;
+  if (existing) return existing;
 
-  return { ok: true, user_id: userId, profile: prof, subscriber_id: prof.subscriber_id };
+  const insertPayload = {
+    subscriber_id: subscriberId,
+    provider: "resend",
+    is_enabled: false,
+    from_name: "",
+    from_email: "",
+    reply_to: "",
+    send_bcc: false,
+    bcc_email: "",
+    term_hire_enabled: false,
+    term_hire_default_days: 14,
+    term_hire_reminder_1_days_before: 4,
+    term_hire_reminder_2_days_before: 2,
+    term_hire_final_notice_enabled: true,
+    term_hire_extension_price_per_week: 0,
+    term_hire_auto_book_collection: false,
+    term_hire_email_enabled: true,
+    term_hire_sms_enabled: false,
+  };
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("email_settings")
+    .insert(insertPayload)
+    .select("*")
+    .single();
+
+  if (insertError) throw insertError;
+  return inserted;
 }
 
-const TEMPLATE_KEYS = [
-  "booking_confirmed",
-  "skip_due_for_collection",
-  "swap_scheduled",
-  "collected_confirmation",
-  "term_ending_reminder",
-];
+async function ensureTemplateRows(supabase, subscriberId, defaults) {
+  const keys = Object.keys(defaults || {});
+  if (!keys.length) return [];
 
-function defaultTemplate(key) {
-  const commonFooter = `
-    <hr style="border:none;border-top:1px solid #eee;margin:20px 0;" />
-    <p style="font-size:12px;color:#666;">
-      If you have any questions, just reply to this email.
-    </p>
-  `;
+  const { data: existingRows, error: selectError } = await supabase
+    .from("email_templates")
+    .select("*")
+    .eq("subscriber_id", subscriberId);
 
-  switch (key) {
-    case "booking_confirmed":
-      return {
-        subject: "Your skip booking is confirmed ✅",
-        body_html: `
-          <p>Hi {{customer_name}},</p>
-          <p>Your skip booking is confirmed.</p>
-          <p><strong>Delivery date:</strong> {{delivery_date}}</p>
-          <p><strong>Address:</strong> {{site_address}}</p>
-          <p><strong>Skip:</strong> {{skip_type}}</p>
+  if (selectError) throw selectError;
 
-          <p style="margin-top:16px;">
-            ⭐ If you’re happy with our service, please leave us a Google review:
-            <a href="{{google_review_link}}">Leave a review</a>
-          </p>
-          ${commonFooter}
-        `,
-      };
+  const existing = Array.isArray(existingRows) ? existingRows : [];
+  const existingKeys = new Set(existing.map((x) => x.template_key));
+  const missing = keys.filter((k) => !existingKeys.has(k));
 
-    case "swap_scheduled":
-      return {
-        subject: "Skip swap booked 🔁",
-        body_html: `
-          <p>Hi {{customer_name}},</p>
-          <p>Your skip swap has been booked.</p>
-          <p><strong>Swap date:</strong> {{swap_date}}</p>
-          <p><strong>Address:</strong> {{site_address}}</p>
-          ${commonFooter}
-        `,
-      };
+  if (missing.length) {
+    const inserts = missing.map((templateKey) => ({
+      subscriber_id: subscriberId,
+      template_key: templateKey,
+      enabled: true,
+      subject: defaults[templateKey]?.subject || "",
+      body_html: defaults[templateKey]?.body_html || "",
+      updated_at: new Date().toISOString(),
+    }));
 
-    case "skip_due_for_collection":
-      return {
-        subject: "Ready for collection? 🚚",
-        body_html: `
-          <p>Hi {{customer_name}},</p>
-          <p>If your skip is ready for collection, you can reply to this email to book it in.</p>
-          <p><strong>Address:</strong> {{site_address}}</p>
-          ${commonFooter}
-        `,
-      };
-
-    case "collected_confirmation":
-      return {
-        subject: "Skip collected ✅",
-        body_html: `
-          <p>Hi {{customer_name}},</p>
-          <p>Your skip has been collected. Thanks for using us.</p>
-          <p><strong>Collection date:</strong> {{collection_date}}</p>
-          <p><strong>Address:</strong> {{site_address}}</p>
-          <p>We’ve attached your Waste Transfer Note (where applicable).</p>
-          ${commonFooter}
-        `,
-      };
-
-    case "term_ending_reminder":
-      return {
-        subject: "Your hire period is nearly up ⏳",
-        body_html: `
-          <p>Hi {{customer_name}},</p>
-          <p>This is a quick reminder your hire period is nearly up.</p>
-          <p><strong>Hire ends:</strong> {{term_end_date}}</p>
-          <p>If you need more time, reply to this email and we’ll arrange it.</p>
-          ${commonFooter}
-        `,
-      };
-
-    default:
-      return { subject: "", body_html: "" };
+    const { error: insertError } = await supabase.from("email_templates").insert(inserts);
+    if (insertError) throw insertError;
   }
+
+  const { data: finalRows, error: finalError } = await supabase
+    .from("email_templates")
+    .select("*")
+    .eq("subscriber_id", subscriberId)
+    .order("updated_at", { ascending: false });
+
+  if (finalError) throw finalError;
+  return Array.isArray(finalRows) ? finalRows : [];
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Method not allowed" });
+  if (req.method !== "GET") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
 
-  const supabaseAdmin = getSupabaseAdmin();
-  const authz = await requireUser(req, supabaseAdmin);
-  if (!authz.ok) return res.status(authz.status).json({ ok: false, error: authz.error });
+  try {
+    const auth = await requireOfficeUser(req, res);
+    if (!auth?.ok) return;
 
-  const subscriber_id = authz.subscriber_id;
+    const subscriberId = auth.subscriberId;
+    const supabase = getSupabaseAdmin();
 
-  // settings row (create if missing)
-  let { data: settings, error: sErr } = await supabaseAdmin
-    .from("email_settings")
-    .select("*")
-    .eq("subscriber_id", subscriber_id)
-    .maybeSingle();
+    const defaults = defaultTemplates();
+    const settings = await ensureSettingsRow(supabase, subscriberId);
+    const templates = await ensureTemplateRows(supabase, subscriberId, defaults);
 
-  if (sErr) return res.status(500).json({ ok: false, error: sErr.message });
-
-  if (!settings) {
-    const { data: created, error: cErr } = await supabaseAdmin
-      .from("email_settings")
-      .insert({ subscriber_id, provider: "resend", is_enabled: true })
+    const { data: outboxRows, error: outboxError } = await supabase
+      .from("email_outbox")
       .select("*")
-      .maybeSingle();
-    if (cErr) return res.status(500).json({ ok: false, error: cErr.message });
-    settings = created;
+      .eq("subscriber_id", subscriberId)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (outboxError) throw outboxError;
+
+    return res.status(200).json({
+      ok: true,
+      settings,
+      templates,
+      defaults,
+      outbox: Array.isArray(outboxRows) ? outboxRows : [],
+      merge_tags: mergeTags(),
+    });
+  } catch (error) {
+    console.error("emails/get error", error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || "Failed to load email settings",
+    });
   }
-
-  // templates (ensure rows exist for all keys)
-  const { data: existing, error: tErr } = await supabaseAdmin
-    .from("email_templates")
-    .select("*")
-    .eq("subscriber_id", subscriber_id);
-
-  if (tErr) return res.status(500).json({ ok: false, error: tErr.message });
-
-  const byKey = new Map((existing || []).map((t) => [t.template_key, t]));
-  const toInsert = [];
-
-  for (const key of TEMPLATE_KEYS) {
-    if (!byKey.has(key)) {
-      const d = defaultTemplate(key);
-      toInsert.push({
-        subscriber_id,
-        template_key: key,
-        enabled: true,
-        subject: d.subject,
-        body_html: d.body_html,
-      });
-    }
-  }
-
-  if (toInsert.length) {
-    const { error: iErr } = await supabaseAdmin.from("email_templates").insert(toInsert);
-    if (iErr) return res.status(500).json({ ok: false, error: iErr.message });
-  }
-
-  const { data: templates, error: t2Err } = await supabaseAdmin
-    .from("email_templates")
-    .select("*")
-    .eq("subscriber_id", subscriber_id)
-    .order("template_key", { ascending: true });
-
-  if (t2Err) return res.status(500).json({ ok: false, error: t2Err.message });
-
-  const { data: outbox, error: oErr } = await supabaseAdmin
-    .from("email_outbox")
-    .select("id,template_key,to_email,status,error,created_at,sent_at")
-    .eq("subscriber_id", subscriber_id)
-    .order("created_at", { ascending: false })
-    .limit(50);
-
-  if (oErr) return res.status(500).json({ ok: false, error: oErr.message });
-
-  return res.status(200).json({
-    ok: true,
-    settings,
-    templates: templates || [],
-    defaults: Object.fromEntries(TEMPLATE_KEYS.map((k) => [k, defaultTemplate(k)])),
-    outbox: outbox || [],
-    template_keys: TEMPLATE_KEYS,
-    merge_tags: [
-      "{{customer_name}}",
-      "{{delivery_date}}",
-      "{{swap_date}}",
-      "{{collection_date}}",
-      "{{term_end_date}}",
-      "{{site_address}}",
-      "{{skip_type}}",
-      "{{google_review_link}}",
-    ],
-  });
 }
