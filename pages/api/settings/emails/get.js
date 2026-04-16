@@ -1,5 +1,5 @@
-import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
-import { requireOfficeUser } from "../../../lib/requireOfficeUser";
+import { getSupabaseAdmin } from "../../../../lib/supabaseAdmin";
+import { requireOfficeUser } from "../../../../lib/requireOfficeUser";
 
 function mergeTags() {
   return [
@@ -147,10 +147,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const auth = await requireOfficeUser(req, res);
-    if (!auth?.ok) return;
+    const auth = await requireOfficeUser(req);
+    if (!auth?.ok) {
+      return res.status(401).json({ ok: false, error: auth?.error || "Unauthorized" });
+    }
 
-    const subscriberId = auth.subscriberId;
+    const subscriberId = auth.subscriber_id;
     const supabase = getSupabaseAdmin();
 
     const defaults = defaultTemplates();
