@@ -1,393 +1,233 @@
-// pages/api/cron/send-term-hire-reminders.js
-import { createClient } from "@supabase/supabase-js";
+import { requireOfficeUser } from "../../../lib/requireOfficeUser";
+import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
-function requireCronAuth(req) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return { ok: true }; // allow if you haven't set one yet
-
-  const viaHeader =
-    req.headers["x-cron-secret"] ||
-    (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-
-  const viaQuery = req.query?.secret;
-
-  if (viaHeader === secret || viaQuery === secret) return { ok: true };
-  return { ok: false, message: "Unauthorized (missing/invalid CRON_SECRET)" };
+function asText(v) {
+  return typeof v === "string" ? v.trim() : "";
 }
 
-function getSupabaseAdminClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+function asNullableText(v) {
+  const t = asText(v);
+  return t || null;
+}
 
-  if (!url) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL)");
-  if (!serviceKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+function asNullableNumber(v) {
+  if (v === "" || v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
-  return createClient(url, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
+function asBool(v) {
+  return v === true;
+}
+
+function isYmd(v) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+}
+
+function pickCommercialChangeFlags(beforeRow, patch) {
+  const commercialFields = [
+    "price_inc_vat",
+    "payment_type",
+    "placement_type",
+    "permit_setting_id",
+    "permit_price_no_vat",
+    "permit_delay_business_days",
+    "permit_validity_days",
+    "permit_override",
+  ];
+
+  return commercialFields.some((field) => {
+    const beforeVal = beforeRow?.[field] ?? null;
+    const afterVal = patch?.[field] ?? null;
+    return String(beforeVal ?? "") !== String(afterVal ?? "");
   });
 }
 
-function ymdTodayUTC() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function addDaysYMD(ymd, days) {
-  const dt = new Date(`${ymd}T00:00:00Z`);
-  dt.setUTCDate(dt.getUTCDate() + Number(days || 0));
-  return dt.toISOString().slice(0, 10);
-}
-
-function cmpYMD(a, b) {
-  // YMD strings compare lexicographically when in YYYY-MM-DD format
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
-}
-
-function clampInt(n, min, max) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return min;
-  return Math.max(min, Math.min(max, Math.trunc(x)));
-}
-
-function escapeHtml(s) {
-  return String(s || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function buildEmailHtml({
-  customerName,
-  jobNumber,
-  sitePostcode,
-  deliveredYmd,
-  termEndYmd,
-  daysTotal,
-}) {
-  return `
-  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111">
-    <h2 style="margin:0 0 10px;">Skip hire reminder</h2>
-    <p style="margin:0 0 12px;">Hi ${escapeHtml(customerName || "there")},</p>
-    <p style="margin:0 0 12px;">
-      This is a friendly reminder that your skip hire is approaching the end of its agreed period.
-    </p>
-
-    <div style="padding:12px;border:1px solid #eee;border-radius:10px;background:#fafafa;margin:0 0 12px;">
-      <div><b>Job:</b> ${escapeHtml(jobNumber)}</div>
-      <div><b>Site postcode:</b> ${escapeHtml(sitePostcode)}</div>
-      <div><b>Delivered:</b> ${escapeHtml(deliveredYmd)}</div>
-      <div><b>Hire term:</b> ${escapeHtml(String(daysTotal))} days</div>
-      <div><b>Term ends:</b> ${escapeHtml(termEndYmd)}</div>
-    </div>
-
-    <p style="margin:0 0 12px;">
-      Please reply to this email (or contact us) to book collection, or if you need to extend the hire.
-    </p>
-
-    <p style="margin:0;color:#666;font-size:12px;">(Automated reminder)</p>
-  </div>`;
-}
-
-async function sendSendGridEmail({ to, subject, html }) {
-  const key = process.env.SENDGRID_API_KEY;
-  const fromEmail = process.env.SENDGRID_FROM_EMAIL;
-
-  if (!key) return { ok: false, reason: "Missing SENDGRID_API_KEY" };
-  if (!fromEmail) return { ok: false, reason: "Missing SENDGRID_FROM_EMAIL" };
-
-  // SAFETY OVERRIDE:
-  // If SENDGRID_TO_EMAIL is set, we send ALL emails to that address (useful for testing).
-  const overrideTo = String(process.env.SENDGRID_TO_EMAIL || "").trim();
-  const finalTo = overrideTo || to;
-
-  const payload = {
-    personalizations: [{ to: [{ email: finalTo }] }],
-    from: { email: fromEmail },
-    subject,
-    content: [{ type: "text/html", value: html }],
-  };
-
-  const resp = await fetch("https://api.sendgrid.com/v3/mail/send", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (resp.status >= 200 && resp.status < 300) {
-    return { ok: true, overridden: !!overrideTo, to: finalTo };
+async function logTermHireEvent(supabase, payload) {
+  try {
+    await supabase.from("term_hire_events").insert(payload);
+  } catch (e) {
+    console.error("term_hire_events insert failed", e);
   }
-
-  const text = await resp.text().catch(() => "");
-  return { ok: false, reason: `SendGrid error ${resp.status}`, body: text };
 }
 
 export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", ["POST"]);
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+
   try {
-    if (!["GET", "POST"].includes(req.method)) {
-      return res.status(405).json({ ok: false, error: "Method not allowed" });
+    const auth = await requireOfficeUser(req, res);
+    if (!auth || auth.ok === false) return;
+
+    const supabase = getSupabaseAdmin();
+
+    const id = asText(req.body?.id);
+    if (!id) {
+      return res.status(400).json({ ok: false, error: "Missing job id" });
     }
 
-    const auth = requireCronAuth(req);
-    if (!auth.ok) return res.status(401).json({ ok: false, error: auth.message });
-
-    const supabase = getSupabaseAdminClient();
-    const today = ymdTodayUTC();
-
-    // Defaults (no subscriber-level settings read here):
-    const DEFAULT_TERM_DAYS = 14;
-    const DEFAULT_REMINDER_DAYS_BEFORE = 4;
-
-    const { data: jobs, error } = await supabase
+    const { data: existingJob, error: existingError } = await supabase
       .from("jobs")
-      .select(
-        `
-        id,
-        subscriber_id,
-        customer_id,
-        job_number,
-        site_postcode,
-        delivery_actual_date,
-        collection_actual_date,
-        hire_extension_days,
-        customers:customer_id (
-          first_name,
-          last_name,
-          company_name,
-          email,
-          term_hire_exempt,
-          term_hire_days_override
-        )
-      `
-      )
-      .is("collection_actual_date", null)
-      .not("delivery_actual_date", "is", null);
+      .select("*")
+      .eq("id", id)
+      .eq("subscriber_id", auth.subscriber_id)
+      .maybeSingle();
 
-    if (error) {
-      console.error(error);
-      return res.status(500).json({ ok: false, error: error.message || "Query failed" });
+    if (existingError) throw existingError;
+
+    if (!existingJob) {
+      return res.status(404).json({ ok: false, error: "Job not found" });
     }
 
-    let considered = 0;
-    let eligible = 0;
-    let sent = 0;
-    let skippedExempt = 0;
-    let skippedNoEmail = 0;
-    let skippedNotDue = 0;
-    let skippedAlreadySent = 0;
-    let failed = 0;
+    if (existingJob.job_status === "cancelled") {
+      return res.status(400).json({ ok: false, error: "Cancelled jobs cannot be edited" });
+    }
 
-    const details = [];
+    const scheduledDateRaw = req.body?.scheduled_date;
+    const collectionDateRaw = req.body?.collection_date;
 
-    for (const j of jobs || []) {
-      considered++;
+    if (scheduledDateRaw != null && scheduledDateRaw !== "" && !isYmd(scheduledDateRaw)) {
+      return res.status(400).json({ ok: false, error: "Invalid scheduled_date" });
+    }
 
-      const cust = j.customers || {};
+    if (collectionDateRaw != null && collectionDateRaw !== "" && !isYmd(collectionDateRaw)) {
+      return res.status(400).json({ ok: false, error: "Invalid collection_date" });
+    }
 
-      if (cust.term_hire_exempt) {
-        skippedExempt++;
-        details.push({
-          job_id: j.id,
-          ok: false,
-          skipped: "exempt",
-          job_number: j.job_number || null,
-        });
-        continue;
+    const placementType = asNullableText(req.body?.placement_type) || "private";
+    const incomingCollectionDate = collectionDateRaw ? String(collectionDateRaw) : null;
+    const hadCollectionDateBefore = !!existingJob.collection_date;
+    const hasCollectionDateAfter = !!incomingCollectionDate;
+
+    const patch = {
+      skip_type_id: asNullableText(req.body?.skip_type_id),
+      scheduled_date: scheduledDateRaw ? String(scheduledDateRaw) : null,
+      collection_date: incomingCollectionDate,
+      price_inc_vat: asNullableNumber(req.body?.price_inc_vat),
+      notes: asNullableText(req.body?.notes),
+
+      site_name: asNullableText(req.body?.site_name),
+      site_address_line1: asNullableText(req.body?.site_address_line1),
+      site_address_line2: asNullableText(req.body?.site_address_line2),
+      site_town: asNullableText(req.body?.site_town),
+      site_postcode: asNullableText(req.body?.site_postcode),
+
+      payment_type: asNullableText(req.body?.payment_type),
+      placement_type: placementType,
+
+      permit_setting_id:
+        placementType === "permit" ? asNullableText(req.body?.permit_setting_id) : null,
+      permit_price_no_vat:
+        placementType === "permit" ? asNullableNumber(req.body?.permit_price_no_vat) : null,
+      permit_delay_business_days:
+        placementType === "permit"
+          ? asNullableNumber(req.body?.permit_delay_business_days)
+          : null,
+      permit_validity_days:
+        placementType === "permit" ? asNullableNumber(req.body?.permit_validity_days) : null,
+      permit_override: placementType === "permit" ? asBool(req.body?.permit_override) : false,
+      weekend_override: asBool(req.body?.weekend_override),
+
+      last_edited_at: new Date().toISOString(),
+      last_edited_by: auth.user_id || null,
+    };
+
+    const commercialChanged = pickCommercialChangeFlags(existingJob, patch);
+    const alreadyInvoiced = !!(existingJob.xero_invoice_id || existingJob.xero_invoice_number);
+
+    if (alreadyInvoiced && commercialChanged) {
+      patch.invoice_action_required = true;
+      patch.invoice_action_reason = "job_edited";
+      patch.invoice_action_note =
+        "Job edited after invoice creation. Review invoice manually in Xero.";
+    }
+
+    // If office books a collection date manually, suppress future term-hire reminders.
+    if (hasCollectionDateAfter) {
+      patch.term_hire_suppressed = true;
+      patch.term_hire_suppressed_at = new Date().toISOString();
+      patch.term_hire_suppressed_reason = "collection_booked_by_office";
+      patch.term_hire_status = "collection_requested";
+      patch.term_hire_auto_collection_due = false;
+      patch.term_hire_extension_pending = false;
+    } else if (hadCollectionDateBefore && !hasCollectionDateAfter) {
+      // If collection date is cleared, allow term-hire workflow to resume.
+      patch.term_hire_suppressed = false;
+      patch.term_hire_suppressed_at = null;
+      patch.term_hire_suppressed_reason = null;
+      patch.term_hire_auto_collection_due = false;
+
+      if (
+        existingJob.collection_actual_date ||
+        String(existingJob.job_status || "").toLowerCase() === "cancelled"
+      ) {
+        patch.term_hire_status = existingJob.term_hire_status || null;
+      } else if (existingJob.term_hire_extended_until) {
+        patch.term_hire_status = "extended";
+      } else {
+        patch.term_hire_status = "active";
       }
+    }
 
-      const to = String(cust.email || "").trim();
-      if (!to) {
-        skippedNoEmail++;
-        details.push({
-          job_id: j.id,
-          ok: false,
-          skipped: "no_email",
-          job_number: j.job_number || null,
-        });
-        continue;
-      }
+    const { data: updatedJob, error: updateError } = await supabase
+      .from("jobs")
+      .update(patch)
+      .eq("id", id)
+      .eq("subscriber_id", auth.subscriber_id)
+      .select("*")
+      .maybeSingle();
 
-      const delivered = j.delivery_actual_date;
-      if (!delivered) {
-        skippedNotDue++;
-        details.push({
-          job_id: j.id,
-          ok: false,
-          skipped: "no_delivery_date",
-          job_number: j.job_number || null,
-        });
-        continue;
-      }
+    if (updateError) throw updateError;
 
-      const baseTermDays =
-        cust.term_hire_days_override != null
-          ? clampInt(cust.term_hire_days_override, 1, 365)
-          : DEFAULT_TERM_DAYS;
+    if (!updatedJob) {
+      return res.status(500).json({ ok: false, error: "Job update failed" });
+    }
 
-      const extDays = clampInt(j.hire_extension_days ?? 0, 0, 3650);
-      const totalDays = baseTermDays + extDays;
-
-      const reminderBefore = DEFAULT_REMINDER_DAYS_BEFORE;
-
-      // Reminder is scheduled for the "reminder day" (e.g. day 10 of 14)
-      const reminderDate = addDaysYMD(delivered, Math.max(0, totalDays - reminderBefore));
-      const termEnd = addDaysYMD(delivered, totalDays);
-
-      // NEW BEHAVIOUR:
-      // If we missed the exact day, still send ONCE when overdue.
-      // Eligible if reminderDate <= today.
-      if (cmpYMD(reminderDate, today) === 1) {
-        skippedNotDue++;
-        details.push({
-          job_id: j.id,
-          ok: false,
-          skipped: "not_due",
-          job_number: j.job_number || null,
-          delivered,
-          reminder_date: reminderDate,
-          today,
-          due_in_days_hint: "reminder_date > today",
-        });
-        continue;
-      }
-
-      eligible++;
-
-      // Deduplicate using term_hire_reminder_log (log is keyed by the scheduled reminderDate)
-      const { data: existing, error: logErr } = await supabase
-        .from("term_hire_reminder_log")
-        .select("id")
-        .eq("subscriber_id", j.subscriber_id)
-        .eq("job_id", j.id)
-        .eq("reminder_date", reminderDate)
-        .limit(1);
-
-      if (logErr) {
-        failed++;
-        details.push({
-          job_id: j.id,
-          ok: false,
-          stage: "log_lookup",
-          error: logErr.message,
-          delivered,
-          reminder_date: reminderDate,
-          today,
-        });
-        continue;
-      }
-
-      if (existing && existing.length) {
-        skippedAlreadySent++;
-        details.push({
-          job_id: j.id,
-          ok: false,
-          skipped: "already_sent",
-          job_number: j.job_number || null,
-          delivered,
-          reminder_date: reminderDate,
-          today,
-        });
-        continue;
-      }
-
-      const name =
-        cust.company_name ||
-        `${cust.first_name || ""} ${cust.last_name || ""}`.trim() ||
-        "there";
-
-      const subject = "Skip hire reminder – please book collection";
-      const html = buildEmailHtml({
-        customerName: name,
-        jobNumber: j.job_number || j.id,
-        sitePostcode: j.site_postcode || "",
-        deliveredYmd: delivered,
-        termEndYmd: termEnd,
-        daysTotal: totalDays,
+    if (!hadCollectionDateBefore && hasCollectionDateAfter) {
+      await logTermHireEvent(supabase, {
+        subscriber_id: auth.subscriber_id,
+        job_id: updatedJob.id,
+        customer_id: updatedJob.customer_id || null,
+        channel: "system",
+        event_type: "collection_booked_by_office",
+        template_key: null,
+        recipient: null,
+        metadata: {
+          collection_date: updatedJob.collection_date,
+          source: "jobs_update",
+          user_id: auth.user_id || null,
+        },
       });
+    }
 
-      const mail = await sendSendGridEmail({ to, subject, html });
-
-      if (!mail.ok) {
-        failed++;
-        details.push({
-          job_id: j.id,
-          ok: false,
-          stage: "send_email",
-          reason: mail.reason,
-          body: mail.body,
-          delivered,
-          reminder_date: reminderDate,
-          today,
-        });
-        continue;
-      }
-
-      // Log it so we never send twice for the same reminder day
-      const { error: insErr } = await supabase.from("term_hire_reminder_log").insert({
-        subscriber_id: j.subscriber_id,
-        job_id: j.id,
-        reminder_date: reminderDate,
-        sent_to: mail.to,
-      });
-
-      if (insErr) {
-        // Email sent, but logging failed. Surface it.
-        sent++;
-        failed++;
-        details.push({
-          job_id: j.id,
-          ok: true,
-          stage: "sent_but_log_failed",
-          error: insErr.message,
-          to: mail.to,
-          overridden: mail.overridden,
-          delivered,
-          reminder_date: reminderDate,
-          today,
-        });
-        continue;
-      }
-
-      sent++;
-      details.push({
-        job_id: j.id,
-        ok: true,
-        to: mail.to,
-        overridden: mail.overridden,
-        delivered,
-        reminder_date: reminderDate,
-        term_end: termEnd,
-        total_days: totalDays,
-        reminder_days_before: reminderBefore,
-        today,
+    if (hadCollectionDateBefore && !hasCollectionDateAfter) {
+      await logTermHireEvent(supabase, {
+        subscriber_id: auth.subscriber_id,
+        job_id: updatedJob.id,
+        customer_id: updatedJob.customer_id || null,
+        channel: "system",
+        event_type: "collection_booking_cleared",
+        template_key: null,
+        recipient: null,
+        metadata: {
+          source: "jobs_update",
+          user_id: auth.user_id || null,
+        },
       });
     }
 
     return res.status(200).json({
       ok: true,
-      today,
-      considered,
-      eligible,
-      sent,
-      failed,
-      skipped: {
-        exempt: skippedExempt,
-        no_email: skippedNoEmail,
-        not_due: skippedNotDue,
-        already_sent: skippedAlreadySent,
-      },
-      defaults: {
-        term_days: DEFAULT_TERM_DAYS,
-        reminder_days_before: DEFAULT_REMINDER_DAYS_BEFORE,
-      },
-      details,
+      job: updatedJob,
+      invoice_review_flagged: !!patch.invoice_action_required,
     });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  } catch (err) {
+    console.error("jobs/update error", err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "Update failed",
+    });
   }
 }
