@@ -43,6 +43,14 @@ function pickCommercialChangeFlags(beforeRow, patch) {
   });
 }
 
+async function logTermHireEvent(supabase, payload) {
+  try {
+    await supabase.from("term_hire_events").insert(payload);
+  } catch (e) {
+    console.error("term_hire_events insert failed", e);
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
@@ -89,11 +97,14 @@ export default async function handler(req, res) {
     }
 
     const placementType = asNullableText(req.body?.placement_type) || "private";
+    const incomingCollectionDate = collectionDateRaw ? String(collectionDateRaw) : null;
+    const hadCollectionDateBefore = !!existingJob.collection_date;
+    const hasCollectionDateAfter = !!incomingCollectionDate;
 
     const patch = {
       skip_type_id: asNullableText(req.body?.skip_type_id),
       scheduled_date: scheduledDateRaw ? String(scheduledDateRaw) : null,
-      collection_date: collectionDateRaw ? String(collectionDateRaw) : null,
+      collection_date: incomingCollectionDate,
       price_inc_vat: asNullableNumber(req.body?.price_inc_vat),
       notes: asNullableText(req.body?.notes),
 
@@ -133,6 +144,33 @@ export default async function handler(req, res) {
         "Job edited after invoice creation. Review invoice manually in Xero.";
     }
 
+    // If office books a collection date manually, suppress future term-hire reminders.
+    if (hasCollectionDateAfter) {
+      patch.term_hire_suppressed = true;
+      patch.term_hire_suppressed_at = new Date().toISOString();
+      patch.term_hire_suppressed_reason = "collection_booked_by_office";
+      patch.term_hire_status = "collection_requested";
+      patch.term_hire_auto_collection_due = false;
+      patch.term_hire_extension_pending = false;
+    } else if (hadCollectionDateBefore && !hasCollectionDateAfter) {
+      // If collection date is cleared, allow term-hire workflow to resume.
+      patch.term_hire_suppressed = false;
+      patch.term_hire_suppressed_at = null;
+      patch.term_hire_suppressed_reason = null;
+      patch.term_hire_auto_collection_due = false;
+
+      if (
+        existingJob.collection_actual_date ||
+        String(existingJob.job_status || "").toLowerCase() === "cancelled"
+      ) {
+        patch.term_hire_status = existingJob.term_hire_status || null;
+      } else if (existingJob.term_hire_extended_until) {
+        patch.term_hire_status = "extended";
+      } else {
+        patch.term_hire_status = "active";
+      }
+    }
+
     const { data: updatedJob, error: updateError } = await supabase
       .from("jobs")
       .update(patch)
@@ -145,6 +183,39 @@ export default async function handler(req, res) {
 
     if (!updatedJob) {
       return res.status(500).json({ ok: false, error: "Job update failed" });
+    }
+
+    if (!hadCollectionDateBefore && hasCollectionDateAfter) {
+      await logTermHireEvent(supabase, {
+        subscriber_id: auth.subscriber_id,
+        job_id: updatedJob.id,
+        customer_id: updatedJob.customer_id || null,
+        channel: "system",
+        event_type: "collection_booked_by_office",
+        template_key: null,
+        recipient: null,
+        metadata: {
+          collection_date: updatedJob.collection_date,
+          source: "jobs_update",
+          user_id: auth.user_id || null,
+        },
+      });
+    }
+
+    if (hadCollectionDateBefore && !hasCollectionDateAfter) {
+      await logTermHireEvent(supabase, {
+        subscriber_id: auth.subscriber_id,
+        job_id: updatedJob.id,
+        customer_id: updatedJob.customer_id || null,
+        channel: "system",
+        event_type: "collection_booking_cleared",
+        template_key: null,
+        recipient: null,
+        metadata: {
+          source: "jobs_update",
+          user_id: auth.user_id || null,
+        },
+      });
     }
 
     return res.status(200).json({
