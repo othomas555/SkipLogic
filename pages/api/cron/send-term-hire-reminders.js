@@ -169,9 +169,28 @@ export default async function handler(req, res) {
 
       const { data: jobs, error: jobsErr } = await supabase
         .from("jobs")
-        .select(`
-          *,
-          customers (
+        .select("*")
+        .eq("subscriber_id", subscriberId)
+        .is("collection_actual_date", null)
+        .is("cancelled_at", null);
+
+      if (jobsErr) throw jobsErr;
+
+      const customerIds = Array.from(
+        new Set((jobs || []).map((j) => j.customer_id).filter(Boolean))
+      );
+
+      const skipTypeIds = Array.from(
+        new Set((jobs || []).map((j) => j.skip_type_id).filter(Boolean))
+      );
+
+      let customerMap = {};
+      let skipTypeMap = {};
+
+      if (customerIds.length) {
+        const { data: customers, error: customersErr } = await supabase
+          .from("customers")
+          .select(`
             id,
             first_name,
             last_name,
@@ -179,21 +198,35 @@ export default async function handler(req, res) {
             email,
             term_hire_exempt,
             term_hire_days_override
-          ),
-          skip_types (
-            name
-          )
-        `)
-        .eq("subscriber_id", subscriberId)
-        .is("collection_actual_date", null)
-        .is("cancelled_at", null);
+          `)
+          .in("id", customerIds)
+          .eq("subscriber_id", subscriberId);
 
-      if (jobsErr) throw jobsErr;
+        if (customersErr) throw customersErr;
+
+        customerMap = Object.fromEntries(
+          (Array.isArray(customers) ? customers : []).map((c) => [c.id, c])
+        );
+      }
+
+      if (skipTypeIds.length) {
+        const { data: skipTypes, error: skipTypesErr } = await supabase
+          .from("skip_types")
+          .select("id, name")
+          .in("id", skipTypeIds);
+
+        if (skipTypesErr) throw skipTypesErr;
+
+        skipTypeMap = Object.fromEntries(
+          (Array.isArray(skipTypes) ? skipTypes : []).map((s) => [s.id, s])
+        );
+      }
 
       for (const job of jobs || []) {
         scanned += 1;
 
-        const customer = job.customers || {};
+        const customer = customerMap[job.customer_id] || {};
+        const skipType = skipTypeMap[job.skip_type_id] || {};
         const customerId = customer.id || job.customer_id || null;
         const email = asText(customer.email);
 
@@ -257,7 +290,7 @@ export default async function handler(req, res) {
         const mergeVars = {
           customer_name: customerName(customer),
           job_number: asText(job.job_number),
-          skip_type: asText(job?.skip_types?.name),
+          skip_type: asText(skipType?.name),
           site_address: siteAddress(job),
           scheduled_date: asText(job.scheduled_date),
           collection_date: asText(job.collection_date),
