@@ -22,42 +22,42 @@ function defaultTemplates() {
     booking_confirmed: {
       subject: "Your skip booking is confirmed",
       body_html:
-        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip booking for job <b>{{job_number}}</b> is confirmed.</p></div>",
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px\"><div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden\"><div style=\"padding:20px 24px;background:#111827;color:#ffffff\"><div style=\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8\">SkipLogic</div><h1 style=\"margin:8px 0 0;font-size:24px;line-height:1.2\">Booking confirmed</h1></div><div style=\"padding:24px\"><p style=\"margin-top:0\">Hi {{customer_name}},</p><p>Your skip booking for job <strong>{{job_number}}</strong> is confirmed.</p><p>We will be in touch if we need anything further.</p></div></div></div>",
     },
     skip_due_for_collection: {
       subject: "Your skip is booked for collection",
       body_html:
-        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip for job <b>{{job_number}}</b> has been booked for collection.</p></div>",
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px\"><div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden\"><div style=\"padding:20px 24px;background:#111827;color:#ffffff\"><div style=\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8\">SkipLogic</div><h1 style=\"margin:8px 0 0;font-size:24px;line-height:1.2\">Collection booked</h1></div><div style=\"padding:24px\"><p style=\"margin-top:0\">Hi {{customer_name}},</p><p>Your skip for job <strong>{{job_number}}</strong> has been booked for collection.</p></div></div></div>",
     },
     swap_scheduled: {
       subject: "Your skip swap is booked",
       body_html:
-        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip swap for job <b>{{job_number}}</b> has been booked.</p></div>",
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px\"><div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden\"><div style=\"padding:20px 24px;background:#111827;color:#ffffff\"><div style=\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8\">SkipLogic</div><h1 style=\"margin:8px 0 0;font-size:24px;line-height:1.2\">Swap booked</h1></div><div style=\"padding:24px\"><p style=\"margin-top:0\">Hi {{customer_name}},</p><p>Your skip swap for job <strong>{{job_number}}</strong> has been booked.</p></div></div></div>",
     },
     collected_confirmation: {
       subject: "Your skip has been collected",
       body_html:
-        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip for job <b>{{job_number}}</b> has been collected.</p></div>",
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px\"><div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden\"><div style=\"padding:20px 24px;background:#111827;color:#ffffff\"><div style=\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8\">SkipLogic</div><h1 style=\"margin:8px 0 0;font-size:24px;line-height:1.2\">Skip collected</h1></div><div style=\"padding:24px\"><p style=\"margin-top:0\">Hi {{customer_name}},</p><p>Your skip for job <strong>{{job_number}}</strong> has been collected.</p></div></div></div>",
     },
     term_ending_reminder: {
       subject: "Your skip hire is ending soon",
       body_html:
-        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip hire for job <b>{{job_number}}</b> is ending soon.</p></div>",
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px\"><div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden\"><div style=\"padding:20px 24px;background:#111827;color:#ffffff\"><div style=\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8\">SkipLogic</div><h1 style=\"margin:8px 0 0;font-size:24px;line-height:1.2\">Hire ending soon</h1></div><div style=\"padding:24px\"><p style=\"margin-top:0\">Hi {{customer_name}},</p><p>Your skip hire for job <strong>{{job_number}}</strong> is ending soon.</p></div></div></div>",
     },
     term_hire_reminder_1: {
       subject: "Your skip hire is ending in {{days_remaining}} days",
       body_html:
-        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip hire for job <b>{{job_number}}</b> is ending in <b>{{days_remaining}} days</b>.</p><p>If you still need the skip, you can extend it for <b>£{{extension_price}} per week</b>.</p><p style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#111;color:#fff;text-decoration:none;font-weight:bold;margin-right:10px;\">Extend hire</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#f3f4f6;color:#111;text-decoration:none;font-weight:bold;\">Book collection</a></p><p>Site: {{site_address}}</p><p>Hire end date: {{hire_end_date}}</p></div>",
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px\"><div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden\"><div style=\"padding:20px 24px;background:#111827;color:#ffffff\"><div style=\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8\">SkipLogic</div><h1 style=\"margin:8px 0 0;font-size:24px;line-height:1.2\">Your skip hire is ending soon</h1></div><div style=\"padding:24px\"><p style=\"margin-top:0\">Hi {{customer_name}},</p><p>Just a quick reminder that your skip hire for job <strong>{{job_number}}</strong> is due to end in <strong>{{days_remaining}} days</strong>.</p><p><strong>Hire end date:</strong> {{hire_end_date}}<br /><strong>Site:</strong> {{site_address}}</p><p>If you still need the skip, you can extend it online for <strong>£{{extension_price}} per week</strong>.</p><div style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:10px;background:#111827;color:#ffffff;text-decoration:none;font-weight:bold;margin-right:10px\">Extend hire</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:10px;background:#f3f4f6;color:#111827;text-decoration:none;font-weight:bold\">Book collection</a></div><p style=\"margin-bottom:0;color:#4b5563\">If you have any questions, just reply to this email.</p></div></div></div>",
     },
     term_hire_reminder_2: {
       subject: "Reminder: your skip hire is ending soon",
       body_html:
-        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>This is a reminder that your skip hire for job <b>{{job_number}}</b> is ending in <b>{{days_remaining}} days</b>.</p><p>To keep the skip, extend now for <b>£{{extension_price}} per week</b>.</p><p style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#111;color:#fff;text-decoration:none;font-weight:bold;margin-right:10px;\">Extend hire</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#f3f4f6;color:#111;text-decoration:none;font-weight:bold;\">Book collection</a></p><p>Site: {{site_address}}</p><p>Hire end date: {{hire_end_date}}</p></div>",
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px\"><div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden\"><div style=\"padding:20px 24px;background:#111827;color:#ffffff\"><div style=\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8\">SkipLogic</div><h1 style=\"margin:8px 0 0;font-size:24px;line-height:1.2\">Reminder: hire ending soon</h1></div><div style=\"padding:24px\"><p style=\"margin-top:0\">Hi {{customer_name}},</p><p>This is another reminder that your skip hire for job <strong>{{job_number}}</strong> is due to end in <strong>{{days_remaining}} days</strong>.</p><p><strong>Hire end date:</strong> {{hire_end_date}}<br /><strong>Site:</strong> {{site_address}}</p><p>If you need more time, you can extend online for <strong>£{{extension_price}} per week</strong>.</p><div style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:10px;background:#111827;color:#ffffff;text-decoration:none;font-weight:bold;margin-right:10px\">Extend hire</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:10px;background:#f3f4f6;color:#111827;text-decoration:none;font-weight:bold\">Book collection</a></div><p style=\"margin-bottom:0;color:#4b5563\">If you no longer need the skip, please book collection using the button above.</p></div></div></div>",
     },
     term_hire_final_notice: {
       subject: "Final notice: your skip is now due for collection",
       body_html:
-        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111\"><p>Hi {{customer_name}},</p><p>Your skip hire for job <b>{{job_number}}</b> is now due to end.</p><p>If you still need the skip, you must extend now for <b>£{{extension_price}} per week</b>. Otherwise it may be booked for collection.</p><p style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#111;color:#fff;text-decoration:none;font-weight:bold;margin-right:10px;\">Extend now</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:8px;background:#f3f4f6;color:#111;text-decoration:none;font-weight:bold;\">Book collection</a></p><p>Site: {{site_address}}</p><p>Hire end date: {{hire_end_date}}</p></div>",
+        "<div style=\"font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px\"><div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden\"><div style=\"padding:20px 24px;background:#7f1d1d;color:#ffffff\"><div style=\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8\">SkipLogic</div><h1 style=\"margin:8px 0 0;font-size:24px;line-height:1.2\">Final notice</h1></div><div style=\"padding:24px\"><p style=\"margin-top:0\">Hi {{customer_name}},</p><p>Your skip hire for job <strong>{{job_number}}</strong> is now due to end.</p><p><strong>Hire end date:</strong> {{hire_end_date}}<br /><strong>Site:</strong> {{site_address}}</p><p>If you still need the skip, please extend it now for <strong>£{{extension_price}} per week</strong>. Otherwise, book collection below.</p><div style=\"margin:24px 0\"><a href=\"{{extend_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:10px;background:#111827;color:#ffffff;text-decoration:none;font-weight:bold;margin-right:10px\">Extend now</a><a href=\"{{collection_url}}\" style=\"display:inline-block;padding:12px 18px;border-radius:10px;background:#f3f4f6;color:#111827;text-decoration:none;font-weight:bold\">Book collection</a></div><p style=\"margin-bottom:0;color:#4b5563\">If nothing is booked, the skip may be scheduled for collection.</p></div></div></div>",
     },
   };
 }
@@ -72,6 +72,20 @@ async function ensureSettingsRow(supabase, subscriberId) {
   if (selectError) throw selectError;
   if (existing) return existing;
 
+  const { data: subscriberRow, error: subscriberError } = await supabase
+    .from("subscribers")
+    .select("term_hire_days")
+    .eq("id", subscriberId)
+    .maybeSingle();
+
+  if (subscriberError) throw subscriberError;
+
+  const subscriberDefaultHireDays = Number(subscriberRow?.term_hire_days);
+  const initialHireDays =
+    Number.isFinite(subscriberDefaultHireDays) && subscriberDefaultHireDays > 0
+      ? Math.trunc(subscriberDefaultHireDays)
+      : 14;
+
   const insertPayload = {
     subscriber_id: subscriberId,
     provider: "resend",
@@ -82,7 +96,7 @@ async function ensureSettingsRow(supabase, subscriberId) {
     send_bcc: false,
     bcc_email: "",
     term_hire_enabled: false,
-    term_hire_default_days: 14,
+    term_hire_default_days: initialHireDays,
     term_hire_reminder_1_days_before: 4,
     term_hire_reminder_2_days_before: 2,
     term_hire_final_notice_enabled: true,
