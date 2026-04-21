@@ -216,6 +216,7 @@ export default function SchedulerPage() {
 
   const [movingIncomplete, setMovingIncomplete] = useState(false);
   const [savingRuns, setSavingRuns] = useState(false);
+  const [completingKey, setCompletingKey] = useState("");
 
   const [yardPostcode, setYardPostcode] = useState("");
   const [startTime, setStartTime] = useState("08:00");
@@ -249,6 +250,47 @@ export default function SchedulerPage() {
     for (const j of jobs || []) m[String(j.id)] = j;
     return m;
   }, [jobs]);
+
+  async function getAccessToken() {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) return null;
+    return data?.session?.access_token || null;
+  }
+
+  async function postJson(url, body) {
+    const token = await getAccessToken();
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body || {}),
+    });
+
+    const data = await resp.json().catch(() => ({}));
+
+    if (!resp.ok) {
+      throw new Error(data?.error || "Request failed");
+    }
+
+    return data;
+  }
+
+  async function markJobDelivered(jobId, deliveredDate) {
+    return postJson("/api/jobs/mark-delivered", {
+      job_id: jobId,
+      delivered_date: deliveredDate,
+    });
+  }
+
+  async function markJobCollected(jobId, collectedDate) {
+    return postJson("/api/jobs/mark-collected", {
+      job_id: jobId,
+      collected_date: collectedDate,
+    });
+  }
 
   async function loadAll() {
     if (!subscriberId) return;
@@ -310,6 +352,7 @@ export default function SchedulerPage() {
             "swap_role",
             "delivery_rollover_count",
             "collection_rollover_count",
+            "term_hire_end_date",
           ].join(",")
         )
         .eq("subscriber_id", subscriberId)
@@ -858,51 +901,34 @@ export default function SchedulerPage() {
     if (!subscriberId) return;
     setErr("");
 
+    const currentKey = cardKey(card);
+    setCompletingKey(currentKey);
+
     try {
       if (card.type === "job") {
         const j = card.job;
         const isCollection = String(j.collection_date || "") === String(date);
-        const payload = isCollection
-          ? { collection_actual_date: date, job_status: "collected" }
-          : { delivery_actual_date: date, job_status: "delivered" };
 
-        const { error } = await supabase
-          .from("jobs")
-          .update(payload)
-          .eq("subscriber_id", subscriberId)
-          .eq("id", j.id);
-        if (error) throw error;
+        if (isCollection) {
+          await markJobCollected(j.id, date);
+        } else {
+          await markJobDelivered(j.id, date);
+        }
       } else if (card.type === "swap") {
-        const updates = [];
-
         if (card.collect?.id) {
-          updates.push(
-            supabase
-              .from("jobs")
-              .update({ collection_actual_date: date, job_status: "collected" })
-              .eq("subscriber_id", subscriberId)
-              .eq("id", card.collect.id)
-          );
+          await markJobCollected(card.collect.id, date);
         }
         if (card.deliver?.id) {
-          updates.push(
-            supabase
-              .from("jobs")
-              .update({ delivery_actual_date: date, job_status: "delivered" })
-              .eq("subscriber_id", subscriberId)
-              .eq("id", card.deliver.id)
-          );
+          await markJobDelivered(card.deliver.id, date);
         }
-
-        const results = await Promise.all(updates);
-        const fail = results.find((r) => r.error);
-        if (fail?.error) throw fail.error;
       }
 
       await loadAll();
     } catch (e) {
       console.error(e);
       setErr(e?.message || "Failed to mark complete");
+    } finally {
+      setCompletingKey("");
     }
   }
 
@@ -1591,6 +1617,7 @@ export default function SchedulerPage() {
                   onComplete={markComplete}
                   timing={null}
                   onUnassign={() => unassignCard(c)}
+                  isCompleting={completingKey === cardKey(c)}
                 />
               )) : (
                 <div style={emptyLaneText}>None</div>
@@ -1640,6 +1667,7 @@ export default function SchedulerPage() {
                           }}
                           onMoveUp={() => moveCardWithinDriver(c, d.id, -1)}
                           onMoveDown={() => moveCardWithinDriver(c, d.id, 1)}
+                          isCompleting={completingKey === cardKey(c)}
                         />
                       )) : (
                         <div style={emptyLaneText}>Drop jobs or return-to-yard here</div>
@@ -1670,6 +1698,7 @@ function SchedulerCard({
   onUnassign,
   onMoveUp,
   onMoveDown,
+  isCompleting,
 }) {
   const kind = getCardKind(card, date);
   const rolloverCount = getCardRolloverCount(card, date);
@@ -1710,7 +1739,7 @@ function SchedulerCard({
   return (
     <div
       style={cardStyle}
-      draggable
+      draggable={!isCompleting}
       onDragStart={(e) => onDragStart(e, card)}
     >
       <div style={cardTopRow}>
@@ -1745,12 +1774,12 @@ function SchedulerCard({
 
         <div style={miniButtonColumn}>
           {!isBlock ? (
-            <button type="button" style={btnMini} onClick={() => onOpenJob(card)}>
+            <button type="button" style={btnMini} onClick={() => onOpenJob(card)} disabled={isCompleting}>
               Open
             </button>
           ) : null}
-          <button type="button" style={btnMini} onClick={onMoveUp}>↑</button>
-          <button type="button" style={btnMini} onClick={onMoveDown}>↓</button>
+          <button type="button" style={btnMini} onClick={onMoveUp} disabled={isCompleting || !onMoveUp}>↑</button>
+          <button type="button" style={btnMini} onClick={onMoveDown} disabled={isCompleting || !onMoveDown}>↓</button>
         </div>
       </div>
 
@@ -1762,12 +1791,12 @@ function SchedulerCard({
       ) : null}
 
       <div style={cardActionRowCompact}>
-        <button type="button" style={btnMini} onClick={onUnassign}>
+        <button type="button" style={btnMini} onClick={onUnassign} disabled={isCompleting}>
           Unassign
         </button>
         {!isBlock ? (
-          <button type="button" style={btnMiniPrimary} onClick={() => onComplete(card)}>
-            {completeLabel}
+          <button type="button" style={btnMiniPrimary} onClick={() => onComplete(card)} disabled={isCompleting}>
+            {isCompleting ? "Saving…" : completeLabel}
           </button>
         ) : null}
       </div>
