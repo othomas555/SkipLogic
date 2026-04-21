@@ -113,10 +113,12 @@ export default async function handler(req, res) {
       });
     }
 
+    const nowIso = new Date().toISOString();
+
     const settingsPayload = {
       subscriber_id: subscriberId,
       ...settings,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
 
     const { error: settingsError } = await supabase
@@ -124,6 +126,15 @@ export default async function handler(req, res) {
       .upsert(settingsPayload, { onConflict: "subscriber_id" });
 
     if (settingsError) throw settingsError;
+
+    const { error: subscriberError } = await supabase
+      .from("subscribers")
+      .update({
+        term_hire_days: settings.term_hire_default_days,
+      })
+      .eq("id", subscriberId);
+
+    if (subscriberError) throw subscriberError;
 
     const cleanedTemplates = templates
       .map(normaliseTemplate)
@@ -136,7 +147,7 @@ export default async function handler(req, res) {
         enabled: t.enabled,
         subject: t.subject,
         body_html: t.body_html,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       }));
 
       const { error: templatesError } = await supabase
