@@ -86,8 +86,18 @@ export default async function handler(req, res) {
   }
 
   try {
-    const auth = await requireOfficeUser(req, res);
-    if (!auth || !auth.subscriberId) return;
+    const auth = await requireOfficeUser(req);
+
+    if (!auth?.ok) {
+      return res.status(401).json({ error: auth?.error || "Unauthorised" });
+    }
+
+    const subscriberId = String(auth.subscriber_id || "");
+    const userId = String(auth.user?.id || "");
+
+    if (!subscriberId) {
+      return res.status(401).json({ error: "Missing subscriber_id on profile" });
+    }
 
     const supabase = getSupabaseAdmin();
 
@@ -118,7 +128,7 @@ export default async function handler(req, res) {
         "term_hire_suppressed_reason",
       ].join(","))
       .eq("id", jobId)
-      .eq("subscriber_id", auth.subscriberId)
+      .eq("subscriber_id", subscriberId)
       .maybeSingle();
 
     if (jobErr) {
@@ -154,14 +164,14 @@ export default async function handler(req, res) {
       term_hire_auto_collection_booked_at: null,
       term_hire_status: "active",
       last_edited_at: new Date().toISOString(),
-      last_edited_by: auth.userId || null,
+      last_edited_by: userId || null,
     };
 
     const { data: updated, error: updateErr } = await supabase
       .from("jobs")
       .update(patch)
       .eq("id", job.id)
-      .eq("subscriber_id", auth.subscriberId)
+      .eq("subscriber_id", subscriberId)
       .select([
         "id",
         "job_number",
