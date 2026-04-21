@@ -27,6 +27,12 @@ function asText(v) {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
 }
 
+function asPositiveNumberOrNull(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
 function customerName(customer) {
   const company = asText(customer?.company_name);
   const first = asText(customer?.first_name);
@@ -151,6 +157,16 @@ export default async function handler(req, res) {
     for (const settings of subscriberSettingsRows || []) {
       const subscriberId = settings.subscriber_id;
 
+      const { data: subscriberRow, error: subscriberErr } = await supabase
+        .from("subscribers")
+        .select("id, term_hire_days")
+        .eq("id", subscriberId)
+        .maybeSingle();
+
+      if (subscriberErr) throw subscriberErr;
+
+      const subscriberTermHireDays = asPositiveNumberOrNull(subscriberRow?.term_hire_days);
+
       const { data: templates, error: templatesErr } = await supabase
         .from("email_templates")
         .select("*")
@@ -239,17 +255,19 @@ export default async function handler(req, res) {
         const deliveryDate = job.delivery_actual_date || job.scheduled_date;
         if (!isYmd(deliveryDate)) continue;
 
-        const defaultDays = Number(settings.term_hire_default_days || 14);
-        const overrideDays =
-          customer.term_hire_days_override == null
-            ? null
-            : Number(customer.term_hire_days_override);
+        const overrideDays = asPositiveNumberOrNull(customer.term_hire_days_override);
+        const settingsDefaultDays = asPositiveNumberOrNull(settings.term_hire_default_days);
 
         const hireDays =
-          Number.isFinite(overrideDays) && overrideDays > 0 ? overrideDays : defaultDays;
+          overrideDays ??
+          subscriberTermHireDays ??
+          settingsDefaultDays ??
+          14;
 
         const currentHireEndDate =
-          job.term_hire_extended_until || addDays(deliveryDate, hireDays);
+          asText(job.term_hire_end_date) ||
+          asText(job.term_hire_extended_until) ||
+          addDays(deliveryDate, hireDays);
 
         if (!isYmd(currentHireEndDate)) continue;
 
@@ -279,6 +297,7 @@ export default async function handler(req, res) {
           customerId,
           "extend"
         );
+
         const collectionToken = await createActionToken(
           supabase,
           subscriberId,
@@ -374,6 +393,8 @@ export default async function handler(req, res) {
           job_id: job.id,
           template_key: templateKey,
           to_email: email,
+          hire_end_date: currentHireEndDate,
+          hire_days: hireDays,
         });
       }
     }
