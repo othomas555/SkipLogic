@@ -7,8 +7,12 @@ function asText(v) {
 
 export default function ExtendJobPage() {
   const router = useRouter();
+
   const rawJobId = router.query?.job_id;
   const jobId = Array.isArray(rawJobId) ? rawJobId[0] : rawJobId;
+
+  const rawToken = router.query?.token;
+  const token = Array.isArray(rawToken) ? rawToken[0] : rawToken;
 
   const [error, setError] = useState("");
   const [working, setWorking] = useState(true);
@@ -17,6 +21,11 @@ export default function ExtendJobPage() {
   useEffect(() => {
     if (!router.isReady) return;
     if (!jobId) return;
+    if (!token) {
+      setError("Missing token");
+      setWorking(false);
+      return;
+    }
     if (startedRef.current) return;
 
     startedRef.current = true;
@@ -33,6 +42,7 @@ export default function ExtendJobPage() {
           },
           body: JSON.stringify({
             job_id: jobId,
+            token: token,
             weeks: 1,
           }),
         });
@@ -51,101 +61,46 @@ export default function ExtendJobPage() {
     }
 
     run();
-  }, [router.isReady, jobId]);
+  }, [router.isReady, jobId, token]);
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-        background: "#f8fafc",
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-      }}
-    >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 560,
-          background: "#fff",
-          border: "1px solid #e5e7eb",
-          borderRadius: 16,
-          padding: 24,
-          boxShadow: "0 8px 30px rgba(0,0,0,0.06)",
-        }}
-      >
-        <h1 style={{ margin: "0 0 12px", fontSize: 28, color: "#111827" }}>
-          Extend skip hire
-        </h1>
+    <main style={pageStyle}>
+      <div style={cardStyle}>
+        <h1 style={titleStyle}>Extend skip hire</h1>
 
         {working ? (
           <>
-            <p style={{ margin: "0 0 10px", color: "#374151", lineHeight: 1.6 }}>
+            <p style={textStyle}>
               We are taking you to the secure payment page now.
             </p>
-            <p style={{ margin: 0, color: "#6b7280", fontSize: 14 }}>
+            <p style={{ fontSize: 14, color: "#6b7280" }}>
               Job reference: <b>{asText(jobId) || "—"}</b>
             </p>
           </>
         ) : (
           <>
-            <div
-              style={{
-                marginBottom: 14,
-                padding: 12,
-                borderRadius: 10,
-                border: "1px solid #fecaca",
-                background: "#fff1f2",
-                color: "#991b1b",
-                lineHeight: 1.5,
-              }}
-            >
+            <div style={errorStyle}>
               {error || "Could not start extension checkout."}
             </div>
 
-            <p style={{ margin: "0 0 14px", color: "#374151", lineHeight: 1.6 }}>
+            <p style={textStyle}>
               Please contact the office if you still want to extend the skip hire.
             </p>
 
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 10 }}>
               <button
-                type="button"
                 onClick={() => {
                   startedRef.current = false;
                   setWorking(true);
                   setError("");
                   router.replace(router.asPath);
                 }}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 10,
-                  border: "1px solid #111827",
-                  background: "#111827",
-                  color: "#fff",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
+                style={primaryBtn}
               >
                 Try again
               </button>
 
-              <a
-                href="/"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "10px 14px",
-                  borderRadius: 10,
-                  border: "1px solid #d1d5db",
-                  background: "#fff",
-                  color: "#111827",
-                  fontWeight: 600,
-                  textDecoration: "none",
-                }}
-              >
+              <a href="/" style={secondaryBtn}>
                 Back to site
               </a>
             </div>
@@ -155,3 +110,65 @@ export default function ExtendJobPage() {
     </main>
   );
 }
+
+/* styles */
+const pageStyle = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 24,
+  background: "#f8fafc",
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+};
+
+const cardStyle = {
+  width: "100%",
+  maxWidth: 560,
+  background: "#fff",
+  border: "1px solid #e5e7eb",
+  borderRadius: 16,
+  padding: 24,
+  boxShadow: "0 8px 30px rgba(0,0,0,0.06)",
+};
+
+const titleStyle = {
+  margin: "0 0 12px",
+  fontSize: 28,
+  color: "#111827",
+};
+
+const textStyle = {
+  margin: "0 0 10px",
+  color: "#374151",
+  lineHeight: 1.6,
+};
+
+const errorStyle = {
+  marginBottom: 14,
+  padding: 12,
+  borderRadius: 10,
+  border: "1px solid #fecaca",
+  background: "#fff1f2",
+  color: "#991b1b",
+};
+
+const primaryBtn = {
+  padding: "10px 14px",
+  borderRadius: 10,
+  border: "1px solid #111827",
+  background: "#111827",
+  color: "#fff",
+  fontWeight: 700,
+  cursor: "pointer",
+};
+
+const secondaryBtn = {
+  padding: "10px 14px",
+  borderRadius: 10,
+  border: "1px solid #d1d5db",
+  background: "#fff",
+  color: "#111827",
+  fontWeight: 600,
+  textDecoration: "none",
+};
