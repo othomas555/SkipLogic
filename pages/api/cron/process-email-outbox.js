@@ -38,17 +38,23 @@ async function getRenderedEmailForOutbox(supabase, row) {
     .eq("template_key", row.template_key)
     .eq("recipient", row.to_email)
     .eq("channel", "email")
-    .eq("event_type", "email_queued")
+    .in("event_type", ["email_queued", "test_email_queued"])
     .order("created_at", { ascending: false })
-    .limit(1);
+    .limit(5);
 
   if (eventErr) throw eventErr;
 
   const ev = Array.isArray(eventRows) && eventRows.length ? eventRows[0] : null;
-  const subject = asText(ev?.metadata?.subject) || asText(row.subject_snapshot);
+
+  const subject =
+    asText(ev?.metadata?.subject) ||
+    asText(row.subject_snapshot);
+
+  const rawHtml = ev?.metadata?.body_html;
   const html =
-    asText(ev?.metadata?.body_html) ||
-    `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111"><p>${subject}</p></div>`;
+    typeof rawHtml === "string" && rawHtml.trim()
+      ? rawHtml
+      : `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111"><p>${subject}</p></div>`;
 
   return { subject, html };
 }
