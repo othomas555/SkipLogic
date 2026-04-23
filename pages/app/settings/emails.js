@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useAuthProfile } from "../../../lib/useAuthProfile";
 
@@ -130,6 +130,18 @@ function ensureTemplate(list, templateKey, defaults) {
   return arr;
 }
 
+function jobOptionLabel(job) {
+  if (!job) return "";
+  const bits = [
+    job.job_number || "No ref",
+    job.customer_label || "Customer",
+    job.site_postcode || "",
+    job.term_hire_end_date ? `end ${job.term_hire_end_date}` : "",
+    job.job_status || "",
+  ].filter(Boolean);
+  return bits.join(" · ");
+}
+
 export default function EmailSettingsPage() {
   const { profile, loading } = useAuthProfile();
 
@@ -142,8 +154,15 @@ export default function EmailSettingsPage() {
   const [defaults, setDefaults] = useState({});
   const [outbox, setOutbox] = useState([]);
   const [mergeTags, setMergeTags] = useState([]);
+  const [recentJobs, setRecentJobs] = useState([]);
+  const [officeEmail, setOfficeEmail] = useState("");
 
-  // Resend domain UI
+  const [testBusy, setTestBusy] = useState(false);
+  const [testJobId, setTestJobId] = useState("");
+  const [testTemplateKey, setTestTemplateKey] = useState("term_hire_reminder_1");
+  const [testDaysRemaining, setTestDaysRemaining] = useState("");
+  const [testToEmail, setTestToEmail] = useState("");
+
   const [domainName, setDomainName] = useState("");
   const [domains, setDomains] = useState([]);
   const [selectedDomainId, setSelectedDomainId] = useState("");
@@ -176,6 +195,15 @@ export default function EmailSettingsPage() {
       setDefaults(nextDefaults);
       setOutbox(Array.isArray(json.outbox) ? json.outbox : []);
       setMergeTags(Array.isArray(json.merge_tags) ? json.merge_tags : []);
+      setRecentJobs(Array.isArray(json.recent_jobs) ? json.recent_jobs : []);
+      setOfficeEmail(json.office_email || profile?.email || "");
+      setTestToEmail((prev) => prev || json.office_email || profile?.email || "");
+
+      const firstJobId =
+        Array.isArray(json.recent_jobs) && json.recent_jobs.length > 0
+          ? json.recent_jobs[0].id
+          : "";
+      setTestJobId((prev) => prev || firstJobId);
 
       const inferred = getDomainFromEmail(json.settings?.from_email);
       setDomainName((prev) => prev || inferred);
@@ -266,7 +294,57 @@ export default function EmailSettingsPage() {
     }
   }
 
-  // ===== Resend domain helpers =====
+  async function sendTermHireTest() {
+    setTestBusy(true);
+    setErr("");
+    setOkMsg("");
+
+    try {
+      const token = getToken();
+
+      if (!testJobId) {
+        throw new Error("Please choose a job to test against");
+      }
+
+      if (!testTemplateKey) {
+        throw new Error("Please choose a test template");
+      }
+
+      const payload = {
+        job_id: testJobId,
+        template_key: testTemplateKey,
+        to_email: testToEmail,
+      };
+
+      if (String(testDaysRemaining || "").trim() !== "") {
+        payload.days_remaining = Number(testDaysRemaining);
+      }
+
+      const res = await fetch("/api/settings/emails/send-term-hire-test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: token ? "Bearer " + token : "",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error || "Failed to queue term-hire test email");
+      }
+
+      setOkMsg(
+        `Queued test ${KeyLabel(json.template_key)} email for ${json.job_number || "job"} to ${json.to_email} ✅`
+      );
+      await load();
+    } catch (e) {
+      setErr(e?.message || String(e));
+    } finally {
+      setTestBusy(false);
+    }
+  }
+
   async function resendAction(action, payload = {}) {
     const token = getToken();
     const res = await fetch("/api/settings/emails/resend-domains", {
@@ -379,9 +457,6 @@ export default function EmailSettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDomainId]);
 
-  if (loading) return <div style={{ padding: 16 }}>Loading…</div>;
-  if (!settings) return <div style={{ padding: 16 }}>{busy ? "Loading…" : "No settings loaded"}</div>;
-
   const domainStatus = String(domainDetail?.status || "").toLowerCase();
   const domainRecords = domainDetail?.records || null;
 
@@ -398,6 +473,19 @@ export default function EmailSettingsPage() {
       "{{hire_end_date}}",
     ])
   );
+
+  const termHireTemplates = useMemo(
+    () =>
+      (Array.isArray(templates) ? templates : []).filter((t) =>
+        ["term_hire_reminder_1", "term_hire_reminder_2", "term_hire_final_notice"].includes(
+          t.template_key
+        )
+      ),
+    [templates]
+  );
+
+  if (loading) return <div style={{ padding: 16 }}>Loading…</div>;
+  if (!settings) return <div style={{ padding: 16 }}>{busy ? "Loading…" : "No settings loaded"}</div>;
 
   return (
     <div style={{ padding: 16, maxWidth: 1100, margin: "0 auto" }}>
@@ -465,6 +553,122 @@ export default function EmailSettingsPage() {
           Send test email
         </button>
       </div>
+
+      <Section title="Quick term-hire test send">
+        <div
+          style={{
+            marginBottom: 12,
+            padding: 12,
+            borderRadius: 10,
+            border: "1px solid #e5e7eb",
+            background: "#fafafa",
+            fontSize: 13,
+            color: "#444",
+            lineHeight: 1.6,
+          }}
+        >
+          Use this to send a term-hire reminder immediately without waiting for cron. It creates fresh
+          action links for the selected job and sends the email straight to your chosen address.
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 10 }}>
+          <div>Send to</div>
+          <div>
+            <input
+              value={testToEmail}
+              onChange={(e) => setTestToEmail(e.target.value)}
+              style={{
+                width: "100%",
+                padding: 10,
+                border: "1px solid #ccc",
+                borderRadius: 10,
+              }}
+              placeholder={officeEmail || "you@example.com"}
+            />
+          </div>
+
+          <div>Job</div>
+          <div>
+            <select
+              value={testJobId}
+              onChange={(e) => setTestJobId(e.target.value)}
+              style={{
+                width: "100%",
+                padding: 10,
+                border: "1px solid #ccc",
+                borderRadius: 10,
+                background: "#fff",
+              }}
+            >
+              <option value="">Select a job…</option>
+              {(Array.isArray(recentJobs) ? recentJobs : []).map((job) => (
+                <option key={job.id} value={job.id}>
+                  {jobOptionLabel(job)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>Template</div>
+          <div>
+            <select
+              value={testTemplateKey}
+              onChange={(e) => setTestTemplateKey(e.target.value)}
+              style={{
+                width: "100%",
+                padding: 10,
+                border: "1px solid #ccc",
+                borderRadius: 10,
+                background: "#fff",
+              }}
+            >
+              {termHireTemplates.map((t) => (
+                <option key={t.template_key} value={t.template_key}>
+                  {KeyLabel(t.template_key)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>Override days remaining</div>
+          <div>
+            <input
+              type="number"
+              min="0"
+              max="365"
+              value={testDaysRemaining}
+              onChange={(e) => setTestDaysRemaining(e.target.value)}
+              style={{
+                width: 180,
+                padding: 10,
+                border: "1px solid #ccc",
+                borderRadius: 10,
+              }}
+              placeholder="Leave blank to use setting"
+            />
+            <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+              Optional. Leave blank to use the normal reminder timing for the selected template.
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <button
+            disabled={testBusy}
+            onClick={sendTermHireTest}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: "1px solid #111827",
+              background: "#111827",
+              color: "#fff",
+              fontWeight: 700,
+            }}
+          >
+            {testBusy ? "Queueing…" : "Send term-hire test now"}
+          </button>
+        </div>
+      </Section>
 
       <Section title="Sender (Resend)">
         <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 10 }}>
