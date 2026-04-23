@@ -155,6 +155,53 @@ async function ensureTemplateRows(supabase, subscriberId, defaults) {
   return Array.isArray(finalRows) ? finalRows : [];
 }
 
+async function loadRecentJobs(supabase, subscriberId) {
+  const { data: jobs, error } = await supabase
+    .from("jobs")
+    .select(`
+      id,
+      job_number,
+      job_status,
+      scheduled_date,
+      delivery_actual_date,
+      collection_date,
+      collection_actual_date,
+      term_hire_end_date,
+      customer_id,
+      site_postcode,
+      customers:customer_id (
+        company_name,
+        first_name,
+        last_name
+      )
+    `)
+    .eq("subscriber_id", subscriberId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (error) throw error;
+
+  return Array.isArray(jobs) ? jobs.map((j) => {
+    const c = Array.isArray(j.customers) ? j.customers[0] : j.customers;
+    const company = c?.company_name || "";
+    const person = [c?.first_name || "", c?.last_name || ""].join(" ").trim();
+    const customerLabel = company || person || "Customer";
+
+    return {
+      id: j.id,
+      job_number: j.job_number || "",
+      job_status: j.job_status || "",
+      scheduled_date: j.scheduled_date || null,
+      delivery_actual_date: j.delivery_actual_date || null,
+      collection_date: j.collection_date || null,
+      collection_actual_date: j.collection_actual_date || null,
+      term_hire_end_date: j.term_hire_end_date || null,
+      customer_label: customerLabel,
+      site_postcode: j.site_postcode || "",
+    };
+  }) : [];
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
@@ -172,6 +219,7 @@ export default async function handler(req, res) {
     const defaults = defaultTemplates();
     const settings = await ensureSettingsRow(supabase, subscriberId);
     const templates = await ensureTemplateRows(supabase, subscriberId, defaults);
+    const recentJobs = await loadRecentJobs(supabase, subscriberId);
 
     const { data: outboxRows, error: outboxError } = await supabase
       .from("email_outbox")
@@ -189,6 +237,8 @@ export default async function handler(req, res) {
       defaults,
       outbox: Array.isArray(outboxRows) ? outboxRows : [],
       merge_tags: mergeTags(),
+      recent_jobs: recentJobs,
+      office_email: auth?.user?.email || "",
     });
   } catch (error) {
     console.error("emails/get error", error);
