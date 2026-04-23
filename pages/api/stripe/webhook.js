@@ -2,7 +2,7 @@ import Stripe from "stripe";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
 export const config = {
-  api: { bodyParser: false }, // raw body for Stripe signature verification
+  api: { bodyParser: false },
 };
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
@@ -34,6 +34,12 @@ function addDays(ymd, days) {
   return d.toISOString().slice(0, 10);
 }
 
+function asPositiveNumberOrNull(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
 async function findSubscriberByStripeCustomerId(supabase, stripeCustomerId) {
   const { data, error } = await supabase
     .from("subscribers")
@@ -63,6 +69,46 @@ async function insertTermHireEvent(supabase, payload) {
   }
 }
 
+async function getBaseHireEndDate(supabase, job) {
+  if (job?.term_hire_end_date) return job.term_hire_end_date;
+  if (job?.term_hire_extended_until) return job.term_hire_extended_until;
+
+  const deliveryBase = job?.delivery_actual_date || job?.scheduled_date || null;
+  if (!deliveryBase) return null;
+
+  const { data: customer, error: customerErr } = await supabase
+    .from("customers")
+    .select("term_hire_days_override")
+    .eq("id", job.customer_id)
+    .maybeSingle();
+
+  if (customerErr) throw customerErr;
+
+  const { data: subscriber, error: subscriberErr } = await supabase
+    .from("subscribers")
+    .select("term_hire_days")
+    .eq("id", job.subscriber_id)
+    .maybeSingle();
+
+  if (subscriberErr) throw subscriberErr;
+
+  const { data: settings, error: settingsErr } = await supabase
+    .from("email_settings")
+    .select("term_hire_default_days")
+    .eq("subscriber_id", job.subscriber_id)
+    .maybeSingle();
+
+  if (settingsErr) throw settingsErr;
+
+  const hireDays =
+    asPositiveNumberOrNull(customer?.term_hire_days_override) ??
+    asPositiveNumberOrNull(subscriber?.term_hire_days) ??
+    asPositiveNumberOrNull(settings?.term_hire_default_days) ??
+    14;
+
+  return addDays(deliveryBase, hireDays);
+}
+
 async function handleTermHireCheckoutCompleted(supabase, session) {
   const flow = String(session?.metadata?.flow || "");
   if (flow !== "term_hire_extension") {
@@ -72,6 +118,7 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
   const jobId = String(session?.metadata?.job_id || "");
   const subscriberId = String(session?.metadata?.subscriber_id || "");
   const customerId = String(session?.metadata?.customer_id || "");
+  const token = String(session?.metadata?.token || "");
   const weeks = Math.max(1, Number(session?.metadata?.weeks || 1) || 1);
 
   if (!jobId || !subscriberId) {
@@ -102,19 +149,7 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
     return { handled: true, ok: true, reason: "Already processed" };
   }
 
-  const { data: settings, error: settingsErr } = await supabase
-    .from("email_settings")
-    .select("term_hire_default_days")
-    .eq("subscriber_id", subscriberId)
-    .maybeSingle();
-
-  if (settingsErr) throw settingsErr;
-
-  const deliveryBase = job.delivery_actual_date || job.scheduled_date || null;
-
-  let baseEndDate =
-    job.term_hire_extended_until ||
-    (deliveryBase ? addDays(deliveryBase, Number(settings?.term_hire_default_days || 14)) : null);
+  const baseEndDate = await getBaseHireEndDate(supabase, job);
 
   if (!baseEndDate) {
     return { handled: true, ok: false, reason: "No base hire end date" };
@@ -122,6 +157,7 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
 
   const newHireEndDate = addDays(baseEndDate, weeks * 7);
   const amountPaid = Number(session?.amount_total || 0) / 100;
+  const nowIso = new Date().toISOString();
 
   const upsertExtension = {
     subscriber_id: subscriberId,
@@ -134,7 +170,7 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
     stripe_session_id: session.id,
     stripe_payment_intent_id: session.payment_intent || null,
     status: "paid",
-    paid_at: new Date().toISOString(),
+    paid_at: nowIso,
   };
 
   const { error: extensionInsertErr } = await supabase
@@ -143,10 +179,17 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
 
   if (extensionInsertErr) throw extensionInsertErr;
 
+  const currentExtensionDays = Number(job.hire_extension_days || 0);
+  const nextExtensionDays = Number.isFinite(currentExtensionDays)
+    ? currentExtensionDays + weeks * 7
+    : weeks * 7;
+
   const { error: jobUpdateErr } = await supabase
     .from("jobs")
     .update({
+      term_hire_end_date: newHireEndDate,
       term_hire_extended_until: newHireEndDate,
+      hire_extension_days: nextExtensionDays,
       term_hire_status: "extended",
       term_hire_suppressed: false,
       term_hire_suppressed_at: null,
@@ -155,12 +198,41 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
       term_hire_extension_pending_at: null,
       term_hire_auto_collection_due: false,
       collection_date: null,
-      last_edited_at: new Date().toISOString(),
+      last_edited_at: nowIso,
     })
     .eq("id", job.id)
     .eq("subscriber_id", subscriberId);
 
   if (jobUpdateErr) throw jobUpdateErr;
+
+  if (token) {
+    const { data: action, error: actionErr } = await supabase
+      .from("term_hire_actions")
+      .select("id, metadata")
+      .eq("token", token)
+      .eq("job_id", job.id)
+      .eq("subscriber_id", subscriberId)
+      .maybeSingle();
+
+    if (actionErr) throw actionErr;
+
+    if (action?.id) {
+      const { error: actionUpdateErr } = await supabase
+        .from("term_hire_actions")
+        .update({
+          status: "completed",
+          metadata: {
+            ...(action.metadata || {}),
+            completed_at: nowIso,
+            stripe_session_id: session.id,
+            new_hire_end_date: newHireEndDate,
+          },
+        })
+        .eq("id", action.id);
+
+      if (actionUpdateErr) throw actionUpdateErr;
+    }
+  }
 
   await insertTermHireEvent(supabase, {
     subscriber_id: subscriberId,
@@ -201,17 +273,14 @@ export default async function handler(req, res) {
 
     const supabase = getSupabaseAdmin();
 
-    // ---- checkout.session.completed ----
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
 
-      // Term-hire extension checkout
       const termHireResult = await handleTermHireCheckoutCompleted(supabase, session);
       if (termHireResult.handled) {
         return res.status(200).json({ ok: true, term_hire: termHireResult });
       }
 
-      // Existing subscription lifecycle logic
       let subscription = null;
       let stripeCustomerId = session.customer || null;
 
@@ -248,7 +317,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // ---- Subscription lifecycle events ----
     if (
       event.type === "customer.subscription.created" ||
       event.type === "customer.subscription.updated" ||
@@ -286,7 +354,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // ---- Payment events (grace period logic) ----
     if (event.type === "invoice.payment_failed") {
       const inv = event.data.object;
       const stripeCustomerId = inv.customer || null;
@@ -332,7 +399,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // Ignore all other events
     return res.status(200).json({ ok: true, ignored: true, type: event.type });
   } catch (err) {
     console.error(err);
