@@ -1,6 +1,6 @@
-// pages/api/jobs/mark-collected.js
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
+import { sendJobEmail } from "../../../lib/jobEmails";
 
 function isYmd(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(v || "").trim());
@@ -45,14 +45,16 @@ export default async function handler(req, res) {
 
     const { data: job, error: jobErr } = await supabase
       .from("jobs")
-      .select([
-        "id",
-        "subscriber_id",
-        "job_number",
-        "job_status",
-        "collection_actual_date",
-        "cancelled_at",
-      ].join(","))
+      .select(
+        [
+          "id",
+          "subscriber_id",
+          "job_number",
+          "job_status",
+          "collection_actual_date",
+          "cancelled_at",
+        ].join(",")
+      )
       .eq("id", jobId)
       .eq("subscriber_id", subscriberId)
       .maybeSingle();
@@ -87,22 +89,40 @@ export default async function handler(req, res) {
       .update(patch)
       .eq("id", job.id)
       .eq("subscriber_id", subscriberId)
-      .select([
-        "id",
-        "job_number",
-        "job_status",
-        "collection_actual_date",
-        "term_hire_status",
-      ].join(","))
+      .select(
+        [
+          "id",
+          "job_number",
+          "job_status",
+          "collection_actual_date",
+          "term_hire_status",
+        ].join(",")
+      )
       .single();
 
     if (updateErr) {
       return res.status(500).json({ error: updateErr.message || "Failed to update job" });
     }
 
+    let email = null;
+
+    try {
+      email = await sendJobEmail({
+        subscriberId,
+        jobId: job.id,
+        templateKey: "collected_confirmation",
+      });
+    } catch (e) {
+      email = {
+        ok: false,
+        error: String(e?.message || e),
+      };
+    }
+
     return res.status(200).json({
       ok: true,
       job: updated,
+      email,
     });
   } catch (err) {
     console.error("mark-collected error", err);
