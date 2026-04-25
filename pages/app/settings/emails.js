@@ -17,10 +17,10 @@ function fmt(dt) {
 function KeyLabel(k) {
   const map = {
     booking_confirmed: "Booking confirmation",
-    skip_due_for_collection: "Skip booked to be collected (prompt)",
-    swap_scheduled: "Skip swap email",
-    collected_confirmation: "Skip collected email",
-    term_ending_reminder: "Hire coming to an end (legacy 14 day rule reminder)",
+    delivery_today: "Skip being delivered today",
+    swap_confirmed: "Swap booking confirmation",
+    custom_skip_confirmed: "Custom skip confirmation",
+    collected_confirmation: "Skip collected email / WTN",
     term_hire_reminder_1: "Term hire reminder 1",
     term_hire_reminder_2: "Term hire reminder 2",
     term_hire_final_notice: "Term hire final notice",
@@ -94,10 +94,10 @@ function normaliseSettings(raw) {
 function sortTemplates(arr) {
   const order = [
     "booking_confirmed",
-    "skip_due_for_collection",
-    "swap_scheduled",
+    "delivery_today",
+    "swap_confirmed",
+    "custom_skip_confirmed",
     "collected_confirmation",
-    "term_ending_reminder",
     "term_hire_reminder_1",
     "term_hire_reminder_2",
     "term_hire_final_notice",
@@ -112,7 +112,7 @@ function sortTemplates(arr) {
     if (av !== bv) return av - bv;
     return String(a?.template_key || "").localeCompare(String(b?.template_key || ""));
   });
-  return list;
+  return list.filter((t) => order.includes(t?.template_key));
 }
 
 function ensureTemplate(list, templateKey, defaults) {
@@ -159,7 +159,7 @@ export default function EmailSettingsPage() {
 
   const [testBusy, setTestBusy] = useState(false);
   const [testJobId, setTestJobId] = useState("");
-  const [testTemplateKey, setTestTemplateKey] = useState("term_hire_reminder_1");
+  const [testTemplateKey, setTestTemplateKey] = useState("booking_confirmed");
   const [testDaysRemaining, setTestDaysRemaining] = useState("");
   const [testToEmail, setTestToEmail] = useState("");
 
@@ -186,12 +186,19 @@ export default function EmailSettingsPage() {
       const nextDefaults = json.defaults || {};
       let nextTemplates = Array.isArray(json.templates) ? json.templates : [];
 
+      nextTemplates = ensureTemplate(nextTemplates, "booking_confirmed", nextDefaults);
+      nextTemplates = ensureTemplate(nextTemplates, "delivery_today", nextDefaults);
+      nextTemplates = ensureTemplate(nextTemplates, "swap_confirmed", nextDefaults);
+      nextTemplates = ensureTemplate(nextTemplates, "custom_skip_confirmed", nextDefaults);
+      nextTemplates = ensureTemplate(nextTemplates, "collected_confirmation", nextDefaults);
       nextTemplates = ensureTemplate(nextTemplates, "term_hire_reminder_1", nextDefaults);
       nextTemplates = ensureTemplate(nextTemplates, "term_hire_reminder_2", nextDefaults);
       nextTemplates = ensureTemplate(nextTemplates, "term_hire_final_notice", nextDefaults);
 
+      const sortedTemplates = sortTemplates(nextTemplates);
+
       setSettings(normaliseSettings(json.settings));
-      setTemplates(sortTemplates(nextTemplates));
+      setTemplates(sortedTemplates);
       setDefaults(nextDefaults);
       setOutbox(Array.isArray(json.outbox) ? json.outbox : []);
       setMergeTags(Array.isArray(json.merge_tags) ? json.merge_tags : []);
@@ -204,6 +211,11 @@ export default function EmailSettingsPage() {
           ? json.recent_jobs[0].id
           : "";
       setTestJobId((prev) => prev || firstJobId);
+
+      setTestTemplateKey((prev) => {
+        if (sortedTemplates.some((t) => t.template_key === prev)) return prev;
+        return sortedTemplates[0]?.template_key || "booking_confirmed";
+      });
 
       const inferred = getDomainFromEmail(json.settings?.from_email);
       setDomainName((prev) => prev || inferred);
@@ -294,7 +306,7 @@ export default function EmailSettingsPage() {
     }
   }
 
-  async function sendTermHireTest() {
+  async function sendEmailTemplateTest() {
     setTestBusy(true);
     setErr("");
     setOkMsg("");
@@ -331,11 +343,13 @@ export default function EmailSettingsPage() {
 
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.ok) {
-        throw new Error(json.error || "Failed to queue term-hire test email");
+        throw new Error(json.error || "Failed to queue test email");
       }
 
       setOkMsg(
-        `Queued test ${KeyLabel(json.template_key)} email for ${json.job_number || "job"} to ${json.to_email} ✅`
+        `Queued test ${KeyLabel(json.template_key || testTemplateKey)} email for ${
+          json.job_number || "job"
+        } to ${json.to_email || testToEmail} ✅`
       );
       await load();
     } catch (e) {
@@ -373,10 +387,7 @@ export default function EmailSettingsPage() {
       setDomains(arr);
 
       if (pickByName) {
-        const found = arr.find(
-          (d) =>
-            String(d.name || "").toLowerCase() === String(pickByName).toLowerCase()
-        );
+        const found = arr.find((d) => String(d.name || "").toLowerCase() === String(pickByName).toLowerCase());
         if (found?.id) setSelectedDomainId(String(found.id));
       }
     } catch (e) {
@@ -465,22 +476,24 @@ export default function EmailSettingsPage() {
       ...(Array.isArray(mergeTags) ? mergeTags : []),
       "{{customer_name}}",
       "{{job_number}}",
+      "{{scheduled_date}}",
+      "{{collected_date}}",
+      "{{site_address}}",
+      "{{site_postcode}}",
+      "{{price_inc_vat}}",
+      "{{payment_type}}",
+      "{{terms_and_conditions}}",
+      "{{wtn_url}}",
       "{{days_remaining}}",
       "{{extension_price}}",
       "{{extend_url}}",
       "{{collection_url}}",
-      "{{site_address}}",
       "{{hire_end_date}}",
     ])
   );
 
-  const termHireTemplates = useMemo(
-    () =>
-      (Array.isArray(templates) ? templates : []).filter((t) =>
-        ["term_hire_reminder_1", "term_hire_reminder_2", "term_hire_final_notice"].includes(
-          t.template_key
-        )
-      ),
+  const testableTemplates = useMemo(
+    () => (Array.isArray(templates) ? templates : []).filter((t) => !!t?.template_key),
     [templates]
   );
 
@@ -550,11 +563,11 @@ export default function EmailSettingsPage() {
             background: "white",
           }}
         >
-          Send test email
+          Send basic test email
         </button>
       </div>
 
-      <Section title="Quick term-hire test send">
+      <Section title="Email Testing">
         <div
           style={{
             marginBottom: 12,
@@ -567,8 +580,9 @@ export default function EmailSettingsPage() {
             lineHeight: 1.6,
           }}
         >
-          Use this to send a term-hire reminder immediately without waiting for cron. It creates fresh
-          action links for the selected job and sends the email straight to your chosen address.
+          Send any editable email template immediately against a real job. This lets you check the
+          wording, merge tags, customer details, and send log without waiting for booking, collection,
+          or cron automation.
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 10 }}>
@@ -622,7 +636,7 @@ export default function EmailSettingsPage() {
                 background: "#fff",
               }}
             >
-              {termHireTemplates.map((t) => (
+              {testableTemplates.map((t) => (
                 <option key={t.template_key} value={t.template_key}>
                   {KeyLabel(t.template_key)}
                 </option>
@@ -644,10 +658,10 @@ export default function EmailSettingsPage() {
                 border: "1px solid #ccc",
                 borderRadius: 10,
               }}
-              placeholder="Leave blank to use setting"
+              placeholder="Optional"
             />
             <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
-              Optional. Leave blank to use the normal reminder timing for the selected template.
+              Optional. Only used by term-hire templates that include the days remaining merge tag.
             </div>
           </div>
         </div>
@@ -655,7 +669,7 @@ export default function EmailSettingsPage() {
         <div style={{ marginTop: 14 }}>
           <button
             disabled={testBusy}
-            onClick={sendTermHireTest}
+            onClick={sendEmailTemplateTest}
             style={{
               padding: "10px 14px",
               borderRadius: 10,
@@ -665,7 +679,7 @@ export default function EmailSettingsPage() {
               fontWeight: 700,
             }}
           >
-            {testBusy ? "Queueing…" : "Send term-hire test now"}
+            {testBusy ? "Queueing…" : "Send selected email test now"}
           </button>
         </div>
       </Section>
@@ -849,9 +863,7 @@ export default function EmailSettingsPage() {
               min="0"
               max="365"
               value={settings.term_hire_reminder_1_days_before || ""}
-              onChange={(e) =>
-                updateSetting("term_hire_reminder_1_days_before", e.target.value)
-              }
+              onChange={(e) => updateSetting("term_hire_reminder_1_days_before", e.target.value)}
               style={{
                 width: 180,
                 padding: 10,
@@ -868,9 +880,7 @@ export default function EmailSettingsPage() {
               min="0"
               max="365"
               value={settings.term_hire_reminder_2_days_before || ""}
-              onChange={(e) =>
-                updateSetting("term_hire_reminder_2_days_before", e.target.value)
-              }
+              onChange={(e) => updateSetting("term_hire_reminder_2_days_before", e.target.value)}
               style={{
                 width: 180,
                 padding: 10,
@@ -886,9 +896,7 @@ export default function EmailSettingsPage() {
               <input
                 type="checkbox"
                 checked={!!settings.term_hire_final_notice_enabled}
-                onChange={(e) =>
-                  updateSetting("term_hire_final_notice_enabled", e.target.checked)
-                }
+                onChange={(e) => updateSetting("term_hire_final_notice_enabled", e.target.checked)}
               />
               Enabled
             </label>
@@ -901,9 +909,7 @@ export default function EmailSettingsPage() {
               min="0"
               step="0.01"
               value={settings.term_hire_extension_price_per_week || ""}
-              onChange={(e) =>
-                updateSetting("term_hire_extension_price_per_week", e.target.value)
-              }
+              onChange={(e) => updateSetting("term_hire_extension_price_per_week", e.target.value)}
               style={{
                 width: 180,
                 padding: 10,
@@ -919,9 +925,7 @@ export default function EmailSettingsPage() {
               <input
                 type="checkbox"
                 checked={!!settings.term_hire_auto_book_collection}
-                onChange={(e) =>
-                  updateSetting("term_hire_auto_book_collection", e.target.checked)
-                }
+                onChange={(e) => updateSetting("term_hire_auto_book_collection", e.target.checked)}
               />
               Enabled
             </label>
@@ -1134,9 +1138,7 @@ export default function EmailSettingsPage() {
                 <input
                   type="checkbox"
                   checked={!!t.enabled}
-                  onChange={(e) =>
-                    updateTemplate(t.template_key, { enabled: e.target.checked })
-                  }
+                  onChange={(e) => updateTemplate(t.template_key, { enabled: e.target.checked })}
                 />
                 Enabled
               </label>
@@ -1160,15 +1162,15 @@ export default function EmailSettingsPage() {
               <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>Body (HTML)</div>
               <textarea
                 value={t.body_html || ""}
-                onChange={(e) =>
-                  updateTemplate(t.template_key, { body_html: e.target.value })
-                }
+                onChange={(e) => updateTemplate(t.template_key, { body_html: e.target.value })}
                 style={{
                   width: "100%",
                   minHeight:
                     t.template_key === "term_hire_reminder_1" ||
                     t.template_key === "term_hire_reminder_2" ||
-                    t.template_key === "term_hire_final_notice"
+                    t.template_key === "term_hire_final_notice" ||
+                    t.template_key === "booking_confirmed" ||
+                    t.template_key === "delivery_today"
                       ? 240
                       : 180,
                   padding: 10,
