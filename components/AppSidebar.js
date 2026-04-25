@@ -60,6 +60,11 @@ const NAV_SECTIONS = [
     items: [
       { href: "/app/waste/out", label: "Waste Out", match: ["/app/waste/out"] },
       { href: "/app/waste/returns", label: "Waste Returns", match: ["/app/waste/returns"] },
+      {
+        href: "/app/settings/wtn",
+        label: "Waste Transfer Notes",
+        match: ["/app/settings/wtn"],
+      },
     ],
   },
 
