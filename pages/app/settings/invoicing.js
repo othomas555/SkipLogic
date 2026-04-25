@@ -32,7 +32,7 @@ function normalizeCategories(arr) {
       account_code: asText(x?.account_code),
       enabled: x?.enabled === false ? false : true,
       sort: Number.isFinite(Number(x?.sort)) ? Number(x.sort) : 0,
-      vat_rate: asText(x?.vat_rate), // optional for later
+      vat_rate: asText(x?.vat_rate),
     }))
     .filter((x) => x.key || x.label || x.account_code);
 
@@ -97,6 +97,7 @@ export default function InvoicingSettingsPage() {
 
   // Revenue codes (stored as Code)
   const [skipHireCode, setSkipHireCode] = useState("200");
+  const [termHireExtensionCode, setTermHireExtensionCode] = useState("200");
   const [permitCode, setPermitCode] = useState("215");
 
   // BANK accounts (stored as AccountID preferred; Code allowed legacy)
@@ -120,13 +121,12 @@ export default function InvoicingSettingsPage() {
     return list;
   }, [xeroAccounts]);
 
-  // ✅ FIX: include OTHERINCOME as well as REVENUE (many orgs put permit income here)
   const revenueAccounts = useMemo(() => {
     const all = safeArray(xeroAccounts);
     const allowed = new Set(["REVENUE", "OTHERINCOME"]);
     const list = all
       .filter((a) => allowed.has(String(a?.Type || "")))
-      .filter((a) => !!asText(a?.Code)); // revenue-ish must have Code to be usable
+      .filter((a) => !!asText(a?.Code));
     list.sort((a, b) => String(a?.Code || "").localeCompare(String(b?.Code || "")));
     return list;
   }, [xeroAccounts]);
@@ -202,7 +202,10 @@ export default function InvoicingSettingsPage() {
       }
 
       const s = json.settings || {};
-      setSkipHireCode(asText(s.skip_hire_sales_account_code) || "200");
+      const loadedSkipHireCode = asText(s.skip_hire_sales_account_code) || "200";
+
+      setSkipHireCode(loadedSkipHireCode);
+      setTermHireExtensionCode(asText(s.term_hire_extension_sales_account_code) || loadedSkipHireCode || "200");
       setPermitCode(asText(s.permit_sales_account_code) || "215");
 
       setCardClearingAccountKey(asText(s.card_clearing_account_code) || "");
@@ -259,14 +262,16 @@ export default function InvoicingSettingsPage() {
     const errors = [];
 
     const e1 = validateAccountCode(skipHireCode, "Skip hire sales account code");
-    const e2 = validateAccountCode(permitCode, "Permit sales account code");
+    const e2 = validateAccountCode(termHireExtensionCode, "Term hire extension sales account code");
+    const e3 = validateAccountCode(permitCode, "Permit sales account code");
     if (e1) errors.push(e1);
     if (e2) errors.push(e2);
-
-    const e3 = validateBankAccountKey(cardClearingAccountKey, "Card clearing account");
-    const e4 = validateBankAccountKey(cashBankAccountKey, "Cash bank account");
     if (e3) errors.push(e3);
+
+    const e4 = validateBankAccountKey(cardClearingAccountKey, "Card clearing account");
+    const e5 = validateBankAccountKey(cashBankAccountKey, "Cash bank account");
     if (e4) errors.push(e4);
+    if (e5) errors.push(e5);
 
     const seenKeys = new Set();
     for (let i = 0; i < categoriesSorted.length; i++) {
@@ -296,6 +301,7 @@ export default function InvoicingSettingsPage() {
 
     const payload = {
       skip_hire_sales_account_code: asText(skipHireCode),
+      term_hire_extension_sales_account_code: asText(termHireExtensionCode),
       permit_sales_account_code: asText(permitCode),
       card_clearing_account_code: asText(cardClearingAccountKey),
       cash_bank_account_code: asText(cashBankAccountKey),
@@ -328,7 +334,10 @@ export default function InvoicingSettingsPage() {
     }
 
     const s = json.settings || {};
-    setSkipHireCode(asText(s.skip_hire_sales_account_code) || "200");
+    const savedSkipHireCode = asText(s.skip_hire_sales_account_code) || "200";
+
+    setSkipHireCode(savedSkipHireCode);
+    setTermHireExtensionCode(asText(s.term_hire_extension_sales_account_code) || savedSkipHireCode || "200");
     setPermitCode(asText(s.permit_sales_account_code) || "215");
 
     setCardClearingAccountKey(asText(s.card_clearing_account_code) || "");
@@ -447,7 +456,7 @@ export default function InvoicingSettingsPage() {
           </label>
 
           <label style={labelStyle}>
-            Card clearing account (used for card payments)
+            Card clearing account (used for card/Stripe payments)
             <select
               value={cardClearingAccountKey}
               onChange={(e) => {
@@ -474,7 +483,7 @@ export default function InvoicingSettingsPage() {
         <div style={{ marginTop: 12, ...hintBox }}>
           <div style={{ fontWeight: 800, marginBottom: 6 }}>REVENUE / OTHERINCOME accounts (sales posting)</div>
           <div style={{ fontSize: 13, color: "#333", lineHeight: 1.5 }}>
-            These are saved as Xero <b>Code</b> (not AccountID).
+            These are saved as Xero <b>Code</b> (not AccountID). Term hire extensions can be posted to the same code as skip hire or a separate income code.
           </div>
         </div>
 
@@ -498,6 +507,27 @@ export default function InvoicingSettingsPage() {
               ))}
             </select>
             <div style={tinyHint}>Default: 200</div>
+          </label>
+
+          <label style={labelStyle}>
+            Term hire extension sales account (Code)
+            <select
+              value={termHireExtensionCode}
+              onChange={(e) => {
+                setTermHireExtensionCode(e.target.value);
+                setOkMsg("");
+                setErrorMsg("");
+              }}
+              style={inputStyle}
+            >
+              <option value="">Select REVENUE/OTHERINCOME account…</option>
+              {revenueAccounts.map((a) => (
+                <option key={a.AccountID || a.Code || a.Name} value={asText(a.Code)}>
+                  {displayRevenueOptionLabel(a)}
+                </option>
+              ))}
+            </select>
+            <div style={tinyHint}>Defaults to skip hire sales account if blank in existing records</div>
           </label>
 
           <label style={labelStyle}>
@@ -710,6 +740,7 @@ const gridStyle = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
   gap: 10,
+  marginTop: 12,
 };
 
 const labelStyle = {
