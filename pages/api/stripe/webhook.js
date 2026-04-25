@@ -34,10 +34,44 @@ function addDays(ymd, days) {
   return d.toISOString().slice(0, 10);
 }
 
+function asText(v) {
+  return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
+}
+
 function asPositiveNumberOrNull(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return null;
   return n;
+}
+
+function formatMoneyGBP(amount) {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return "£0.00";
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+  }).format(n);
+}
+
+function escapeHtml(v) {
+  return String(v == null ? "" : v)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function customerName(customer) {
+  const company = asText(customer?.company_name);
+  const first = asText(customer?.first_name);
+  const last = asText(customer?.last_name);
+  const person = [first, last].filter(Boolean).join(" ").trim();
+
+  if (company && person) return `${company} – ${person}`;
+  if (company) return company;
+  if (person) return person;
+  return "Customer";
 }
 
 async function findSubscriberByStripeCustomerId(supabase, stripeCustomerId) {
@@ -46,17 +80,20 @@ async function findSubscriberByStripeCustomerId(supabase, stripeCustomerId) {
     .select("id")
     .eq("stripe_customer_id", stripeCustomerId)
     .maybeSingle();
+
   if (error) throw error;
   return data?.id || null;
 }
 
 async function findPlanVariantByPriceId(supabase, priceId) {
   if (!priceId) return null;
+
   const { data, error } = await supabase
     .from("plan_variants")
     .select("id")
     .eq("stripe_price_id", priceId)
     .maybeSingle();
+
   if (error) throw error;
   return data?.id || null;
 }
@@ -109,6 +146,120 @@ async function getBaseHireEndDate(supabase, job) {
   return addDays(deliveryBase, hireDays);
 }
 
+async function queueExtensionConfirmationEmail({
+  supabase,
+  subscriberId,
+  job,
+  customerId,
+  customerEmail,
+  customer,
+  weeks,
+  amountPaid,
+  oldHireEndDate,
+  newHireEndDate,
+  session,
+}) {
+  const toEmail = asText(customerEmail);
+  if (!toEmail) return;
+
+  const { data: settings, error: settingsErr } = await supabase
+    .from("email_settings")
+    .select("provider, is_enabled")
+    .eq("subscriber_id", subscriberId)
+    .maybeSingle();
+
+  if (settingsErr) throw settingsErr;
+
+  if (!settings?.is_enabled) {
+    await insertTermHireEvent(supabase, {
+      subscriber_id: subscriberId,
+      job_id: job.id,
+      customer_id: customerId || job.customer_id || null,
+      channel: "email",
+      event_type: "extension_confirmation_skipped",
+      template_key: "term_hire_extension_confirmation",
+      recipient: toEmail,
+      metadata: {
+        reason: "Email settings disabled",
+        stripe_session_id: session.id,
+      },
+    });
+    return;
+  }
+
+  const jobNumber = job.job_number || job.id;
+  const subject = `Your skip hire has been extended (${jobNumber})`;
+
+  const safeCustomerName = escapeHtml(customerName(customer));
+  const safeJobNumber = escapeHtml(jobNumber);
+  const safeOldDate = escapeHtml(oldHireEndDate || "");
+  const safeNewDate = escapeHtml(newHireEndDate || "");
+  const safeWeeks = escapeHtml(String(weeks));
+  const safeAmount = escapeHtml(formatMoneyGBP(amountPaid));
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;background:#f8fafc;padding:24px">
+      <div style="max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden">
+        <div style="padding:20px 24px;background:#111827;color:#ffffff">
+          <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8">Skip hire</div>
+          <h1 style="margin:8px 0 0;font-size:24px;line-height:1.2">Hire extended</h1>
+        </div>
+        <div style="padding:24px">
+          <p style="margin-top:0">Hi ${safeCustomerName},</p>
+          <p>Thank you. Your skip hire has been successfully extended.</p>
+
+          <div style="margin:18px 0;padding:14px;border-radius:12px;background:#f9fafb;border:1px solid #e5e7eb">
+            <p style="margin:0 0 8px"><strong>Job:</strong> ${safeJobNumber}</p>
+            <p style="margin:0 0 8px"><strong>Extension:</strong> ${safeWeeks} week${weeks === 1 ? "" : "s"}</p>
+            <p style="margin:0 0 8px"><strong>Previous hire end date:</strong> ${safeOldDate}</p>
+            <p style="margin:0 0 8px"><strong>New hire end date:</strong> ${safeNewDate}</p>
+            <p style="margin:0"><strong>Amount paid:</strong> ${safeAmount}</p>
+          </div>
+
+          <p>If you need anything else, just reply to this email.</p>
+          <p style="margin-bottom:0;color:#4b5563;font-size:13px">Payment reference: ${escapeHtml(session.id)}</p>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const { error: outboxErr } = await supabase.from("email_outbox").insert({
+    subscriber_id: subscriberId,
+    job_id: job.id,
+    customer_id: customerId || job.customer_id || null,
+    template_key: "term_hire_extension_confirmation",
+    to_email: toEmail,
+    subject_snapshot: subject,
+    status: "pending",
+    provider: settings.provider || "resend",
+    error: null,
+    sent_at: null,
+  });
+
+  if (outboxErr) throw outboxErr;
+
+  await insertTermHireEvent(supabase, {
+    subscriber_id: subscriberId,
+    job_id: job.id,
+    customer_id: customerId || job.customer_id || null,
+    channel: "email",
+    event_type: "email_queued",
+    template_key: "term_hire_extension_confirmation",
+    recipient: toEmail,
+    metadata: {
+      subject,
+      body_html: html,
+      stripe_session_id: session.id,
+      stripe_payment_intent_id: session.payment_intent || null,
+      weeks,
+      amount: amountPaid,
+      old_hire_end_date: oldHireEndDate,
+      new_hire_end_date: newHireEndDate,
+      reason: "term_hire_extension_confirmation",
+    },
+  });
+}
+
 async function handleTermHireCheckoutCompleted(supabase, session) {
   const flow = String(session?.metadata?.flow || "");
   if (flow !== "term_hire_extension") {
@@ -133,6 +284,7 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
     .maybeSingle();
 
   if (jobErr) throw jobErr;
+
   if (!job) {
     return { handled: true, ok: false, reason: "Job not found" };
   }
@@ -145,6 +297,7 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
     .limit(1);
 
   if (existingPaidErr) throw existingPaidErr;
+
   if (Array.isArray(existingPaid) && existingPaid.length > 0) {
     return { handled: true, ok: true, reason: "Already processed" };
   }
@@ -252,6 +405,38 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
     },
   });
 
+  let customer = null;
+  if (customerId || job.customer_id) {
+    const { data: customerRow, error: customerErr } = await supabase
+      .from("customers")
+      .select("id, first_name, last_name, company_name, email")
+      .eq("id", customerId || job.customer_id)
+      .maybeSingle();
+
+    if (customerErr) throw customerErr;
+    customer = customerRow || null;
+  }
+
+  const receiptEmail =
+    session.customer_details?.email ||
+    session.customer_email ||
+    customer?.email ||
+    null;
+
+  await queueExtensionConfirmationEmail({
+    supabase,
+    subscriberId,
+    job,
+    customerId: customerId || job.customer_id || null,
+    customerEmail: receiptEmail,
+    customer,
+    weeks,
+    amountPaid,
+    oldHireEndDate: baseEndDate,
+    newHireEndDate,
+    session,
+  });
+
   return { handled: true, ok: true };
 }
 
@@ -262,6 +447,7 @@ export default async function handler(req, res) {
     const webhookSecret = mustEnv("STRIPE_WEBHOOK_SECRET");
     const rawBody = await readRawBody(req);
     const sig = req.headers["stripe-signature"];
+
     if (!sig) return res.status(400).send("Missing stripe-signature header");
 
     let event;
@@ -282,7 +468,7 @@ export default async function handler(req, res) {
       }
 
       let subscription = null;
-      let stripeCustomerId = session.customer || null;
+      const stripeCustomerId = session.customer || null;
 
       if (session.subscription) {
         subscription = await stripe.subscriptions.retrieve(session.subscription);
@@ -297,9 +483,8 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true, ignored: true, reason: "No matching subscriber" });
       }
 
-      let planVariantId = null;
       const priceId = subscription?.items?.data?.[0]?.price?.id || null;
-      planVariantId = await findPlanVariantByPriceId(supabase, priceId);
+      const planVariantId = await findPlanVariantByPriceId(supabase, priceId);
 
       const status = subscription?.status || "unknown";
       const trialEndsAt = toIsoFromUnixSeconds(subscription?.trial_end || null);
@@ -311,7 +496,11 @@ export default async function handler(req, res) {
         locked_at: null,
       };
 
-      const { error: upErr } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
+      const { error: upErr } = await supabase
+        .from("subscribers")
+        .update(patch)
+        .eq("id", subscriberId);
+
       if (upErr) throw upErr;
 
       return res.status(200).json({ ok: true });
@@ -334,9 +523,8 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true, ignored: true, reason: "No matching subscriber" });
       }
 
-      let planVariantId = null;
       const priceId = subscription?.items?.data?.[0]?.price?.id || null;
-      planVariantId = await findPlanVariantByPriceId(supabase, priceId);
+      const planVariantId = await findPlanVariantByPriceId(supabase, priceId);
 
       const status = subscription?.status || "unknown";
       const trialEndsAt = toIsoFromUnixSeconds(subscription?.trial_end || null);
@@ -348,7 +536,11 @@ export default async function handler(req, res) {
         locked_at: null,
       };
 
-      const { error: upErr } = await supabase.from("subscribers").update(patch).eq("id", subscriberId);
+      const { error: upErr } = await supabase
+        .from("subscribers")
+        .update(patch)
+        .eq("id", subscriberId);
+
       if (upErr) throw upErr;
 
       return res.status(200).json({ ok: true });
@@ -357,6 +549,7 @@ export default async function handler(req, res) {
     if (event.type === "invoice.payment_failed") {
       const inv = event.data.object;
       const stripeCustomerId = inv.customer || null;
+
       if (!stripeCustomerId) return res.status(200).json({ ok: true });
 
       const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
@@ -380,6 +573,7 @@ export default async function handler(req, res) {
     if (event.type === "invoice.payment_succeeded") {
       const inv = event.data.object;
       const stripeCustomerId = inv.customer || null;
+
       if (!stripeCustomerId) return res.status(200).json({ ok: true });
 
       const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
