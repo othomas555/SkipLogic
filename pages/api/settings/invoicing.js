@@ -1,4 +1,5 @@
 // pages/api/settings/invoicing.js
+
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 
 function json(res, status, payload) {
@@ -23,7 +24,7 @@ function validateAccountCode(code, fieldName) {
   const v = asText(code);
   if (!v) return `${fieldName} is required`;
   if (!/^[A-Za-z0-9_-]+$/.test(v)) return `${fieldName} has invalid characters`;
-  if (v.length > 80) return `${fieldName} is too long`;
+  if (v.length > 50) return `${fieldName} is too long`;
   return null;
 }
 
@@ -56,34 +57,15 @@ async function ensureDefaultsRow(subscriberId, supabaseAdmin) {
   if (insErr) {
     const msg = String(insErr.message || "");
     const code = String(insErr.code || "");
-    const details = String(insErr.details || "");
-    const combined = `${code} ${msg} ${details}`.toLowerCase();
+    const combined = `${code} ${msg}`.toLowerCase();
 
-    const looksLikeUnique =
-      combined.includes("duplicate") ||
-      combined.includes("unique") ||
-      combined.includes("23505");
-
-    if (!looksLikeUnique) {
+    if (!combined.includes("duplicate") && !combined.includes("23505")) {
       return { ok: false, error: `Failed to create defaults row: ${insErr.message}` };
     }
   }
 
   return { ok: true };
 }
-
-const SETTINGS_SELECT = `
-  subscriber_id,
-  skip_hire_sales_account_code,
-  term_hire_extension_sales_account_code,
-  permit_sales_account_code,
-  card_clearing_account_code,
-  cash_bank_account_code,
-  sales_categories,
-  use_defaults_when_missing,
-  created_at,
-  updated_at
-`;
 
 export default async function handler(req, res) {
   const supabaseAdmin = getSupabaseAdmin();
@@ -99,7 +81,20 @@ export default async function handler(req, res) {
 
     const { data, error } = await supabaseAdmin
       .from("invoice_settings")
-      .select(SETTINGS_SELECT)
+      .select(
+        `
+        subscriber_id,
+        skip_hire_sales_account_code,
+        permit_sales_account_code,
+        term_hire_extension_sales_account_code,
+        card_clearing_account_code,
+        cash_bank_account_code,
+        sales_categories,
+        use_defaults_when_missing,
+        created_at,
+        updated_at
+      `
+      )
       .eq("subscriber_id", subscriberId)
       .single();
 
@@ -109,25 +104,22 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const body = req.body || {};
 
     const skipHire = asText(body.skip_hire_sales_account_code);
-    const termHireExtension = asText(body.term_hire_extension_sales_account_code) || skipHire;
     const permit = asText(body.permit_sales_account_code);
+    const extension = asText(body.term_hire_extension_sales_account_code);
     const cardClearing = asText(body.card_clearing_account_code);
     const cashBank = asText(body.cash_bank_account_code);
 
     const salesCategories = body.sales_categories;
-    const useDefaults =
-      typeof body.use_defaults_when_missing === "boolean"
-        ? body.use_defaults_when_missing
-        : true;
+    const useDefaults = typeof body.use_defaults_when_missing === "boolean" ? body.use_defaults_when_missing : true;
 
     const errors = [];
 
     const e1 = validateAccountCode(skipHire, "skip_hire_sales_account_code");
-    const e2 = validateAccountCode(termHireExtension, "term_hire_extension_sales_account_code");
-    const e3 = validateAccountCode(permit, "permit_sales_account_code");
+    const e2 = validateAccountCode(permit, "permit_sales_account_code");
+    const e3 = validateAccountCode(extension, "term_hire_extension_sales_account_code");
     const e4 = validateAccountCode(cardClearing, "card_clearing_account_code");
     const e5 = validateAccountCode(cashBank, "cash_bank_account_code");
 
@@ -148,24 +140,19 @@ export default async function handler(req, res) {
     const ensured = await ensureDefaultsRow(subscriberId, supabaseAdmin);
     if (!ensured.ok) return json(res, 500, { ok: false, error: ensured.error });
 
-    const updatePayload = {
-      skip_hire_sales_account_code: skipHire,
-      term_hire_extension_sales_account_code: termHireExtension,
-      permit_sales_account_code: permit,
-      card_clearing_account_code: cardClearing,
-      cash_bank_account_code: cashBank,
-      use_defaults_when_missing: useDefaults,
-    };
-
-    if (salesCategories !== undefined) {
-      updatePayload.sales_categories = salesCategories;
-    }
-
     const { data, error } = await supabaseAdmin
       .from("invoice_settings")
-      .update(updatePayload)
+      .update({
+        skip_hire_sales_account_code: skipHire,
+        permit_sales_account_code: permit,
+        term_hire_extension_sales_account_code: extension,
+        card_clearing_account_code: cardClearing,
+        cash_bank_account_code: cashBank,
+        sales_categories: salesCategories,
+        use_defaults_when_missing: useDefaults,
+      })
       .eq("subscriber_id", subscriberId)
-      .select(SETTINGS_SELECT)
+      .select("*")
       .single();
 
     if (error) return json(res, 500, { ok: false, error: error.message });
