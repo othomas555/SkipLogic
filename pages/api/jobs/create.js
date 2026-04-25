@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { createInvoiceForJob } from "../xero/xero_create_invoice";
+import { sendJobEmail } from "../../../lib/jobEmails";
 
 function clampMoney(n) {
   const x = Number(n);
@@ -15,7 +16,7 @@ function asText(x) {
 
 function isUuidString(x) {
   const t = String(x || "").trim();
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(t);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i.test(t);
 }
 
 function uuidOrNull(x) {
@@ -102,6 +103,33 @@ async function geocodeAddress(address) {
   }
 }
 
+function chooseBookingTemplateKey(body, job) {
+  const bodyJobType = asText(body.job_type).toLowerCase();
+  const swapRole = asText(body.swap_role).toLowerCase();
+
+  if (
+    bodyJobType === "swap" ||
+    swapRole ||
+    job?.swap_group_id ||
+    job?.swap_parent_job_id ||
+    job?.swap_role
+  ) {
+    return "swap_confirmed";
+  }
+
+  if (
+    bodyJobType === "custom" ||
+    bodyJobType === "custom_skip" ||
+    bodyJobType === "custom-skip" ||
+    body.custom_skip === true ||
+    body.is_custom_skip === true
+  ) {
+    return "custom_skip_confirmed";
+  }
+
+  return "booking_confirmed";
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -117,9 +145,6 @@ export default async function handler(req, res) {
     const supabase = getSupabaseAdmin();
     const body = req.body && typeof req.body === "object" ? req.body : {};
 
-    // -------------------------------------------------------------------------
-    // SaaS enforcement: billing gate + active job limit gate (server-side)
-    // -------------------------------------------------------------------------
     const { data: subRow, error: subErr } = await supabase
       .from("subscribers")
       .select("id, plan_variant_id, subscription_status, trial_ends_at, grace_ends_at, locked_at")
@@ -149,7 +174,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Active jobs limit (based on plan_variants.active_jobs_limit)
     let activeJobsLimit = null;
 
     if (subRow.plan_variant_id) {
@@ -201,9 +225,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // -------------------------------------------------------------------------
-    // Existing job creation logic
-    // -------------------------------------------------------------------------
     const customer_id = asText(body.customer_id);
     const skip_type_id = asText(body.skip_type_id);
     const payment_type = asText(body.payment_type);
@@ -269,9 +290,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // -------------------------------------------------------------------------
-    // NEW: geocode newly created jobs
-    // -------------------------------------------------------------------------
     let geocode = null;
     try {
       const address = buildAddress(job);
@@ -298,7 +316,6 @@ export default async function handler(req, res) {
       console.warn("jobs/create geocode block failed:", e?.message || e);
     }
 
-    // Initial delivery event
     const { error: eventError } = await supabase.rpc("create_job_event", {
       _subscriber_id: subscriberId,
       _job_id: job.id,
@@ -317,7 +334,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Auto-invoice for cash/card ONLY if create_invoice true
     let invoice = null;
     if (create_invoice && (payment_type === "card" || payment_type === "cash")) {
       try {
@@ -328,10 +344,27 @@ export default async function handler(req, res) {
       }
     }
 
+    let email = null;
+    try {
+      const templateKey = chooseBookingTemplateKey(body, job);
+
+      email = await sendJobEmail({
+        subscriberId,
+        jobId: job.id,
+        templateKey,
+      });
+    } catch (e) {
+      email = {
+        ok: false,
+        error: String(e?.message || e),
+      };
+    }
+
     return res.status(200).json({
       ok: true,
       job,
       invoice,
+      email,
       geocode: geocode
         ? {
             ok: true,
