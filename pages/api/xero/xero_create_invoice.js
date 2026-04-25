@@ -2,25 +2,6 @@
 //
 // POST { job_id }
 // Auth: Office user via Authorization: Bearer <supabase access token>
-//
-// Behaviour:
-// - card   → create AUTHORISED invoice. If job is already marked paid in SkipLogic (paid_at set),
-//            then create Payment to card clearing account. Otherwise leave unpaid.
-// - cash   → create AUTHORISED invoice, unpaid
-// - account→ append to ONE DRAFT monthly invoice per customer per month (xero_monthly_invoices table)
-//
-// VAT / NO VAT:
-// - Skip hire uses tax rate name: "20% (VAT on Income)"
-// - Permit uses tax rate name: "No VAT"
-// We resolve the TaxType values dynamically from Xero /TaxRates.
-//
-// IMPORTANT (Option B):
-// - DO NOT set InvoiceNumber. Let Xero auto-assign (INV-####).
-// - Use job.job_number in Reference for traceability.
-//
-// NOTE ABOUT ADDRESS ON INVOICE:
-// - Xero shows the address from the *Contact* record (usually the Postal/POBOX address).
-// - So we upsert the customer's billing address onto the Xero contact before invoicing.
 
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
@@ -28,12 +9,10 @@ import { getValidXeroClient } from "../../../lib/xeroOAuth";
 
 const XERO_API_BASE = "https://api.xero.com/api.xro/2.0";
 
-// ENV DEFAULTS (used only as fallback if subscriber settings allow)
 const ENV_SKIP_SALES_FALLBACK = process.env.XERO_SALES_ACCOUNT_CODE || "200";
 const ENV_PERMIT_SALES_FALLBACK = process.env.XERO_PERMIT_SALES_ACCOUNT_CODE || "215";
 const ENV_CARD_CLEARING_FALLBACK = process.env.XERO_CARD_CLEARING_ACCOUNT_CODE || "800";
 
-// TAX RATE NAMES (as seen in Xero)
 const TAX_RATE_NAME_VAT_INCOME = "20% (VAT on Income)";
 const TAX_RATE_NAME_NO_VAT = "No VAT";
 
@@ -153,7 +132,7 @@ function buildContactName(customer) {
   return person || "Unknown Customer";
 }
 
-function buildSkipLineDescription(job, customer) {
+function buildSkipLineDescription(job) {
   const base = (job.notes || `Skip hire ${job.job_number || ""}`.trim() || "Skip hire").trim();
   const loc = job.site_postcode ? ` @ ${job.site_postcode}` : "";
   return `${base}${loc}`.trim();
@@ -162,6 +141,20 @@ function buildSkipLineDescription(job, customer) {
 function buildPermitLineDescription(permitName, job) {
   const loc = job.site_postcode ? ` @ ${job.site_postcode}` : "";
   return `Permit – ${permitName || "Council"}${loc}`.trim();
+}
+
+function buildExtensionLineDescription({ job, extension }) {
+  const weeks = Number(extension?.weeks || 1);
+  const parts = [
+    `Term hire extension${weeks === 1 ? "" : ` (${weeks} weeks)`}`,
+    job.job_number ? `Job ${job.job_number}` : "",
+    extension?.old_hire_end_date && extension?.new_hire_end_date
+      ? `${extension.old_hire_end_date} to ${extension.new_hire_end_date}`
+      : "",
+    job.site_postcode ? `@ ${job.site_postcode}` : "",
+  ].filter(Boolean);
+
+  return parts.join(" – ");
 }
 
 async function getTaxTypeByRateName({ accessToken, tenantId, rateName }) {
@@ -178,8 +171,6 @@ async function getTaxTypeByRateName({ accessToken, tenantId, rateName }) {
   return String(match.TaxType);
 }
 
-// ---- Address helpers (Xero invoice uses contact postal address) ----
-
 function buildXeroPostalAddressFromCustomer(customer) {
   const line1 = asText(customer.billing_address_line1);
   const line2 = asText(customer.billing_address_line2);
@@ -188,17 +179,15 @@ function buildXeroPostalAddressFromCustomer(customer) {
   const postcode = asText(customer.billing_postcode);
   const country = asText(customer.billing_country) || "United Kingdom";
 
-  // If we have *nothing*, skip updating.
   const hasAnything = !!(line1 || line2 || city || region || postcode || country);
   if (!hasAnything) return null;
 
-  // Xero generally wants something meaningful; require at least line1 or postcode/city.
   const hasUseful =
     !!line1 || (!!postcode && (!!city || !!region)) || (!!city && !!postcode);
   if (!hasUseful) return null;
 
   return {
-    AddressType: "POBOX", // Postal address shown on invoices
+    AddressType: "POBOX",
     AddressLine1: line1 || undefined,
     AddressLine2: line2 || undefined,
     City: city || undefined,
@@ -211,22 +200,19 @@ function buildXeroPostalAddressFromCustomer(customer) {
 async function upsertContactPostalAddress({ accessToken, tenantId, contactId, postalAddress }) {
   if (!postalAddress) return;
 
-  // Update the contact with a POBOX address. This is idempotent (Xero will store/replace).
-  const payload = {
-    Contacts: [
-      {
-        ContactID: String(contactId),
-        Addresses: [postalAddress],
-      },
-    ],
-  };
-
   await xeroRequest({
     accessToken,
     tenantId,
     path: "/Contacts",
     method: "POST",
-    body: payload,
+    body: {
+      Contacts: [
+        {
+          ContactID: String(contactId),
+          Addresses: [postalAddress],
+        },
+      ],
+    },
   });
 }
 
@@ -257,30 +243,27 @@ async function findOrCreateContact({ accessToken, tenantId, customer }) {
     }
   }
 
-  const payload = {
-    Contacts: [
-      {
-        Name: name,
-        EmailAddress: customer.email || undefined,
-        ContactNumber: contactNumber || undefined,
-        Addresses: postalAddress ? [postalAddress] : undefined,
-      },
-    ],
-  };
-
   const created = await xeroRequest({
     accessToken,
     tenantId,
     path: "/Contacts",
     method: "POST",
-    body: payload,
+    body: {
+      Contacts: [
+        {
+          Name: name,
+          EmailAddress: customer.email || undefined,
+          ContactNumber: contactNumber || undefined,
+          Addresses: postalAddress ? [postalAddress] : undefined,
+        },
+      ],
+    },
   });
 
   const contact = Array.isArray(created?.Contacts) ? created.Contacts[0] : null;
   if (!contact?.ContactID) throw new Error("Failed to create Xero contact");
 
   const id = String(contact.ContactID);
-  // Ensure address is set (belt & braces; if create ignored it for any reason)
   await upsertContactPostalAddress({ accessToken, tenantId, contactId: id, postalAddress });
   return id;
 }
@@ -329,23 +312,21 @@ async function createPaymentInXero({ accessToken, tenantId, invoiceId, amount, c
   assert(amount > 0, "Payment amount must be > 0");
   assert(looksLikeAccountCode(cardClearingAccountCode), "Card clearing account code is missing/invalid");
 
-  const payload = {
-    Payments: [
-      {
-        Invoice: { InvoiceID: invoiceId },
-        Account: { Code: String(cardClearingAccountCode) },
-        Date: ymdTodayUTC(),
-        Amount: Number(amount),
-      },
-    ],
-  };
-
   await xeroRequest({
     accessToken,
     tenantId,
     path: "/Payments",
     method: "PUT",
-    body: payload,
+    body: {
+      Payments: [
+        {
+          Invoice: { InvoiceID: invoiceId },
+          Account: { Code: String(cardClearingAccountCode) },
+          Date: ymdTodayUTC(),
+          Amount: Number(amount),
+        },
+      ],
+    },
   });
 }
 
@@ -356,7 +337,195 @@ function periodYmUTC() {
   return `${y}-${m}`;
 }
 
-// ✅ Shared helper for Step B
+async function insertXeroTermHireEvent(supabase, payload) {
+  try {
+    await supabase.from("term_hire_events").insert(payload);
+  } catch (e) {
+    console.error("term_hire_events insert failed", e);
+  }
+}
+
+export async function createTermHireExtensionInvoice({
+  subscriberId,
+  jobId,
+  stripeSessionId,
+}) {
+  const supabase = getSupabaseAdmin();
+
+  if (!subscriberId) throw new Error("subscriberId is required");
+  if (!jobId) throw new Error("jobId is required");
+  if (!stripeSessionId) throw new Error("stripeSessionId is required");
+
+  const { data: existingEvents, error: existingEventErr } = await supabase
+    .from("term_hire_events")
+    .select("id, metadata")
+    .eq("subscriber_id", subscriberId)
+    .eq("job_id", jobId)
+    .eq("event_type", "extension_xero_invoice_created")
+    .contains("metadata", { stripe_session_id: stripeSessionId })
+    .limit(1);
+
+  if (existingEventErr) throw existingEventErr;
+
+  if (Array.isArray(existingEvents) && existingEvents.length > 0) {
+    return {
+      ok: true,
+      mode: "already",
+      invoiceId: existingEvents[0]?.metadata?.xero_invoice_id || null,
+      invoiceNumber: existingEvents[0]?.metadata?.xero_invoice_number || null,
+    };
+  }
+
+  const { data: extension, error: extensionErr } = await supabase
+    .from("term_hire_extensions")
+    .select("*")
+    .eq("subscriber_id", subscriberId)
+    .eq("job_id", jobId)
+    .eq("stripe_session_id", stripeSessionId)
+    .eq("status", "paid")
+    .maybeSingle();
+
+  if (extensionErr) throw extensionErr;
+  if (!extension) throw new Error("Paid term hire extension not found");
+
+  const amountPaid = Number(extension.amount || 0);
+  if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
+    throw new Error("Paid term hire extension has no valid amount");
+  }
+
+  const { data: job, error: jobErr } = await supabase
+    .from("jobs")
+    .select(
+      `
+      id,
+      job_number,
+      subscriber_id,
+      customer_id,
+      notes,
+      scheduled_date,
+      site_postcode
+    `
+    )
+    .eq("id", jobId)
+    .eq("subscriber_id", subscriberId)
+    .single();
+
+  if (jobErr || !job) throw new Error("Job not found for extension invoice");
+
+  const { data: customer, error: custErr } = await supabase
+    .from("customers")
+    .select(
+      `
+      id,
+      first_name,
+      last_name,
+      company_name,
+      email,
+      is_credit_account,
+      account_code,
+
+      billing_address_line1,
+      billing_address_line2,
+      billing_city,
+      billing_region,
+      billing_postcode,
+      billing_country
+    `
+    )
+    .eq("id", job.customer_id)
+    .eq("subscriber_id", subscriberId)
+    .single();
+
+  if (custErr || !customer) throw new Error("Customer not found for extension invoice");
+
+  const invoiceAccounts = await loadInvoiceAccountCodes({ supabase, subscriberId });
+  const XERO_SKIP_SALES_ACCOUNT_CODE = invoiceAccounts.skipHireSalesAccountCode;
+  const XERO_CARD_CLEARING_ACCOUNT_CODE = invoiceAccounts.cardClearingAccountCode;
+
+  assert(looksLikeAccountCode(XERO_SKIP_SALES_ACCOUNT_CODE), "Skip hire sales account code is missing/invalid");
+  assert(looksLikeAccountCode(XERO_CARD_CLEARING_ACCOUNT_CODE), "Card clearing account code is missing/invalid");
+
+  const xc = await getValidXeroClient(subscriberId);
+  if (!xc?.tenantId) throw new Error("Xero connected but no organisation selected");
+
+  const accessToken = xc.accessToken;
+  const tenantId = xc.tenantId;
+
+  const taxTypeVatIncome = await getTaxTypeByRateName({
+    accessToken,
+    tenantId,
+    rateName: TAX_RATE_NAME_VAT_INCOME,
+  });
+
+  const contactId = await findOrCreateContact({ accessToken, tenantId, customer });
+
+  const lineItem = {
+    Description: buildExtensionLineDescription({ job, extension }),
+    Quantity: 1,
+    UnitAmount: amountPaid,
+    AccountCode: XERO_SKIP_SALES_ACCOUNT_CODE,
+    TaxType: taxTypeVatIncome,
+  };
+
+  const invoicePayload = {
+    Type: "ACCREC",
+    Status: "AUTHORISED",
+    Contact: { ContactID: contactId },
+    Date: ymdTodayUTC(),
+    DueDate: ymdTodayUTC(),
+    Reference: job.job_number
+      ? `TERM-HIRE-EXTENSION-${job.job_number}`
+      : `TERM-HIRE-EXTENSION-${job.id}`,
+    LineAmountTypes: "Inclusive",
+    LineItems: [lineItem],
+  };
+
+  const inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
+
+  await createPaymentInXero({
+    accessToken,
+    tenantId,
+    invoiceId: String(inv.InvoiceID),
+    amount: amountPaid,
+    cardClearingAccountCode: XERO_CARD_CLEARING_ACCOUNT_CODE,
+  });
+
+  const invAfter = await getInvoiceById({
+    accessToken,
+    tenantId,
+    invoiceId: String(inv.InvoiceID),
+  });
+
+  await insertXeroTermHireEvent(supabase, {
+    subscriber_id: subscriberId,
+    job_id: job.id,
+    customer_id: customer.id,
+    channel: "xero",
+    event_type: "extension_xero_invoice_created",
+    template_key: null,
+    recipient: customer.email || null,
+    metadata: {
+      stripe_session_id: stripeSessionId,
+      extension_id: extension.id || null,
+      xero_invoice_id: invAfter.InvoiceID || inv.InvoiceID || null,
+      xero_invoice_number: invAfter.InvoiceNumber || inv.InvoiceNumber || null,
+      xero_invoice_status: invAfter.Status || inv.Status || null,
+      amount: amountPaid,
+      old_hire_end_date: extension.old_hire_end_date || null,
+      new_hire_end_date: extension.new_hire_end_date || null,
+      weeks: extension.weeks || null,
+    },
+  });
+
+  return {
+    ok: true,
+    mode: "extension",
+    invoiceId: String(invAfter.InvoiceID || inv.InvoiceID),
+    invoiceNumber: invAfter.InvoiceNumber || inv.InvoiceNumber || null,
+    invoiceStatus: invAfter.Status || inv.Status || null,
+  };
+}
+
 export async function createInvoiceForJob({ subscriberId, jobId }) {
   const supabase = getSupabaseAdmin();
 
@@ -400,7 +569,6 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
 
   if (jobErr || !job) throw new Error("Job not found");
 
-  // Basic Step B guard (full idempotency is Step C)
   if (job.xero_invoice_id) {
     return {
       ok: true,
@@ -463,7 +631,6 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
     rateName: TAX_RATE_NAME_NO_VAT,
   });
 
-  // ✅ Contact is ensured to have postal address (billing) before invoice creation
   const contactId = await findOrCreateContact({ accessToken, tenantId, customer });
 
   let permitName = "Council";
@@ -481,7 +648,7 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
   assert(looksLikeAccountCode(XERO_PERMIT_SALES_ACCOUNT_CODE), "Permit sales account code is missing/invalid");
 
   const skipLine = {
-    Description: buildSkipLineDescription(job, customer),
+    Description: buildSkipLineDescription(job),
     Quantity: 1,
     UnitAmount: skipAmountIncVat,
     AccountCode: XERO_SKIP_SALES_ACCOUNT_CODE,
@@ -531,13 +698,9 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       LineItems: lineItems,
     };
 
-    // 1) Create invoice
     const inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
-
-    // ✅ CRITICAL: always persist the invoice link immediately
     await writeJobXeroFields(inv);
 
-    // 2) Card: only apply payment if the job is already marked paid in SkipLogic
     if (paymentType === "card" && job.paid_at) {
       const totalToPay = skipAmountIncVat + (permitLine ? Number(permitAmountNoVat) : 0);
 
