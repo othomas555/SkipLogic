@@ -1,5 +1,6 @@
 import Stripe from "stripe";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
+import { createTermHireExtensionInvoice } from "../xero/xero_create_invoice";
 
 export const config = {
   api: { bodyParser: false },
@@ -260,6 +261,30 @@ async function queueExtensionConfirmationEmail({
   });
 }
 
+async function queueXeroInvoiceFailureEvent({
+  supabase,
+  subscriberId,
+  job,
+  customerId,
+  session,
+  error,
+}) {
+  await insertTermHireEvent(supabase, {
+    subscriber_id: subscriberId,
+    job_id: job.id,
+    customer_id: customerId || job.customer_id || null,
+    channel: "xero",
+    event_type: "extension_xero_invoice_failed",
+    template_key: null,
+    recipient: null,
+    metadata: {
+      stripe_session_id: session.id,
+      stripe_payment_intent_id: session.payment_intent || null,
+      error: String(error?.message || error || "Unknown Xero invoice error"),
+    },
+  });
+}
+
 async function handleTermHireCheckoutCompleted(supabase, session) {
   const flow = String(session?.metadata?.flow || "");
   if (flow !== "term_hire_extension") {
@@ -436,6 +461,39 @@ async function handleTermHireCheckoutCompleted(supabase, session) {
     newHireEndDate,
     session,
   });
+
+  try {
+    const xeroResult = await createTermHireExtensionInvoice({
+      subscriberId,
+      jobId: job.id,
+      stripeSessionId: session.id,
+    });
+
+    await insertTermHireEvent(supabase, {
+      subscriber_id: subscriberId,
+      job_id: job.id,
+      customer_id: customerId || job.customer_id || null,
+      channel: "xero",
+      event_type: "extension_xero_invoice_result",
+      template_key: null,
+      recipient: null,
+      metadata: {
+        stripe_session_id: session.id,
+        result: xeroResult || null,
+      },
+    });
+  } catch (xeroErr) {
+    console.error("Failed to create Xero invoice for term hire extension", xeroErr);
+
+    await queueXeroInvoiceFailureEvent({
+      supabase,
+      subscriberId,
+      job,
+      customerId: customerId || job.customer_id || null,
+      session,
+      error: xeroErr,
+    });
+  }
 
   return { handled: true, ok: true };
 }
