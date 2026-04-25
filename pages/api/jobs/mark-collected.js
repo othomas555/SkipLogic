@@ -1,6 +1,7 @@
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { sendJobEmail } from "../../../lib/jobEmails";
+import { createWtnForJob, buildWtnPublicUrl } from "../../../lib/wtn";
 
 function isYmd(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(v || "").trim());
@@ -104,6 +105,27 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: updateErr.message || "Failed to update job" });
     }
 
+    let wtn = null;
+    let wtnUrl = "";
+
+    try {
+      const wtnOut = await createWtnForJob({
+        subscriberId,
+        jobId: job.id,
+        transferDate: collectedDate,
+      });
+
+      wtn = wtnOut;
+      if (wtnOut?.wtn?.id) {
+        wtnUrl = buildWtnPublicUrl(wtnOut.wtn.id);
+      }
+    } catch (e) {
+      wtn = {
+        ok: false,
+        error: String(e?.message || e),
+      };
+    }
+
     let email = null;
 
     try {
@@ -111,7 +133,21 @@ export default async function handler(req, res) {
         subscriberId,
         jobId: job.id,
         templateKey: "collected_confirmation",
+        extraTags: {
+          wtn_url: wtnUrl,
+        },
       });
+
+      if (wtn?.wtn?.id) {
+        await supabase
+          .from("wtn_records")
+          .update({
+            emailed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", wtn.wtn.id)
+          .eq("subscriber_id", subscriberId);
+      }
     } catch (e) {
       email = {
         ok: false,
@@ -122,6 +158,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       job: updated,
+      wtn,
+      wtn_url: wtnUrl,
       email,
     });
   } catch (err) {
