@@ -14,21 +14,21 @@ function normaliseStatus(v) {
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   try {
     const auth = await requireOfficeUser(req);
 
     if (!auth?.ok) {
-      return res.status(401).json({ error: auth?.error || "Unauthorised" });
+      return res.status(401).json({ ok: false, error: auth?.error || "Unauthorised" });
     }
 
     const subscriberId = String(auth.subscriber_id || "");
     const userId = String(auth.user?.id || "");
 
     if (!subscriberId) {
-      return res.status(401).json({ error: "Missing subscriber_id on profile" });
+      return res.status(401).json({ ok: false, error: "Missing subscriber_id on profile" });
     }
 
     const supabase = getSupabaseAdmin();
@@ -37,11 +37,11 @@ export default async function handler(req, res) {
     const collectedDate = String(req.body?.collected_date || "").trim();
 
     if (!jobId) {
-      return res.status(400).json({ error: "Missing job_id" });
+      return res.status(400).json({ ok: false, error: "Missing job_id" });
     }
 
     if (!isYmd(collectedDate)) {
-      return res.status(400).json({ error: "collected_date must be YYYY-MM-DD" });
+      return res.status(400).json({ ok: false, error: "collected_date must be YYYY-MM-DD" });
     }
 
     const { data: job, error: jobErr } = await supabase
@@ -61,17 +61,17 @@ export default async function handler(req, res) {
       .maybeSingle();
 
     if (jobErr) {
-      return res.status(500).json({ error: jobErr.message || "Failed to load job" });
+      return res.status(500).json({ ok: false, error: jobErr.message || "Failed to load job" });
     }
 
     if (!job) {
-      return res.status(404).json({ error: "Job not found" });
+      return res.status(404).json({ ok: false, error: "Job not found" });
     }
 
     const currentStatus = normaliseStatus(job.job_status);
 
     if (currentStatus === "cancelled" || job.cancelled_at) {
-      return res.status(400).json({ error: "Cancelled jobs cannot be marked as collected" });
+      return res.status(400).json({ ok: false, error: "Cancelled jobs cannot be marked as collected" });
     }
 
     const patch = {
@@ -102,28 +102,31 @@ export default async function handler(req, res) {
       .single();
 
     if (updateErr) {
-      return res.status(500).json({ error: updateErr.message || "Failed to update job" });
+      return res.status(500).json({ ok: false, error: updateErr.message || "Failed to update job" });
     }
 
-    let wtn = null;
+    let wtnOut = null;
     let wtnUrl = "";
 
     try {
-      const wtnOut = await createWtnForJob({
+      wtnOut = await createWtnForJob({
         subscriberId,
         jobId: job.id,
         transferDate: collectedDate,
       });
 
-      wtn = wtnOut;
       if (wtnOut?.wtn?.id) {
         wtnUrl = buildWtnPublicUrl(wtnOut.wtn.id);
       }
     } catch (e) {
-      wtn = {
+      console.error("mark-collected WTN generation failed", e);
+
+      return res.status(500).json({
         ok: false,
-        error: String(e?.message || e),
-      };
+        error: "Job was marked collected, but WTN generation failed",
+        details: String(e?.message || e),
+        job: updated,
+      });
     }
 
     let email = null;
@@ -135,17 +138,20 @@ export default async function handler(req, res) {
         templateKey: "collected_confirmation",
         extraTags: {
           wtn_url: wtnUrl,
+          waste_transfer_note_url: wtnUrl,
+          collection_date: collectedDate,
+          collected_date: collectedDate,
         },
       });
 
-      if (wtn?.wtn?.id) {
+      if (wtnOut?.wtn?.id) {
         await supabase
           .from("wtn_records")
           .update({
             emailed_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           })
-          .eq("id", wtn.wtn.id)
+          .eq("id", wtnOut.wtn.id)
           .eq("subscriber_id", subscriberId);
       }
     } catch (e) {
@@ -158,13 +164,14 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       job: updated,
-      wtn,
+      wtn: wtnOut,
       wtn_url: wtnUrl,
       email,
     });
   } catch (err) {
     console.error("mark-collected error", err);
     return res.status(500).json({
+      ok: false,
       error: err?.message || "Unexpected error marking job as collected",
     });
   }
