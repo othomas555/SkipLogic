@@ -1,87 +1,102 @@
-const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
-const SENDGRID_FROM = process.env.SENDGRID_FROM_EMAIL;
-const SENDGRID_TO = process.env.SENDGRID_TO_EMAIL;
+import { requireOfficeUser } from "../../lib/requireOfficeUser";
+import { getSupabaseAdmin } from "../../lib/supabaseAdmin";
+import { sendJobEmail } from "../../lib/jobEmails";
+
+function asText(v) {
+  return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
+}
+
+async function resolveJobId({ supabase, subscriberId, body }) {
+  const direct =
+    asText(body.job_id) ||
+    asText(body.jobId) ||
+    asText(body.id) ||
+    asText(body.booking_id) ||
+    "";
+
+  if (direct) return direct;
+
+  const jobNumber = asText(body.job_number) || asText(body.booking_number);
+  if (!jobNumber) return "";
+
+  const { data, error } = await supabase
+    .from("jobs")
+    .select("id")
+    .eq("subscriber_id", subscriberId)
+    .eq("job_number", jobNumber)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data?.id || "";
+}
+
+function chooseTemplateKey(body) {
+  const explicit = asText(body.template_key);
+  if (explicit) return explicit;
+
+  const jobType = asText(body.job_type).toLowerCase();
+
+  if (jobType === "swap") return "swap_confirmed";
+  if (jobType === "custom" || jobType === "custom_skip" || jobType === "custom-skip") {
+    return "custom_skip_confirmed";
+  }
+
+  return "booking_confirmed";
+}
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  if (!SENDGRID_API_KEY || !SENDGRID_FROM || !SENDGRID_TO) {
-    return res.status(500).json({
-      error:
-        "Missing SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, or SENDGRID_TO_EMAIL env vars",
-    });
-  }
-
   try {
-    // ✅ Includes customerEmail, with proper commas
-    const { job, customerName, customerEmail, jobPrice } = req.body || {};
-
-    if (!job) {
-      return res.status(400).json({ error: "Missing job in request body" });
+    if (req.method !== "POST") {
+      return res.status(405).json({
+        ok: false,
+        error: "Method not allowed",
+      });
     }
 
-    const subject = `New skip booking: ${job.job_number || job.id}`;
-    const priceText =
-      jobPrice && jobPrice !== "" ? `Price: £${jobPrice}\n\n` : "";
-
-    const text = `
-A new skip booking has been created.
-
-Job number: ${job.job_number || job.id}
-Customer: ${customerName || "Unknown"}
-${priceText}Site: ${job.site_name || "(no site name)"}
-Postcode: ${job.site_postcode || ""}
-Delivery date: ${job.scheduled_date || ""}
-Payment type: ${job.payment_type || ""}
-
-This is an automated email from SkipLogic.
-`;
-
-    // ✅ Decide where to send
-    if (!customerEmail) {
-      console.warn("No customerEmail provided, defaulting to SENDGRID_TO");
+    const auth = await requireOfficeUser(req);
+    if (!auth?.ok) {
+      return res.status(401).json({
+        ok: false,
+        error: auth?.error || "Unauthorised",
+      });
     }
 
-    const toAddress = customerEmail || SENDGRID_TO;
+    const subscriberId = auth.subscriber_id;
+    const supabase = getSupabaseAdmin();
+    const body = req.body && typeof req.body === "object" ? req.body : {};
 
-    const personalizations = [
-      {
-        to: [{ email: toAddress }],
+    const jobId = await resolveJobId({ supabase, subscriberId, body });
+
+    if (!jobId) {
+      return res.status(400).json({
+        ok: false,
+        error: "job_id is required",
+      });
+    }
+
+    const templateKey = chooseTemplateKey(body);
+
+    const out = await sendJobEmail({
+      subscriberId,
+      jobId,
+      templateKey,
+      extraTags: {
+        to_email: asText(body.to_email) || undefined,
       },
-    ];
-
-    // ✅ Optionally BCC the office if sending to the customer
-    if (customerEmail && SENDGRID_TO && SENDGRID_TO !== customerEmail) {
-      personalizations[0].bcc = [{ email: SENDGRID_TO }];
-    }
-
-    const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${SENDGRID_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        personalizations,
-        from: { email: SENDGRID_FROM },
-        subject,
-        content: [{ type: "text/plain", value: text }],
-      }),
     });
 
-    if (response.status !== 202) {
-      const msg = await response.text();
-      console.error("SendGrid error:", msg);
-      return res.status(500).json({ error: "SendGrid error", details: msg });
-    }
-
-    return res.status(200).json({ success: true });
+    return res.status(200).json({
+      ok: true,
+      template_key: templateKey,
+      job_id: jobId,
+      ...out,
+    });
   } catch (err) {
-    console.error("Unexpected error:", err);
-    return res
-      .status(500)
-      .json({ error: "Unexpected error", details: err?.message || err });
+    console.error("send_booking_email error", err);
+    return res.status(500).json({
+      ok: false,
+      error: "Failed to send booking email",
+      details: String(err?.message || err),
+    });
   }
 }
