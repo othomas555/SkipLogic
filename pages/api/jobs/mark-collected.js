@@ -1,7 +1,12 @@
 import { requireOfficeUser } from "../../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { sendJobEmail } from "../../../lib/jobEmails";
-import { createWtnForJob, buildWtnPublicUrl } from "../../../lib/wtn";
+import {
+  createWtnForJob,
+  buildWtnPublicUrl,
+  buildWtnPdfUrl,
+  generateWtnPdfBuffer,
+} from "../../../lib/wtn";
 
 function isYmd(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(v || "").trim());
@@ -71,7 +76,9 @@ export default async function handler(req, res) {
     const currentStatus = normaliseStatus(job.job_status);
 
     if (currentStatus === "cancelled" || job.cancelled_at) {
-      return res.status(400).json({ ok: false, error: "Cancelled jobs cannot be marked as collected" });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Cancelled jobs cannot be marked as collected" });
     }
 
     const patch = {
@@ -107,6 +114,8 @@ export default async function handler(req, res) {
 
     let wtnOut = null;
     let wtnUrl = "";
+    let wtnPdfUrl = "";
+    let attachments = [];
 
     try {
       wtnOut = await createWtnForJob({
@@ -117,6 +126,18 @@ export default async function handler(req, res) {
 
       if (wtnOut?.wtn?.id) {
         wtnUrl = buildWtnPublicUrl(wtnOut.wtn.id);
+        wtnPdfUrl = buildWtnPdfUrl(wtnOut.wtn.id);
+
+        const pdfBuffer = generateWtnPdfBuffer(wtnOut.wtn);
+        const safeNumber = String(wtnOut.wtn.wtn_number || "wtn").replace(/[^A-Za-z0-9_-]/g, "-");
+
+        attachments = [
+          {
+            filename: `${safeNumber}.pdf`,
+            content: pdfBuffer,
+            content_type: "application/pdf",
+          },
+        ];
       }
     } catch (e) {
       console.error("mark-collected WTN generation failed", e);
@@ -139,9 +160,11 @@ export default async function handler(req, res) {
         extraTags: {
           wtn_url: wtnUrl,
           waste_transfer_note_url: wtnUrl,
+          wtn_pdf_url: wtnPdfUrl,
           collection_date: collectedDate,
           collected_date: collectedDate,
         },
+        attachments,
       });
 
       if (wtnOut?.wtn?.id) {
@@ -166,6 +189,7 @@ export default async function handler(req, res) {
       job: updated,
       wtn: wtnOut,
       wtn_url: wtnUrl,
+      wtn_pdf_url: wtnPdfUrl,
       email,
     });
   } catch (err) {
