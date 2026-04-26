@@ -712,10 +712,9 @@ export default function BookJobPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          job: inserted,
-          customerName: customerLabel,
-          customerEmail,
-          jobPrice: jobPriceValue,
+          job_id: inserted.id,
+          job_number: inserted.job_number || "",
+          template_key: "booking_confirmed",
         }),
       });
     } catch (err) {
