@@ -156,6 +156,8 @@ export default function BookCustomJobPage() {
   }
 
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [siteName, setSiteName] = useState("");
@@ -230,6 +232,7 @@ export default function BookCustomJobPage() {
           last_name,
           company_name,
           email,
+          phone,
           address_line1,
           address_line2,
           address_line3,
@@ -272,6 +275,33 @@ export default function BookCustomJobPage() {
     return baseName || "Unknown customer";
   }
 
+  function formatCustomerSubLabel(c) {
+    const bits = [];
+    if (c.phone) bits.push(c.phone);
+    if (c.email) bits.push(c.email);
+    if (c.postcode) bits.push(c.postcode);
+    return bits.join(" • ");
+  }
+
+  function customerMatchesSearch(c, query) {
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return true;
+
+    const fields = [
+      c.first_name,
+      c.last_name,
+      c.company_name,
+      c.email,
+      c.phone,
+      c.postcode,
+      c.address_line1,
+      c.address_line2,
+      c.address_line3,
+    ];
+
+    return fields.some((field) => String(field || "").toLowerCase().includes(q));
+  }
+
   function findCustomerNameById(customerId) {
     const c = customers.find((cust) => cust.id === customerId);
     if (!c) return "Unknown customer";
@@ -302,6 +332,21 @@ export default function BookCustomJobPage() {
     setSameAsCustomerAddress(checked);
     if (checked && selectedCustomerId) applyCustomerAddressToSite(selectedCustomerId);
   }
+
+  const filteredCustomers = useMemo(() => {
+    const q = customerSearch.trim();
+
+    if (!q) {
+      return customers.slice(0, 25);
+    }
+
+    return customers.filter((c) => customerMatchesSearch(c, q)).slice(0, 25);
+  }, [customers, customerSearch]);
+
+  const selectedCustomer = useMemo(() => {
+    if (!selectedCustomerId) return null;
+    return customers.find((c) => c.id === selectedCustomerId) || null;
+  }, [customers, selectedCustomerId]);
 
   const permitInfo = useMemo(() => {
     if (placementType !== "permit") return null;
@@ -379,6 +424,7 @@ export default function BookCustomJobPage() {
           last_name,
           company_name,
           email,
+          phone,
           address_line1,
           address_line2,
           address_line3,
@@ -402,6 +448,8 @@ export default function BookCustomJobPage() {
 
       setCustomers((prev) => [...prev, data]);
       setSelectedCustomerId(data.id);
+      setCustomerSearch(formatCustomerLabel(data));
+      setCustomerSearchOpen(false);
 
       if (sameAsCustomerAddress) applyCustomerAddressToSite(data.id);
 
@@ -552,17 +600,13 @@ export default function BookCustomJobPage() {
     }
 
     try {
-      const customerLabel = findCustomerNameById(inserted.customer_id);
-      const customerEmail = findCustomerEmailById(inserted.customer_id);
-
       await fetch("/api/send_booking_email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          job: inserted,
-          customerName: customerLabel,
-          customerEmail,
-          jobPrice: String(inserted.price_inc_vat ?? ""),
+          job_id: inserted.id,
+          job_number: inserted.job_number || "",
+          template_key: "custom_skip_confirmed",
         }),
       });
     } catch (err) {
@@ -581,6 +625,8 @@ export default function BookCustomJobPage() {
     });
 
     setSelectedCustomerId("");
+    setCustomerSearch("");
+    setCustomerSearchOpen(false);
     setSiteName("");
     setSiteAddress1("");
     setSiteAddress2("");
@@ -913,27 +959,74 @@ export default function BookCustomJobPage() {
             <div style={styles.fieldBlock}>
               <label style={styles.label}>Customer *</label>
               <div style={styles.row}>
-                <select
-                  value={selectedCustomerId}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    setSelectedCustomerId(id);
-                    setFieldErrors((prev) => ({
-                      ...prev,
-                      customer: undefined,
-                      paymentType: undefined,
-                    }));
-                    if (sameAsCustomerAddress && id) applyCustomerAddressToSite(id);
-                  }}
-                  style={styles.inputFlex}
-                >
-                  <option value="">Select a customer…</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {formatCustomerLabel(c)}
-                    </option>
-                  ))}
-                </select>
+                <div style={styles.customerSearchWrap}>
+                  <input
+                    type="text"
+                    value={customerSearch}
+                    onFocus={() => setCustomerSearchOpen(true)}
+                    onChange={(e) => {
+                      setCustomerSearch(e.target.value);
+                      setCustomerSearchOpen(true);
+                      setSelectedCustomerId("");
+                      setFieldErrors((prev) => ({
+                        ...prev,
+                        customer: undefined,
+                        paymentType: undefined,
+                      }));
+                    }}
+                    placeholder="Search by name, company, phone, email, postcode..."
+                    style={styles.input}
+                  />
+
+                  {selectedCustomer ? (
+                    <div style={styles.selectedCustomerBox}>
+                      <div style={styles.selectedCustomerName}>{formatCustomerLabel(selectedCustomer)}</div>
+                      <div style={styles.selectedCustomerMeta}>{formatCustomerSubLabel(selectedCustomer) || "Selected customer"}</div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomerId("");
+                          setCustomerSearch("");
+                          setCustomerSearchOpen(true);
+                          setSameAsCustomerAddress(false);
+                        }}
+                        style={styles.clearCustomerBtn}
+                      >
+                        Change
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {customerSearchOpen && !selectedCustomer ? (
+                    <div style={styles.customerResultsBox}>
+                      {filteredCustomers.length === 0 ? (
+                        <div style={styles.customerResultEmpty}>No customers found. Try name, phone, email or postcode.</div>
+                      ) : (
+                        filteredCustomers.map((c) => (
+                          <button
+                            type="button"
+                            key={c.id}
+                            onClick={() => {
+                              setSelectedCustomerId(c.id);
+                              setCustomerSearch(formatCustomerLabel(c));
+                              setCustomerSearchOpen(false);
+                              setFieldErrors((prev) => ({
+                                ...prev,
+                                customer: undefined,
+                                paymentType: undefined,
+                              }));
+                              if (sameAsCustomerAddress) applyCustomerAddressToSite(c.id);
+                            }}
+                            style={styles.customerResultBtn}
+                          >
+                            <span style={styles.customerResultName}>{formatCustomerLabel(c)}</span>
+                            <span style={styles.customerResultMeta}>{formatCustomerSubLabel(c)}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                </div>
 
                 <button
                   type="button"
@@ -1709,6 +1802,93 @@ const styles = {
     color: "#0f172a",
     resize: "vertical",
     boxSizing: "border-box",
+  },
+
+  customerSearchWrap: {
+    position: "relative",
+    flex: 1,
+    minWidth: 260,
+  },
+
+  customerResultsBox: {
+    position: "absolute",
+    top: "calc(100% + 6px)",
+    left: 0,
+    right: 0,
+    zIndex: 100,
+    background: "#fff",
+    border: "1px solid #cbd5e1",
+    borderRadius: 12,
+    boxShadow: "0 14px 30px rgba(15,23,42,0.18)",
+    maxHeight: 320,
+    overflowY: "auto",
+  },
+
+  customerResultBtn: {
+    width: "100%",
+    display: "block",
+    textAlign: "left",
+    padding: "10px 12px",
+    border: "none",
+    borderBottom: "1px solid #e2e8f0",
+    background: "#fff",
+    cursor: "pointer",
+  },
+
+  customerResultName: {
+    display: "block",
+    fontWeight: 800,
+    color: "#0f172a",
+    fontSize: 14,
+  },
+
+  customerResultMeta: {
+    display: "block",
+    marginTop: 3,
+    color: "#64748b",
+    fontSize: 12,
+  },
+
+  customerResultEmpty: {
+    padding: 12,
+    color: "#64748b",
+    fontSize: 13,
+  },
+
+  selectedCustomerBox: {
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 10,
+    border: "1px solid #b7eb8f",
+    background: "#f6ffed",
+    position: "relative",
+  },
+
+  selectedCustomerName: {
+    fontWeight: 900,
+    color: "#14532d",
+    paddingRight: 80,
+  },
+
+  selectedCustomerMeta: {
+    marginTop: 3,
+    fontSize: 12,
+    color: "#166534",
+    paddingRight: 80,
+  },
+
+  clearCustomerBtn: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    padding: "6px 8px",
+    borderRadius: 8,
+    border: "1px solid #86efac",
+    background: "#fff",
+    color: "#14532d",
+    fontWeight: 800,
+    cursor: "pointer",
+    fontSize: 12,
   },
 
   secondaryBtn: {
