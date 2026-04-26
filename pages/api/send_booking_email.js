@@ -1,4 +1,3 @@
-import { requireOfficeUser } from "../../lib/requireOfficeUser";
 import { getSupabaseAdmin } from "../../lib/supabaseAdmin";
 import { sendJobEmail } from "../../lib/jobEmails";
 
@@ -6,33 +5,15 @@ function asText(v) {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
 }
 
-async function resolveJobId({ supabase, subscriberId, body }) {
-  const direct =
-    asText(body.job_id) ||
-    asText(body.jobId) ||
-    asText(body.id) ||
-    asText(body.booking_id) ||
-    "";
-
-  if (direct) return direct;
-
-  const jobNumber = asText(body.job_number) || asText(body.booking_number);
-  if (!jobNumber) return "";
-
-  const { data, error } = await supabase
-    .from("jobs")
-    .select("id")
-    .eq("subscriber_id", subscriberId)
-    .eq("job_number", jobNumber)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data?.id || "";
-}
-
 function chooseTemplateKey(body) {
   const explicit = asText(body.template_key);
-  if (explicit) return explicit;
+  if (
+    explicit === "booking_confirmed" ||
+    explicit === "swap_confirmed" ||
+    explicit === "custom_skip_confirmed"
+  ) {
+    return explicit;
+  }
 
   const jobType = asText(body.job_type).toLowerCase();
 
@@ -44,6 +25,50 @@ function chooseTemplateKey(body) {
   return "booking_confirmed";
 }
 
+async function resolveJob({ supabase, body }) {
+  const jobId =
+    asText(body.job_id) ||
+    asText(body.jobId) ||
+    asText(body.id) ||
+    asText(body.booking_id) ||
+    "";
+
+  const jobNumber = asText(body.job_number) || asText(body.booking_number);
+
+  let query = supabase
+    .from("jobs")
+    .select("id, subscriber_id, job_number, customer_id")
+    .limit(1);
+
+  if (jobId) {
+    query = query.eq("id", jobId);
+  } else if (jobNumber) {
+    query = query.eq("job_number", jobNumber);
+  } else {
+    return null;
+  }
+
+  const { data, error } = await query.maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+async function hasRecentSentBookingEmail({ supabase, jobId, templateKey }) {
+  const { data, error } = await supabase
+    .from("email_outbox")
+    .select("id, created_at, status")
+    .eq("job_id", jobId)
+    .eq("template_key", templateKey)
+    .eq("status", "sent")
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (error) return false;
+
+  return Array.isArray(data) && data.length > 0;
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -53,42 +78,46 @@ export default async function handler(req, res) {
       });
     }
 
-    const auth = await requireOfficeUser(req);
-    if (!auth?.ok) {
-      return res.status(401).json({
-        ok: false,
-        error: auth?.error || "Unauthorised",
-      });
-    }
-
-    const subscriberId = auth.subscriber_id;
     const supabase = getSupabaseAdmin();
     const body = req.body && typeof req.body === "object" ? req.body : {};
 
-    const jobId = await resolveJobId({ supabase, subscriberId, body });
+    const job = await resolveJob({ supabase, body });
 
-    if (!jobId) {
+    if (!job?.id || !job?.subscriber_id) {
       return res.status(400).json({
         ok: false,
-        error: "job_id is required",
+        error: "job_id or job_number is required",
       });
     }
 
     const templateKey = chooseTemplateKey(body);
 
-    const out = await sendJobEmail({
-      subscriberId,
-      jobId,
+    const alreadySent = await hasRecentSentBookingEmail({
+      supabase,
+      jobId: job.id,
       templateKey,
-      extraTags: {
-        to_email: asText(body.to_email) || undefined,
-      },
+    });
+
+    if (alreadySent) {
+      return res.status(200).json({
+        ok: true,
+        skipped: true,
+        reason: "Booking email already sent for this job",
+        job_id: job.id,
+        template_key: templateKey,
+      });
+    }
+
+    const out = await sendJobEmail({
+      subscriberId: job.subscriber_id,
+      jobId: job.id,
+      templateKey,
     });
 
     return res.status(200).json({
       ok: true,
+      job_id: job.id,
       template_key: templateKey,
-      job_id: jobId,
       ...out,
     });
   } catch (err) {
