@@ -23,9 +23,25 @@ function formatAddress(job) {
   return parts.join(", ");
 }
 
-function deriveJobType(job) {
+const COLLECTION_DATE_FIELDS = [
+  "collection_scheduled_date",
+  "collection_date",
+  "scheduled_collection_date",
+  "requested_collection_date",
+  "collection_requested_date",
+];
+
+function jobHasCollectionBookedForDate(job, date) {
+  return COLLECTION_DATE_FIELDS.some((field) => asText(job[field]) === date);
+}
+
+function deriveJobType(job, date) {
   if (job.swap_group_id || job.swap_parent_job_id || asText(job.swap_role)) {
     return "Swap";
+  }
+
+  if (jobHasCollectionBookedForDate(job, date)) {
+    return "Collection";
   }
 
   if (job.job_status === "collected" || job.collection_actual_date) {
@@ -103,6 +119,42 @@ function deriveRoadPlacement(job) {
   return asText(job.placement_type).toLowerCase() === "road" ? "Road" : "";
 }
 
+function sortJobs(a, b) {
+  const groupA = a.driver_run_group ?? 999999;
+  const groupB = b.driver_run_group ?? 999999;
+  if (groupA !== groupB) return groupA - groupB;
+
+  const sortA = a.driver_sort_key ?? 999999;
+  const sortB = b.driver_sort_key ?? 999999;
+  if (sortA !== sortB) return sortA - sortB;
+
+  return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+}
+
+async function fetchJobsByDateField(supabase, subscriberId, fieldName, date) {
+  const { data, error } = await supabase
+    .from("jobs")
+    .select("*")
+    .eq("subscriber_id", subscriberId)
+    .eq(fieldName, date);
+
+  if (error) {
+    const msg = String(error.message || "").toLowerCase();
+
+    if (
+      msg.includes("column") ||
+      msg.includes("does not exist") ||
+      msg.includes("schema cache")
+    ) {
+      return [];
+    }
+
+    throw error;
+  }
+
+  return data || [];
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
@@ -144,30 +196,38 @@ export default async function handler(req, res) {
 
     const supabase = getSupabaseAdmin();
 
-    const { data: dayJobs, error: dayJobsError } = await supabase
-      .from("jobs")
-      .select("*")
-      .eq("subscriber_id", subscriberId)
-      .eq("scheduled_date", date)
-      .order("driver_run_group", { ascending: true, nullsFirst: false })
-      .order("driver_sort_key", { ascending: true, nullsFirst: false })
-      .order("created_at", { ascending: true });
+    const jobLists = await Promise.all([
+      fetchJobsByDateField(supabase, subscriberId, "scheduled_date", date),
+      ...COLLECTION_DATE_FIELDS.map((fieldName) =>
+        fetchJobsByDateField(supabase, subscriberId, fieldName, date)
+      ),
+    ]);
 
-    if (dayJobsError) {
-      return res.status(500).json({
-        ok: false,
-        error: dayJobsError.message,
-      });
-    }
+    const jobMap = new Map();
 
-    const allJobsForDate = dayJobs || [];
+    jobLists.flat().forEach((job) => {
+      if (job?.id) jobMap.set(job.id, job);
+    });
+
+    const allJobsForDate = Array.from(jobMap.values()).sort(sortJobs);
+
     const filteredJobs = driverId
-      ? allJobsForDate.filter((job) => String(job.assigned_driver_id || "") === driverId)
+      ? allJobsForDate.filter(
+          (job) => String(job.assigned_driver_id || "") === driverId
+        )
       : allJobsForDate;
 
-    const customerIds = [...new Set(filteredJobs.map((j) => j.customer_id).filter(Boolean))];
-    const skipTypeIds = [...new Set(filteredJobs.map((j) => j.skip_type_id).filter(Boolean))];
-    const driverIdsForDate = [...new Set(allJobsForDate.map((j) => j.assigned_driver_id).filter(Boolean))];
+    const customerIds = [
+      ...new Set(filteredJobs.map((j) => j.customer_id).filter(Boolean)),
+    ];
+
+    const skipTypeIds = [
+      ...new Set(filteredJobs.map((j) => j.skip_type_id).filter(Boolean)),
+    ];
+
+    const driverIdsForDate = [
+      ...new Set(allJobsForDate.map((j) => j.assigned_driver_id).filter(Boolean)),
+    ];
 
     let customerMap = {};
     let skipTypeMap = {};
@@ -205,7 +265,10 @@ export default async function handler(req, res) {
       }
 
       skipTypeMap = Object.fromEntries(
-        (skipTypes || []).map((s) => [s.id, asText(s.name) || asText(s.label) || ""])
+        (skipTypes || []).map((s) => [
+          s.id,
+          asText(s.name) || asText(s.label) || "",
+        ])
       );
     }
 
@@ -232,7 +295,7 @@ export default async function handler(req, res) {
       run_order: job.driver_sort_key ?? idx + 1,
       run_group: job.driver_run_group ?? null,
       job_number: asText(job.job_number),
-      job_type: deriveJobType(job),
+      job_type: deriveJobType(job, date),
       customer_name: deriveCustomerName(job, customerMap),
       customer_phone: deriveCustomerPhone(customerMap[job.customer_id]),
       address: formatAddress(job),
