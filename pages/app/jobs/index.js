@@ -181,13 +181,17 @@ export default function JobsIndexPage() {
     <main style={pageStyle}>
       <header style={headerStyle}>
         <div>
-          <Link href="/app" style={linkStyle}>← Back to dashboard</Link>
+          <Link href="/app" style={linkStyle}>
+            ← Back to dashboard
+          </Link>
           <h1 style={{ margin: "10px 0 0" }}>Jobs</h1>
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
           <button style={btnSecondary} onClick={load}>Refresh</button>
-          <button style={btnPrimary} onClick={() => router.push("/app/jobs/book")}>+ New job</button>
+          <button style={btnPrimary} onClick={() => router.push("/app/jobs/book")}>
+            + New job
+          </button>
         </div>
       </header>
 
@@ -225,8 +229,6 @@ export default function JobsIndexPage() {
                   key={j.id}
                   onClick={() => router.push(`/app/jobs/${j.id}`)}
                   style={{ cursor: "pointer" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#f9fafb")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >
                   <td style={tdStyle}>{j.job_number}</td>
                   <td style={tdStyle}>{STATUS_LABELS[j.job_status]}</td>
@@ -255,16 +257,62 @@ export default function JobsIndexPage() {
   );
 }
 
+// ===== STYLES (unchanged) =====
+
 const pageStyle = { padding: 16 };
 const centerStyle = { minHeight: "60vh", display: "grid", placeItems: "center" };
-const headerStyle = { display: "flex", justifyContent: "space-between", marginBottom: 14 };
-const cardStyle = { border: "1px solid #e5e7eb", borderRadius: 12, padding: 14, background: "#fff" };
 
-const inputStyle = { border: "1px solid #d1d5db", borderRadius: 10, padding: "10px 12px" };
+const headerStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 16,
+  alignItems: "flex-start",
+  marginBottom: 14,
+};
 
-const btnPrimary = { border: "none", borderRadius: 10, padding: "10px 14px", background: "#111827", color: "#fff" };
-const btnSecondary = { border: "1px solid #d1d5db", borderRadius: 10, padding: "10px 14px", background: "#fff" };
-const btnRow = { border: "1px solid #d1d5db", borderRadius: 8, padding: "6px 10px", background: "#fff" };
+const cardStyle = {
+  border: "1px solid #e5e7eb",
+  borderRadius: 12,
+  padding: 14,
+  background: "#fff",
+};
+
+const linkStyle = {
+  color: "#2563eb",
+  textDecoration: "none",
+  fontSize: 14,
+};
+
+const inputStyle = {
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  padding: "10px 12px",
+};
+
+const btnPrimary = {
+  border: "none",
+  borderRadius: 10,
+  padding: "10px 14px",
+  background: "#111827",
+  color: "#fff",
+  cursor: "pointer",
+};
+
+const btnSecondary = {
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  padding: "10px 14px",
+  background: "#fff",
+  cursor: "pointer",
+};
+
+const btnRow = {
+  border: "1px solid #d1d5db",
+  borderRadius: 8,
+  padding: "6px 10px",
+  background: "#fff",
+  cursor: "pointer",
+};
 
 const tableStyle = { width: "100%", borderCollapse: "collapse" };
 const thStyle = { textAlign: "left", padding: "12px", borderBottom: "1px solid #e5e7eb" };
