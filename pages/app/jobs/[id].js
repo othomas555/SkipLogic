@@ -76,6 +76,7 @@ export default function EditJobPage() {
   const [saving, setSaving] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [statusUpdating, setStatusUpdating] = useState(false);
 
   const [job, setJob] = useState(null);
   const [lookups, setLookups] = useState({
@@ -137,7 +138,9 @@ export default function EditJobPage() {
 
         setJob(nextJob);
         setLookups({
-          skip_types: Array.isArray(nextLookups?.skip_types) ? nextLookups.skip_types : [],
+          skip_types: Array.isArray(nextLookups?.skip_types)
+            ? nextLookups.skip_types
+            : [],
           permit_settings: Array.isArray(nextLookups?.permit_settings)
             ? nextLookups.permit_settings
             : [],
@@ -161,7 +164,9 @@ export default function EditJobPage() {
         setPlacementType(asText(nextJob?.placement_type) || "private");
         setSelectedPermitId(asId(nextJob?.permit_setting_id));
         setPermitPriceNoVat(
-          nextJob?.permit_price_no_vat != null ? String(nextJob.permit_price_no_vat) : ""
+          nextJob?.permit_price_no_vat != null
+            ? String(nextJob.permit_price_no_vat)
+            : ""
         );
         setPermitDelayBusinessDays(
           nextJob?.permit_delay_business_days != null
@@ -169,7 +174,9 @@ export default function EditJobPage() {
             : ""
         );
         setPermitValidityDays(
-          nextJob?.permit_validity_days != null ? String(nextJob.permit_validity_days) : ""
+          nextJob?.permit_validity_days != null
+            ? String(nextJob.permit_validity_days)
+            : ""
         );
         setPermitOverride(!!nextJob?.permit_override);
         setWeekendOverride(!!nextJob?.weekend_override);
@@ -193,12 +200,23 @@ export default function EditJobPage() {
   }, [lookups]);
 
   const permitSettings = useMemo(() => {
-    return Array.isArray(lookups?.permit_settings) ? lookups.permit_settings : [];
+    return Array.isArray(lookups?.permit_settings)
+      ? lookups.permit_settings
+      : [];
   }, [lookups]);
 
   const isCancelled = asText(job?.job_status).toLowerCase() === "cancelled";
   const hasInvoice = !!(job?.xero_invoice_id || job?.xero_invoice_number);
   const canEditSkipType = skipTypes.length > 0;
+
+  const jobStatus = asText(job?.job_status).toLowerCase();
+  const isDelivered = jobStatus === "delivered";
+  const isCollected = jobStatus === "collected";
+
+  const canMarkDelivered = !isCancelled && !isDelivered && !isCollected;
+  const canUndoDelivered = !isCancelled && isDelivered;
+  const canMarkCollected = !isCancelled && isDelivered && !isCollected;
+  const canUndoCollected = !isCancelled && isCollected;
 
   async function handleSave() {
     if (!id) return;
@@ -227,8 +245,10 @@ export default function EditJobPage() {
         payment_type: paymentType || null,
         placement_type: placementType || null,
 
-        permit_setting_id: placementType === "permit" ? selectedPermitId || null : null,
-        permit_price_no_vat: placementType === "permit" ? permitPriceNoVat || null : null,
+        permit_setting_id:
+          placementType === "permit" ? selectedPermitId || null : null,
+        permit_price_no_vat:
+          placementType === "permit" ? permitPriceNoVat || null : null,
         permit_delay_business_days:
           placementType === "permit" ? permitDelayBusinessDays || null : null,
         permit_validity_days:
@@ -337,6 +357,57 @@ export default function EditJobPage() {
     }
   }
 
+  async function handleStatusAction(action) {
+    if (!id) return;
+
+    setStatusUpdating(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const token = await getAccessToken();
+
+      const res = await fetch("/api/jobs/status", {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          job_id: id,
+          action,
+        }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Status update failed");
+      }
+
+      setJob((prev) => ({
+        ...(prev || {}),
+        ...(json?.job || {}),
+      }));
+
+      if (action === "mark_delivered") {
+        setSuccess("Job marked delivered. No email was sent.");
+      } else if (action === "undo_delivered") {
+        setSuccess("Delivery undone. No email was sent.");
+      } else if (action === "mark_collected") {
+        setSuccess("Job marked collected. No email was sent.");
+      } else if (action === "undo_collected") {
+        setSuccess("Collection undone. No email was sent.");
+      } else {
+        setSuccess("Status updated. No email was sent.");
+      }
+    } catch (err) {
+      setError(err?.message || "Status update failed");
+    } finally {
+      setStatusUpdating(false);
+    }
+  }
+
   async function handleDeleteJob() {
     if (!id) return;
 
@@ -420,6 +491,11 @@ export default function EditJobPage() {
             Any commercial changes should be reviewed manually in Xero.
           </div>
         ) : null}
+
+        <div style={styles.infoBox}>
+          <strong>Status buttons:</strong> marking delivered/collected here updates the
+          job state only. It does not send customer emails and does not reset email logs.
+        </div>
 
         {isCancelled ? (
           <div style={styles.cancelledBox}>
@@ -713,7 +789,8 @@ export default function EditJobPage() {
             <div>
               <label style={styles.staticLabel}>Skip</label>
               <div style={styles.staticValue}>
-                {skipTypeDisplay({ ...job, skip_type_id: skipTypeId }, skipTypes) || "—"}
+                {skipTypeDisplay({ ...job, skip_type_id: skipTypeId }, skipTypes) ||
+                  "—"}
               </div>
             </div>
             <div>
@@ -734,6 +811,50 @@ export default function EditJobPage() {
         </div>
 
         <div style={styles.actions}>
+          {canMarkDelivered ? (
+            <button
+              onClick={() => handleStatusAction("mark_delivered")}
+              disabled={statusUpdating}
+              style={styles.deliveredBtn}
+              type="button"
+            >
+              {statusUpdating ? "Updating…" : "Mark delivered"}
+            </button>
+          ) : null}
+
+          {canUndoDelivered ? (
+            <button
+              onClick={() => handleStatusAction("undo_delivered")}
+              disabled={statusUpdating}
+              style={styles.undoBtn}
+              type="button"
+            >
+              {statusUpdating ? "Updating…" : "Undo delivered"}
+            </button>
+          ) : null}
+
+          {canMarkCollected ? (
+            <button
+              onClick={() => handleStatusAction("mark_collected")}
+              disabled={statusUpdating}
+              style={styles.collectedBtn}
+              type="button"
+            >
+              {statusUpdating ? "Updating…" : "Mark collected"}
+            </button>
+          ) : null}
+
+          {canUndoCollected ? (
+            <button
+              onClick={() => handleStatusAction("undo_collected")}
+              disabled={statusUpdating}
+              style={styles.undoBtn}
+              type="button"
+            >
+              {statusUpdating ? "Updating…" : "Undo collected"}
+            </button>
+          ) : null}
+
           <button
             onClick={handleSave}
             disabled={saving || isCancelled}
@@ -894,6 +1015,14 @@ const styles = {
     borderRadius: 12,
     marginBottom: 16,
   },
+  infoBox: {
+    background: "#eff6ff",
+    color: "#1e3a8a",
+    border: "1px solid #bfdbfe",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
   cancelledBox: {
     background: "#f8d7da",
     color: "#842029",
@@ -931,6 +1060,33 @@ const styles = {
     border: "none",
     background: "linear-gradient(135deg, var(--brand-mint), rgba(58,181,255,0.9))",
     color: "#071013",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  deliveredBtn: {
+    padding: "12px 16px",
+    borderRadius: 10,
+    border: "none",
+    background: "#2563eb",
+    color: "#fff",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  collectedBtn: {
+    padding: "12px 16px",
+    borderRadius: 10,
+    border: "none",
+    background: "#059669",
+    color: "#fff",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  undoBtn: {
+    padding: "12px 16px",
+    borderRadius: 10,
+    border: "none",
+    background: "#64748b",
+    color: "#fff",
     fontWeight: 900,
     cursor: "pointer",
   },
