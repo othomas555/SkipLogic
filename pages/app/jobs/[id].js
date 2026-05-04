@@ -1,3 +1,4 @@
+// pages/app/jobs/[id].js
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../../../lib/supabaseClient";
@@ -22,6 +23,13 @@ function asDateInput(v) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
   const m = t.match(/^(\d{4}-\d{2}-\d{2})/);
   return m ? m[1] : "";
+}
+
+function fmtDate(v) {
+  const s = asDateInput(v);
+  if (!s) return "—";
+  const [y, m, d] = s.split("-");
+  return `${d}/${m}/${y}`;
 }
 
 function customerDisplay(job) {
@@ -65,6 +73,39 @@ function formatMoney(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return asText(v);
   return n.toFixed(2);
+}
+
+function emailActionSummary(actions) {
+  if (!Array.isArray(actions) || actions.length === 0) return "";
+
+  const queued = actions.filter((x) => x?.queued);
+  const skipped = actions.filter((x) => !x?.queued);
+
+  const bits = [];
+
+  if (queued.length) {
+    bits.push(
+      `Email queued: ${queued
+        .map((x) => asText(x?.template_key))
+        .filter(Boolean)
+        .join(", ")}`
+    );
+  }
+
+  if (skipped.length) {
+    bits.push(
+      `Email not queued: ${skipped
+        .map((x) => {
+          const key = asText(x?.template_key);
+          const reason = asText(x?.reason);
+          return reason ? `${key} (${reason})` : key;
+        })
+        .filter(Boolean)
+        .join(", ")}`
+    );
+  }
+
+  return bits.join(" ");
 }
 
 export default function EditJobPage() {
@@ -390,16 +431,18 @@ export default function EditJobPage() {
         ...(json?.job || {}),
       }));
 
+      const summary = emailActionSummary(json?.email_actions);
+
       if (action === "mark_delivered") {
-        setSuccess("Job marked delivered. No email was sent.");
+        setSuccess(summary ? `Job marked delivered. ${summary}` : "Job marked delivered.");
       } else if (action === "undo_delivered") {
-        setSuccess("Delivery undone. No email was sent.");
+        setSuccess(summary ? `Delivery undone. ${summary}` : "Delivery undone.");
       } else if (action === "mark_collected") {
-        setSuccess("Job marked collected. No email was sent.");
+        setSuccess(summary ? `Job marked collected. ${summary}` : "Job marked collected.");
       } else if (action === "undo_collected") {
-        setSuccess("Collection undone. No email was sent.");
+        setSuccess(summary ? `Collection undone. ${summary}` : "Collection undone.");
       } else {
-        setSuccess("Status updated. No email was sent.");
+        setSuccess(summary ? `Status updated. ${summary}` : "Status updated.");
       }
     } catch (err) {
       setError(err?.message || "Status update failed");
@@ -477,6 +520,11 @@ export default function EditJobPage() {
                   Invoice: {job.xero_invoice_number || "Linked"}
                 </span>
               ) : null}
+              {job.term_hire_end_date ? (
+                <span style={styles.termBadge}>
+                  Term hire ends: {fmtDate(job.term_hire_end_date)}
+                </span>
+              ) : null}
             </div>
           </div>
 
@@ -493,8 +541,9 @@ export default function EditJobPage() {
         ) : null}
 
         <div style={styles.infoBox}>
-          <strong>Status buttons:</strong> marking delivered/collected here updates the
-          job state only. It does not send customer emails and does not reset email logs.
+          <strong>Status buttons:</strong> marking delivered/collected may queue
+          customer emails. Undo buttons may queue a correction email if the original
+          notification was already queued or sent.
         </div>
 
         {isCancelled ? (
@@ -798,8 +847,30 @@ export default function EditJobPage() {
               <div style={styles.staticValue}>{scheduledDate || "—"}</div>
             </div>
             <div>
+              <label style={styles.staticLabel}>Actual delivery</label>
+              <div style={styles.staticValue}>{fmtDate(job.delivery_actual_date)}</div>
+            </div>
+            <div>
               <label style={styles.staticLabel}>Collection</label>
               <div style={styles.staticValue}>{collectionDate || "—"}</div>
+            </div>
+            <div>
+              <label style={styles.staticLabel}>Actual collection</label>
+              <div style={styles.staticValue}>{fmtDate(job.collection_actual_date)}</div>
+            </div>
+            <div>
+              <label style={styles.staticLabel}>Term hire end date</label>
+              <div style={styles.staticValue}>{fmtDate(job.term_hire_end_date)}</div>
+            </div>
+            <div>
+              <label style={styles.staticLabel}>Term hire status</label>
+              <div style={styles.staticValue}>{asText(job.term_hire_status) || "—"}</div>
+            </div>
+            <div>
+              <label style={styles.staticLabel}>Term hire extended until</label>
+              <div style={styles.staticValue}>
+                {fmtDate(job.term_hire_extended_until)}
+              </div>
             </div>
             <div>
               <label style={styles.staticLabel}>Price inc VAT</label>
@@ -932,6 +1003,16 @@ const styles = {
     background: "#eef2ff",
     border: "1px solid #c7d2fe",
     color: "#3730a3",
+    borderRadius: 999,
+    padding: "6px 10px",
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  termBadge: {
+    display: "inline-block",
+    background: "#dcfce7",
+    border: "1px solid #86efac",
+    color: "#166534",
     borderRadius: 999,
     padding: "6px 10px",
     fontSize: 13,
