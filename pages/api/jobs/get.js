@@ -91,7 +91,20 @@ export default async function handler(req, res) {
           invoice_action_reason,
           invoice_action_note,
           last_edited_at,
-          last_edited_by
+          last_edited_by,
+          delivery_rollover_count,
+          collection_rollover_count,
+          term_hire_status,
+          term_hire_last_reminder_at,
+          term_hire_suppressed,
+          term_hire_suppressed_at,
+          term_hire_suppressed_reason,
+          term_hire_extension_pending,
+          term_hire_extension_pending_at,
+          term_hire_extended_until,
+          term_hire_auto_collection_due,
+          term_hire_auto_collection_booked_at,
+          term_hire_end_date
         `
       )
       .eq("id", id)
@@ -173,6 +186,38 @@ export default async function handler(req, res) {
       skipType = skipTypeRow || null;
     }
 
+    const { data: termHireExtensionsData, error: termHireExtensionsError } =
+      await supabase
+        .from("term_hire_extensions")
+        .select(
+          `
+            id,
+            subscriber_id,
+            job_id,
+            customer_id,
+            weeks,
+            amount,
+            old_hire_end_date,
+            new_hire_end_date,
+            stripe_session_id,
+            stripe_payment_intent_id,
+            status,
+            paid_at,
+            created_at,
+            xero_invoice_id,
+            xero_invoice_number,
+            xero_invoice_status,
+            xero_invoice_created_at
+          `
+        )
+        .eq("subscriber_id", auth.subscriber_id)
+        .eq("job_id", id)
+        .order("created_at", { ascending: false });
+
+    if (termHireExtensionsError) {
+      throw termHireExtensionsError;
+    }
+
     const { data: skipTypesData, error: skipTypesError } = await supabase
       .from("skip_types")
       .select("id, name, quantity_owned")
@@ -228,6 +273,8 @@ export default async function handler(req, res) {
 
       name: skipType?.name || null,
       quantity_owned: skipType?.quantity_owned ?? null,
+
+      term_hire_extensions: asArray(termHireExtensionsData),
     };
 
     return res.status(200).json({
