@@ -32,6 +32,22 @@ function fmtDate(v) {
   return `${d}/${m}/${y}`;
 }
 
+function fmtDateTime(v) {
+  const raw = asText(v).trim();
+  if (!raw) return "—";
+
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+
+  return d.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function customerDisplay(job) {
   const company = asText(job?.company_name).trim();
   const first = asText(job?.first_name).trim();
@@ -106,6 +122,14 @@ function emailActionSummary(actions) {
   }
 
   return bits.join(" ");
+}
+
+function buttonStateStyle(baseStyle, enabled) {
+  return {
+    ...baseStyle,
+    opacity: enabled ? 1 : 0.45,
+    cursor: enabled ? "pointer" : "not-allowed",
+  };
 }
 
 export default function EditJobPage() {
@@ -246,6 +270,12 @@ export default function EditJobPage() {
       : [];
   }, [lookups]);
 
+  const termHireExtensions = useMemo(() => {
+    return Array.isArray(job?.term_hire_extensions)
+      ? job.term_hire_extensions
+      : [];
+  }, [job]);
+
   const isCancelled = asText(job?.job_status).toLowerCase() === "cancelled";
   const hasInvoice = !!(job?.xero_invoice_id || job?.xero_invoice_number);
   const canEditSkipType = skipTypes.length > 0;
@@ -258,6 +288,17 @@ export default function EditJobPage() {
   const canUndoDelivered = !isCancelled && isDelivered;
   const canMarkCollected = !isCancelled && isDelivered && !isCollected;
   const canUndoCollected = !isCancelled && isCollected;
+
+  const markDeliveredEnabled = canMarkDelivered && !statusUpdating;
+  const undoDeliveredEnabled = canUndoDelivered && !statusUpdating;
+  const markCollectedEnabled = canMarkCollected && !statusUpdating;
+  const undoCollectedEnabled = canUndoCollected && !statusUpdating;
+
+  const hasTermHireExtension =
+    termHireExtensions.length > 0 ||
+    !!job?.term_hire_extended_until ||
+    !!job?.term_hire_extension_pending ||
+    Number(job?.hire_extension_days || 0) > 0;
 
   async function handleSave() {
     if (!id) return;
@@ -399,7 +440,7 @@ export default function EditJobPage() {
   }
 
   async function handleStatusAction(action) {
-    if (!id) return;
+    if (!id || statusUpdating) return;
 
     setStatusUpdating(true);
     setError("");
@@ -524,6 +565,9 @@ export default function EditJobPage() {
                 <span style={styles.termBadge}>
                   Term hire ends: {fmtDate(job.term_hire_end_date)}
                 </span>
+              ) : null}
+              {hasTermHireExtension ? (
+                <span style={styles.termBadge}>Term hire extended</span>
               ) : null}
             </div>
           </div>
@@ -863,14 +907,16 @@ export default function EditJobPage() {
               <div style={styles.staticValue}>{fmtDate(job.term_hire_end_date)}</div>
             </div>
             <div>
+              <label style={styles.staticLabel}>Term hire extended?</label>
+              <div style={styles.staticValue}>{hasTermHireExtension ? "Yes" : "No"}</div>
+            </div>
+            <div>
               <label style={styles.staticLabel}>Term hire status</label>
               <div style={styles.staticValue}>{asText(job.term_hire_status) || "—"}</div>
             </div>
             <div>
               <label style={styles.staticLabel}>Term hire extended until</label>
-              <div style={styles.staticValue}>
-                {fmtDate(job.term_hire_extended_until)}
-              </div>
+              <div style={styles.staticValue}>{fmtDate(job.term_hire_extended_until)}</div>
             </div>
             <div>
               <label style={styles.staticLabel}>Price inc VAT</label>
@@ -881,50 +927,97 @@ export default function EditJobPage() {
           </div>
         </div>
 
+        <div style={styles.card}>
+          <h3 style={styles.sectionTitle}>Term hire extensions</h3>
+
+          {termHireExtensions.length === 0 ? (
+            <div style={styles.staticValue}>No term hire extensions recorded.</div>
+          ) : (
+            <div style={styles.extensionList}>
+              {termHireExtensions.map((ext) => (
+                <div key={asId(ext.id)} style={styles.extensionItem}>
+                  <div style={styles.grid}>
+                    <div>
+                      <label style={styles.staticLabel}>Status</label>
+                      <div style={styles.staticValue}>{asText(ext.status) || "—"}</div>
+                    </div>
+                    <div>
+                      <label style={styles.staticLabel}>Weeks</label>
+                      <div style={styles.staticValue}>{ext.weeks ?? "—"}</div>
+                    </div>
+                    <div>
+                      <label style={styles.staticLabel}>Amount</label>
+                      <div style={styles.staticValue}>
+                        {ext.amount == null ? "—" : `£${formatMoney(ext.amount)}`}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={styles.staticLabel}>Old end date</label>
+                      <div style={styles.staticValue}>{fmtDate(ext.old_hire_end_date)}</div>
+                    </div>
+                    <div>
+                      <label style={styles.staticLabel}>New end date</label>
+                      <div style={styles.staticValue}>{fmtDate(ext.new_hire_end_date)}</div>
+                    </div>
+                    <div>
+                      <label style={styles.staticLabel}>Paid at</label>
+                      <div style={styles.staticValue}>{fmtDateTime(ext.paid_at)}</div>
+                    </div>
+                    <div>
+                      <label style={styles.staticLabel}>Xero invoice number</label>
+                      <div style={styles.staticValue}>
+                        {asText(ext.xero_invoice_number) || "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={styles.staticLabel}>Xero invoice status</label>
+                      <div style={styles.staticValue}>
+                        {asText(ext.xero_invoice_status) || "—"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div style={styles.actions}>
-          {canMarkDelivered ? (
-            <button
-              onClick={() => handleStatusAction("mark_delivered")}
-              disabled={statusUpdating}
-              style={styles.deliveredBtn}
-              type="button"
-            >
-              {statusUpdating ? "Updating…" : "Mark delivered"}
-            </button>
-          ) : null}
+          <button
+            onClick={() => handleStatusAction("mark_delivered")}
+            disabled={!markDeliveredEnabled}
+            style={buttonStateStyle(styles.deliveredBtn, markDeliveredEnabled)}
+            type="button"
+          >
+            {statusUpdating ? "Updating…" : "Mark delivered"}
+          </button>
 
-          {canUndoDelivered ? (
-            <button
-              onClick={() => handleStatusAction("undo_delivered")}
-              disabled={statusUpdating}
-              style={styles.undoBtn}
-              type="button"
-            >
-              {statusUpdating ? "Updating…" : "Undo delivered"}
-            </button>
-          ) : null}
+          <button
+            onClick={() => handleStatusAction("undo_delivered")}
+            disabled={!undoDeliveredEnabled}
+            style={buttonStateStyle(styles.undoBtn, undoDeliveredEnabled)}
+            type="button"
+          >
+            {statusUpdating ? "Updating…" : "Undo delivered"}
+          </button>
 
-          {canMarkCollected ? (
-            <button
-              onClick={() => handleStatusAction("mark_collected")}
-              disabled={statusUpdating}
-              style={styles.collectedBtn}
-              type="button"
-            >
-              {statusUpdating ? "Updating…" : "Mark collected"}
-            </button>
-          ) : null}
+          <button
+            onClick={() => handleStatusAction("mark_collected")}
+            disabled={!markCollectedEnabled}
+            style={buttonStateStyle(styles.collectedBtn, markCollectedEnabled)}
+            type="button"
+          >
+            {statusUpdating ? "Updating…" : "Mark collected"}
+          </button>
 
-          {canUndoCollected ? (
-            <button
-              onClick={() => handleStatusAction("undo_collected")}
-              disabled={statusUpdating}
-              style={styles.undoBtn}
-              type="button"
-            >
-              {statusUpdating ? "Updating…" : "Undo collected"}
-            </button>
-          ) : null}
+          <button
+            onClick={() => handleStatusAction("undo_collected")}
+            disabled={!undoCollectedEnabled}
+            style={buttonStateStyle(styles.undoBtn, undoCollectedEnabled)}
+            type="button"
+          >
+            {statusUpdating ? "Updating…" : "Undo collected"}
+          </button>
 
           <button
             onClick={handleSave}
@@ -1127,6 +1220,17 @@ const styles = {
     padding: 12,
     borderRadius: 12,
     marginBottom: 16,
+  },
+  extensionList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  extensionItem: {
+    background: "#fff",
+    border: "1px solid #e2e8f0",
+    borderRadius: 12,
+    padding: 12,
   },
   actions: {
     display: "flex",
