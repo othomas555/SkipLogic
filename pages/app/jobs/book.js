@@ -248,7 +248,8 @@ export default function BookJobPage() {
           is_credit_account
         `)
         .eq("subscriber_id", subscriberId)
-        .order("last_name", { ascending: true });
+        .order("last_name", { ascending: true })
+      .range(0, 4999);
 
       if (customersError) {
         console.error("Customers error:", customersError);
