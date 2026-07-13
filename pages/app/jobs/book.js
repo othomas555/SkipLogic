@@ -232,33 +232,50 @@ export default function BookJobPage() {
     async function loadData() {
       setErrorMsg("");
 
-      const { data: customerData, error: customersError } = await supabase
-        .from("customers")
-        .select(`
-          id,
-          first_name,
-          last_name,
-          company_name,
-          email,
-          phone,
-          address_line1,
-          address_line2,
-          address_line3,
-          postcode,
-          is_credit_account
-        `)
-        .eq("subscriber_id", subscriberId)
-        .order("last_name", { ascending: false })
-      .range(0, 4999);
+      const customerSelect = `
+        id,
+        first_name,
+        last_name,
+        company_name,
+        email,
+        phone,
+        address_line1,
+        address_line2,
+        address_line3,
+        postcode,
+        is_credit_account
+      `;
 
-      if (customersError) {
-        console.error("Customers error:", customersError);
-        setErrorMsg("Could not load customers.");
-        pushToast({ type: "error", title: "Load failed", message: "Could not load customers.", durationMs: 9000 });
-        return;
+      const allCustomers = [];
+      const batchSize = 1000;
+      let from = 0;
+
+      while (true) {
+        const { data: customerBatch, error: customersError } = await supabase
+          .from("customers")
+          .select(customerSelect)
+          .eq("subscriber_id", subscriberId)
+          .order("last_name", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, from + batchSize - 1);
+
+        if (customersError) {
+          console.error("Customers error:", customersError);
+          setErrorMsg("Could not load customers.");
+          pushToast({ type: "error", title: "Load failed", message: "Could not load customers.", durationMs: 9000 });
+          return;
+        }
+
+        allCustomers.push(...(customerBatch || []));
+
+        if (!customerBatch || customerBatch.length < batchSize) {
+          break;
+        }
+
+        from += batchSize;
       }
 
-      setCustomers(customerData || []);
+      setCustomers(allCustomers);
 
       const { data: skipTypesData, error: skipTypesError } = await supabase
         .from("skip_types")
@@ -293,6 +310,63 @@ export default function BookJobPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, subscriberId]);
 
+  useEffect(() => {
+    if (checking || !subscriberId || selectedCustomerId) return;
+
+    const timer = setTimeout(async () => {
+      const q = customerSearch.trim();
+
+      if (!q) return;
+
+      const safeQ = q.replace(/[,%()]/g, " ").trim();
+      if (!safeQ) return;
+
+      const { data, error } = await supabase
+        .from("customers")
+        .select(`
+          id,
+          first_name,
+          last_name,
+          company_name,
+          email,
+          phone,
+          address_line1,
+          address_line2,
+          address_line3,
+          postcode,
+          is_credit_account
+        `)
+        .eq("subscriber_id", subscriberId)
+        .or(
+          [
+            `first_name.ilike.%${safeQ}%`,
+            `last_name.ilike.%${safeQ}%`,
+            `company_name.ilike.%${safeQ}%`,
+            `email.ilike.%${safeQ}%`,
+            `phone.ilike.%${safeQ}%`,
+            `postcode.ilike.%${safeQ}%`,
+          ].join(",")
+        )
+        .order("last_name", { ascending: true })
+        .limit(50);
+
+      if (error) {
+        console.error("Live customer search error:", error);
+        return;
+      }
+
+      setCustomers((prev) => {
+        const byId = new Map(prev.map((customer) => [customer.id, customer]));
+        for (const customer of data || []) {
+          byId.set(customer.id, customer);
+        }
+        return Array.from(byId.values());
+      });
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [checking, subscriberId, customerSearch, selectedCustomerId]);
+
   function formatCustomerLabel(c) {
     const baseName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim();
     if (c.company_name) return `${c.company_name} – ${baseName || "Unknown contact"}`;
@@ -308,10 +382,15 @@ export default function BookJobPage() {
   }
 
   function customerMatchesSearch(c, query) {
-    const q = String(query || "").trim().toLowerCase();
-    if (!q) return true;
+    const terms = String(query || "")
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
 
-    const fields = [
+    if (terms.length === 0) return true;
+
+    const searchableText = [
       c.first_name,
       c.last_name,
       c.company_name,
@@ -321,9 +400,11 @@ export default function BookJobPage() {
       c.address_line1,
       c.address_line2,
       c.address_line3,
-    ];
+    ]
+      .map((field) => String(field || "").toLowerCase())
+      .join(" ");
 
-    return fields.some((field) => String(field || "").toLowerCase().includes(q));
+    return terms.every((term) => searchableText.includes(term));
   }
 
   function findCustomerNameById(customerId) {
