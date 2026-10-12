@@ -135,7 +135,6 @@ async function queueEmailIfRequired({
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
-@@ -30,7 +156,19 @@
 
     const { data: job, error: loadError } = await supabase
       .from("jobs")
@@ -156,7 +155,6 @@ export default async function handler(req, res) {
       .eq("id", job_id)
       .eq("subscriber_id", subscriberId)
       .single();
-@@ -46,7 +184,9 @@
       });
     }
 
@@ -166,7 +164,6 @@ export default async function handler(req, res) {
 
     if (action === "mark_delivered") {
       patch.job_status = "delivered";
-@@ -90,20 +230,96 @@
       .select("*")
       .single();
 
