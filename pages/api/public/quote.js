@@ -154,7 +154,7 @@ export default async function handler(req, res) {
     const holidays = await ukHolidays(subscriber.public_booking_holiday_region || "england-and-wales");
     const clock = londonNow();
     const cutoff = String(subscriber.public_booking_cutoff_time || "");
-    const cutoffMinutes = /^\\d{2}:\\d{2}$/.test(cutoff)
+    const cutoffMinutes = /^\d{2}:\d{2}$/.test(cutoff)
       ? Number(cutoff.slice(0,2))*60 + Number(cutoff.slice(3,5)) : null;
     const rules = {
       allowSaturday: !!subscriber.public_booking_allow_saturday,
