@@ -25,7 +25,7 @@ export default function PublicBookingSuccessPage() {
         const res = await fetch("/api/public/confirm-booking", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId }),
+          body: JSON.stringify({ session_id: sessionId, slug }),
         });
 
         const json = await res.json().catch(() => ({}));
