@@ -49,6 +49,12 @@ export default function OnlineBookingSettingsPage() {
   const [companyName, setCompanyName] = useState("");
 
   const [publicBookingEnabled, setPublicBookingEnabled] = useState(false);
+  const [holidayRegion,setHolidayRegion]=useState("england-and-wales");
+  const [blockHolidays,setBlockHolidays]=useState(true);
+  const [blackouts,setBlackouts]=useState([]);
+  const [blackoutName,setBlackoutName]=useState("");
+  const [blackoutStart,setBlackoutStart]=useState("");
+  const [blackoutEnd,setBlackoutEnd]=useState("");
   const [publicBookingSlug, setPublicBookingSlug] = useState("");
   const [publicBookingTitle, setPublicBookingTitle] = useState("");
   const [publicBookingLogoUrl, setPublicBookingLogoUrl] = useState("");
@@ -94,7 +100,9 @@ export default function OnlineBookingSettingsPage() {
           public_booking_allow_sunday,
           public_booking_max_days_ahead,
           public_booking_cutoff_time,
-          public_booking_use_permit_lead_times
+          public_booking_use_permit_lead_times,
+          public_booking_holiday_region,
+          public_booking_block_bank_holidays
         `)
         .eq("id", subscriberId)
         .single();
@@ -109,6 +117,11 @@ export default function OnlineBookingSettingsPage() {
       }
 
       setCompanyName(data.company_name || "");
+      setHolidayRegion(data.public_booking_holiday_region || "england-and-wales");
+      setBlockHolidays(data.public_booking_block_bank_holidays !== false);
+      const {data:periods,error:periodError}=await supabase.from("booking_blackouts").select("id,name,start_date,end_date").eq("subscriber_id",subscriberId).order("start_date");
+      if(periodError)setErrorMsg(periodError.message);
+      else setBlackouts(periods||[]);
       setPublicBookingEnabled(!!data.public_booking_enabled);
       setPublicBookingSlug(data.public_booking_slug || "");
       setPublicBookingTitle(data.public_booking_title || "");
@@ -217,6 +230,8 @@ export default function OnlineBookingSettingsPage() {
 
     const payload = {
       public_booking_enabled: !!publicBookingEnabled,
+      public_booking_holiday_region: holidayRegion,
+      public_booking_block_bank_holidays: blockHolidays,
       public_booking_slug: cleanSlug(publicBookingSlug) || null,
       public_booking_title: publicBookingTitle.trim() || null,
       public_booking_logo_url: publicBookingLogoUrl.trim() || null,
@@ -527,6 +542,40 @@ export default function OnlineBookingSettingsPage() {
           </div>
         </SectionCard>
 
+        <SectionCard title="Bank holidays & shutdowns" subtitle="Bookings remain open during closures, but delivery dates are restricted.">
+          <div style={styles.grid2}>
+            <div style={styles.fieldBlock}>
+              <label style={styles.label}>Bank holiday region</label>
+              <select style={styles.input} value={holidayRegion} onChange={e=>setHolidayRegion(e.target.value)}>
+                <option value="england-and-wales">England & Wales</option>
+                <option value="scotland">Scotland</option>
+                <option value="northern-ireland">Northern Ireland</option>
+              </select>
+            </div>
+            <div style={styles.fieldBlock}>
+              <label style={styles.checkboxLabel}><input type="checkbox" checked={blockHolidays} onChange={e=>setBlockHolidays(e.target.checked)}/>Block deliveries on bank holidays</label>
+            </div>
+          </div>
+          <p>Shutdowns exclude deliveries and pause the working-day notice countdown. Customers can still book future dates.</p>
+          {blackouts.map(p=><div key={p.id} style={{padding:8,marginBottom:8,border:"1px solid #ddd",borderRadius:8}}>
+            <b>{p.name}</b> — {p.start_date} to {p.end_date}
+            <button type="button" style={{marginLeft:12}} onClick={async()=>{
+              if(!window.confirm("Delete this shutdown period?"))return;
+              const {error}=await supabase.from("booking_blackouts").delete().eq("id",p.id).eq("subscriber_id",subscriberId);
+              if(error)setErrorMsg(error.message);else setBlackouts(v=>v.filter(x=>x.id!==p.id));
+            }}>Remove</button>
+          </div>)}
+          <div style={styles.grid2}>
+            <div style={styles.fieldBlock}><label style={styles.label}>Shutdown name</label><input style={styles.input} value={blackoutName} onChange={e=>setBlackoutName(e.target.value)} placeholder="Christmas shutdown"/></div>
+            <div style={styles.fieldBlock}><label style={styles.label}>Start date</label><input style={styles.input} type="date" value={blackoutStart} onChange={e=>setBlackoutStart(e.target.value)}/></div>
+            <div style={styles.fieldBlock}><label style={styles.label}>End date (inclusive)</label><input style={styles.input} type="date" value={blackoutEnd} onChange={e=>setBlackoutEnd(e.target.value)}/></div>
+          </div>
+          <button type="button" style={styles.secondaryBtn} onClick={async()=>{
+            if(!blackoutName.trim()||!blackoutStart||!blackoutEnd||blackoutEnd<blackoutStart){setErrorMsg("Enter a shutdown name and valid date range.");return;}
+            const {data,error}=await supabase.from("booking_blackouts").insert({subscriber_id:subscriberId,name:blackoutName.trim(),start_date:blackoutStart,end_date:blackoutEnd}).select("id,name,start_date,end_date").single();
+            if(error)setErrorMsg(error.message);else{setBlackouts(v=>[...v,data].sort((a,b)=>a.start_date.localeCompare(b.start_date)));setBlackoutName("");setBlackoutStart("");setBlackoutEnd("");setErrorMsg("");}
+          }}>Add shutdown period</button>
+        </SectionCard>
         <div style={styles.footerBar}>
           <div style={styles.footerHelp}>
             Subscribers put the live booking URL on their own website as a normal button or link.
