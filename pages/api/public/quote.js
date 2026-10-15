@@ -1,6 +1,7 @@
 // pages/api/public/quote.js
 
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
+import { earliestDelivery, ukHolidays, londonNow, isDeliveryDay } from "../../../lib/publicBookingCalendar";
 import { getSkipPricesForPostcodeAdmin } from "../../../lib/getSkipPricesForPostcode";
 
 function asSlug(value) {
@@ -15,127 +16,6 @@ function clampMoney(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.round(n * 100) / 100;
-}
-
-function toDateOnly(value) {
-  const d = value ? new Date(value) : new Date();
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-function pad(n) {
-  return String(n).padStart(2, "0");
-}
-
-function ymd(date) {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
-function parseCutoffTime(value) {
-  const t = String(value || "").trim();
-  if (!/^\d{2}:\d{2}$/.test(t)) return null;
-  const [hh, mm] = t.split(":").map(Number);
-  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
-  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
-  return { hh, mm };
-}
-
-function isAllowedWeekday(date, allowSaturday, allowSunday) {
-  const day = date.getDay();
-  if (day === 6 && !allowSaturday) return false;
-  if (day === 0 && !allowSunday) return false;
-  return true;
-}
-
-function addCalendarDays(startDate, days) {
-  const d = new Date(startDate);
-  d.setDate(d.getDate() + Number(days || 0));
-  return d;
-}
-
-function addBusinessDays(startDate, days, allowSaturday, allowSunday) {
-  let remaining = Number(days || 0);
-  const d = new Date(startDate);
-
-  while (remaining > 0) {
-    d.setDate(d.getDate() + 1);
-    if (isAllowedWeekday(d, allowSaturday, allowSunday)) {
-      remaining -= 1;
-    }
-  }
-
-  return d;
-}
-
-function moveToNextAllowedDate(date, allowSaturday, allowSunday) {
-  const d = new Date(date);
-  while (!isAllowedWeekday(d, allowSaturday, allowSunday)) {
-    d.setDate(d.getDate() + 1);
-  }
-  return d;
-}
-
-function calculateEarliestBookingDate({
-  now = new Date(),
-  subscriberNoticeDays = 0,
-  subscriberNoticeBusinessDays = true,
-  allowSaturday = false,
-  allowSunday = false,
-  cutoffTime = null,
-  permitRequired = false,
-  permitDelayBusinessDays = 0,
-}) {
-  const nowDt = new Date(now);
-  let baseDate = toDateOnly(nowDt);
-
-  const cutoff = parseCutoffTime(cutoffTime);
-  if (cutoff) {
-    const afterCutoff =
-      nowDt.getHours() > cutoff.hh ||
-      (nowDt.getHours() === cutoff.hh && nowDt.getMinutes() >= cutoff.mm);
-
-    if (afterCutoff) {
-      baseDate = addCalendarDays(baseDate, 1);
-    }
-  }
-
-  let subscriberDate = new Date(baseDate);
-  if (subscriberNoticeBusinessDays) {
-    subscriberDate = addBusinessDays(
-      subscriberDate,
-      subscriberNoticeDays,
-      allowSaturday,
-      allowSunday
-    );
-  } else {
-    subscriberDate = addCalendarDays(subscriberDate, subscriberNoticeDays);
-    subscriberDate = moveToNextAllowedDate(
-      subscriberDate,
-      allowSaturday,
-      allowSunday
-    );
-  }
-
-  let permitDate = new Date(baseDate);
-  if (permitRequired) {
-    permitDate = addBusinessDays(
-      permitDate,
-      permitDelayBusinessDays,
-      allowSaturday,
-      allowSunday
-    );
-  }
-
-  let earliest = subscriberDate > permitDate ? subscriberDate : permitDate;
-  earliest = moveToNextAllowedDate(earliest, allowSaturday, allowSunday);
-
-  return {
-    earliestDate: ymd(earliest),
-    debug: {
-      subscriberDate: ymd(subscriberDate),
-      permitDate: ymd(permitDate),
-      finalDate: ymd(earliest),
-    },
-  };
 }
 
 export default async function handler(req, res) {
@@ -177,7 +57,9 @@ export default async function handler(req, res) {
         public_booking_allow_sunday,
         public_booking_max_days_ahead,
         public_booking_cutoff_time,
-        public_booking_use_permit_lead_times
+        public_booking_use_permit_lead_times,
+        public_booking_holiday_region,
+        public_booking_block_bank_holidays
       `)
       .ilike("public_booking_slug", slug)
       .maybeSingle();
@@ -263,16 +145,38 @@ export default async function handler(req, res) {
     const usePermitLeadTimes = !!subscriber.public_booking_use_permit_lead_times;
     const permitRequired = placementType === "permit" && !!permit && usePermitLeadTimes;
 
-    const availability = calculateEarliestBookingDate({
-      now: new Date(),
-      subscriberNoticeDays: Number(subscriber.public_booking_notice_days || 0),
-      subscriberNoticeBusinessDays: !!subscriber.public_booking_notice_working_days,
+    const { data: blackoutRows, error: blackoutError } = await supabase
+      .from("booking_blackouts")
+      .select("name, start_date, end_date")
+      .eq("subscriber_id", subscriberId);
+    if (blackoutError) throw blackoutError;
+    const periods = blackoutRows || [];
+    const holidays = await ukHolidays(subscriber.public_booking_holiday_region || "england-and-wales");
+    const clock = londonNow();
+    const cutoff = String(subscriber.public_booking_cutoff_time || "");
+    const cutoffMinutes = /^\\d{2}:\\d{2}$/.test(cutoff)
+      ? Number(cutoff.slice(0,2))*60 + Number(cutoff.slice(3,5)) : null;
+    const rules = {
       allowSaturday: !!subscriber.public_booking_allow_saturday,
       allowSunday: !!subscriber.public_booking_allow_sunday,
-      cutoffTime: subscriber.public_booking_cutoff_time || null,
-      permitRequired,
-      permitDelayBusinessDays: Number(permit?.delay_business_days || 0),
+      blockBankHolidays: subscriber.public_booking_block_bank_holidays !== false,
+    };
+    const earliestDate = earliestDelivery({
+      today: clock.today,
+      afterCutoff: cutoffMinutes !== null && clock.minutes >= cutoffMinutes,
+      noticeDays: Number(subscriber.public_booking_notice_days || 0),
+      workingDays: !!subscriber.public_booking_notice_working_days,
+      permitDays: permitRequired ? Number(permit?.delay_business_days || 0) : 0,
+      holidays, periods, rules,
     });
+    const availableDates = [];
+    for (let i=0; i<370; i++) {
+      const d = new Date(earliestDate+"T12:00:00Z");
+      d.setUTCDate(d.getUTCDate()+i);
+      const candidate = d.toISOString().slice(0,10);
+      if (isDeliveryDay(candidate,holidays,periods,rules)) availableDates.push(candidate);
+    }
+    const availability = { earliestDate, availableDates, periods };
 
     const total = clampMoney(skipPriceIncVat + permitPriceNoVat);
 
@@ -316,11 +220,13 @@ export default async function handler(req, res) {
         : null,
       availability: {
         earliest_date: availability.earliestDate,
+        available_dates: availability.availableDates,
+        shutdowns: availability.periods,
         max_days_ahead:
           subscriber.public_booking_max_days_ahead == null
             ? null
             : Number(subscriber.public_booking_max_days_ahead),
-        debug: availability.debug,
+        
       },
     });
   } catch (err) {
