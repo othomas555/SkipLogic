@@ -1,6 +1,7 @@
 // pages/api/public/confirm-booking.js
 
 import Stripe from "stripe";
+import {earliestDelivery,ukHolidays,londonNow,isValidDeliveryDate} from "../../../lib/publicBookingCalendar";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { createInvoiceForJob } from "../xero/xero_create_invoice";
 import { getSkipPricesForPostcodeAdmin } from "../../../lib/getSkipPricesForPostcode";
@@ -152,7 +153,9 @@ async function loadSubscriberBySlug(supabase, slug) {
       public_booking_allow_sunday,
       public_booking_max_days_ahead,
       public_booking_cutoff_time,
-      public_booking_use_permit_lead_times
+      public_booking_use_permit_lead_times,
+      public_booking_holiday_region,
+      public_booking_block_bank_holidays
     `)
     .ilike("public_booking_slug", slug)
     .maybeSingle();
@@ -209,20 +212,22 @@ async function buildValidatedQuote({
   const usePermitLeadTimes = !!subscriber.public_booking_use_permit_lead_times;
   const permitRequired = placementType === "permit" && !!permit && usePermitLeadTimes;
 
-  const availability = calculateEarliestBookingDate({
-    now: new Date(),
-    subscriberNoticeDays: Number(subscriber.public_booking_notice_days || 0),
-    subscriberNoticeBusinessDays: !!subscriber.public_booking_notice_working_days,
-    allowSaturday: !!subscriber.public_booking_allow_saturday,
-    allowSunday: !!subscriber.public_booking_allow_sunday,
-    cutoffTime: subscriber.public_booking_cutoff_time || null,
-    permitRequired,
-    permitDelayBusinessDays: Number(permit?.delay_business_days || 0),
-  });
-
-  if (!scheduledDate) throw new Error("Delivery date is required.");
-  if (availability.earliestDate && scheduledDate < availability.earliestDate) {
-    throw new Error(`Earliest available delivery date is ${availability.earliestDate}.`);
+  const {data: periods,error: blackoutError}=await supabase.from("booking_blackouts")
+    .select("start_date,end_date").eq("subscriber_id",subscriber.id);
+  if(blackoutError)throw blackoutError;
+  const holidays=await ukHolidays(subscriber.public_booking_holiday_region||"england-and-wales");
+  const clock=londonNow();
+  const cutoff=String(subscriber.public_booking_cutoff_time||"");
+  const cutoffMinutes=/^\d{2}:\d{2}$/.test(cutoff)?Number(cutoff.slice(0,2))*60+Number(cutoff.slice(3,5)):null;
+  const rules={allowSaturday:!!subscriber.public_booking_allow_saturday,allowSunday:!!subscriber.public_booking_allow_sunday,blockBankHolidays:subscriber.public_booking_block_bank_holidays!==false};
+  const earliest=earliestDelivery({today:clock.today,afterCutoff:cutoffMinutes!==null&&clock.minutes>=cutoffMinutes,noticeDays:Number(subscriber.public_booking_notice_days||0),workingDays:!!subscriber.public_booking_notice_working_days,permitDays:permitRequired?Number(permit?.delay_business_days||0):0,holidays,periods:periods||[],rules});
+  if(!isValidDeliveryDate(scheduledDate,earliest,holidays,periods||[],rules)){
+    throw new Error("Delivery date is unavailable. Earliest available date: "+earliest);
+  }
+  if(subscriber.public_booking_max_days_ahead!=null){
+    const limit=new Date(clock.today+"T12:00:00Z");
+    limit.setUTCDate(limit.getUTCDate()+Number(subscriber.public_booking_max_days_ahead));
+    if(scheduledDate>limit.toISOString().slice(0,10))throw new Error("Delivery date is beyond the advance booking limit.");
   }
 
   const skipPriceIncVat = clampMoney(selectedSkip.price_inc_vat);
