@@ -341,9 +341,17 @@ export default async function handler(req, res) {
       apiVersion: "2025-02-24.acacia",
     });
 
+    const supabase = getSupabaseAdmin();
+    // A Connect direct charge lives on the operator account, not the platform.
+    // Do not trust an arbitrary account ID from the browser.
+    const slug = asText(req.body?.slug);
+    if (!slug) return res.status(400).json({ok:false,error:"Booking slug is required"});
+    const {data:owner,error:ownerError}=await supabase.from("subscribers")
+      .select("id,stripe_connect_account_id").ilike("public_booking_slug",slug).single();
+    if(ownerError||!owner?.stripe_connect_account_id)return res.status(404).json({ok:false,error:"Payment account not found"});
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["payment_intent"],
-    });
+    }, {stripeAccount:owner.stripe_connect_account_id});
 
     if (!session) {
       return res.status(404).json({ ok: false, error: "Checkout session not found" });
@@ -361,8 +369,7 @@ export default async function handler(req, res) {
     const skipTypeId = asText(md.skip_type_id);
     const scheduledDate = asText(md.scheduled_date);
 
-    const supabase = getSupabaseAdmin();
-
+    if (slug !== asText(md.booking_slug)) return res.status(400).json({ok:false,error:"Payment belongs to another booking page"});
     const quote = await buildValidatedQuote({
       supabase,
       slug,
@@ -373,6 +380,8 @@ export default async function handler(req, res) {
       scheduledDate,
     });
 
+    const expectedPence=Math.round(quote.pricing.totalToCharge*100);
+    if(session.currency!=="gbp"||session.amount_total!==expectedPence)return res.status(409).json({ok:false,error:"Payment amount does not match the booking price; contact support"});
     const existing = await findExistingJobBySession(supabase, quote.subscriber.id, session.id);
     if (existing) {
       return res.status(200).json({
