@@ -174,6 +174,11 @@ export default async function handler(req, res) {
       const d = new Date(earliestDate+"T12:00:00Z");
       d.setUTCDate(d.getUTCDate()+i);
       const candidate = d.toISOString().slice(0,10);
+      if (subscriber.public_booking_max_days_ahead != null) {
+        const max = new Date(clock.today+"T12:00:00Z");
+        max.setUTCDate(max.getUTCDate()+Number(subscriber.public_booking_max_days_ahead));
+        if (candidate > max.toISOString().slice(0,10)) break;
+      }
       if (isDeliveryDay(candidate,holidays,periods,rules)) availableDates.push(candidate);
     }
     const availability = { earliestDate, availableDates, periods };
