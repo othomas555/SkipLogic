@@ -46,6 +46,28 @@ export default function OnlineBookingSettingsPage() {
   const [successMsg, setSuccessMsg] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
 
+  const [paymentStatus,setPaymentStatus]=useState(null);
+  const [paymentBusy,setPaymentBusy]=useState(false);
+  async function paymentRequest(path,method="GET"){
+    const {data:{session}}=await supabase.auth.getSession();
+    if(!session?.access_token)throw Error("Please sign in again");
+    const response=await fetch(path,{method,headers:{Authorization:"Bearer "+session.access_token}});
+    const json=await response.json();
+    if(!response.ok||!json.ok)throw Error(json.error||"Stripe request failed");
+    return json;
+  }
+  useEffect(()=>{
+    if(checking||!subscriberId)return;
+    paymentRequest("/api/stripe/connect-status").then(setPaymentStatus).catch(e=>setPaymentStatus({error:e.message}));
+  },[checking,subscriberId]);
+  async function startPayments(){
+    try{
+      setPaymentBusy(true);
+      const result=await paymentRequest("/api/stripe/connect-onboard","POST");
+      window.location.href=result.url;
+    }catch(e){setErrorMsg(e.message);setPaymentBusy(false)}
+  }
+
   const [companyName, setCompanyName] = useState("");
 
   const [publicBookingEnabled, setPublicBookingEnabled] = useState(false);
@@ -302,6 +324,10 @@ export default function OnlineBookingSettingsPage() {
       {errorMsg ? <div style={styles.errorBanner}>{errorMsg}</div> : null}
       {successMsg ? <div style={styles.successBanner}>{successMsg}</div> : null}
 
+      <SectionCard title="Online Payments" subtitle="Connect your business bank account securely through Stripe. No API keys required.">
+        <p>{paymentStatus?.ready?"Online payments are active.":paymentStatus?.connected?"Stripe setup started; finish verification to receive payments.":paymentStatus?.error?"Payment status unavailable: "+paymentStatus.error:"Activate payments before accepting online card bookings."}</p>
+        {!paymentStatus?.ready&&<button type="button" disabled={paymentBusy} onClick={startPayments}>{paymentBusy?"Opening Stripe...":paymentStatus?.connected?"Continue Stripe setup":"Activate Online Payments"}</button>}
+      </SectionCard>
       <form onSubmit={handleSave} style={styles.formWrap}>
         <SectionCard
           title="Status & Link"
