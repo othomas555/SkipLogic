@@ -724,6 +724,16 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       xero_invoice_status: inv?.Status ? String(inv.Status) : null,
     };
 
+    // Clear only the online-payment invoice warning after successful linking.
+    // Never erase edited/cancelled invoice review flags.
+    const { data: warning } = await supabase.from("jobs")
+      .select("invoice_action_reason")
+      .eq("id", job.id).eq("subscriber_id", subscriberId).single();
+    if (warning?.invoice_action_reason === "online_payment_invoice_pending") {
+      update.invoice_action_required = false;
+      update.invoice_action_reason = null;
+      update.invoice_action_note = null;
+    }
     const { error } = await supabase
       .from("jobs")
       .update(update)
@@ -747,21 +757,26 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       LineItems: lineItems,
     };
 
-    // Claim once per job before checking or creating an invoice in Xero.
-    // A conflicting claim is never automatically stolen: an interrupted
-    // request may already have created an invoice remotely.
-    const { error: claimError } = await supabase
-      .from("xero_invoice_creation_locks")
-      .insert({ subscriber_id: subscriberId, job_id: job.id, status: "processing" });
-    if (claimError) {
-      if (claimError.code === "23505") {
-        throw new Error("Xero invoice creation already claimed for this job. Check Xero and reconcile the lock before retrying.");
-      }
-      throw new Error("Unable to claim Xero invoice creation lock: " + claimError.message);
+    const reference = String(job.job_number || "");
+    if (!reference) throw new Error("Job number required for safe Xero invoice retry");
+
+    async function findMatchingXeroInvoice() {
+      const where = 'Reference=="' + reference.replace(/"/g, '\\"') + '"';
+      const search = await xeroRequest({
+        accessToken, tenantId,
+        path: "/Invoices?where=" + encodeURIComponent(where),
+        method: "GET",
+      });
+      const matches = (Array.isArray(search?.Invoices) ? search.Invoices : [])
+        .filter((inv) => String(inv.Reference || "") === reference &&
+          String(inv.Contact?.ContactID || "").toLowerCase() === String(contactId).toLowerCase() &&
+          inv.Type === "ACCREC" && inv.Status !== "VOIDED" && inv.Status !== "DELETED");
+      if (matches.length > 1) throw new Error("Multiple Xero invoices use this job reference; manual review required");
+      return matches[0] || null;
     }
 
     async function completeInvoiceClaim(inv) {
-      const { error } = await supabase
+      const { data: rows, error } = await supabase
         .from("xero_invoice_creation_locks")
         .update({
           status: "completed",
@@ -771,35 +786,52 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
         })
         .eq("subscriber_id", subscriberId)
         .eq("job_id", job.id)
-        .eq("status", "processing");
-      if (error) throw new Error("Xero invoice created but lock completion failed; manual review required: " + error.message);
+        .eq("status", "processing")
+        .select("job_id");
+      if (error || !rows?.length) {
+        throw new Error("Xero invoice linked but lock completion requires manual review: " + (error?.message || "lock state changed"));
+      }
     }
 
-    // Recover invoices created in Xero when its API response was lost.
-    // Reference is the SkipLogic job number; restrict matches to the same contact.
-    const reference = String(job.job_number || "");
-    if (!reference) throw new Error("Job number required for safe Xero invoice retry");
-    const where = 'Reference=="' + reference.replace(/"/g, '\\"') + '"';
-    const search = await xeroRequest({
-      accessToken, tenantId,
-      path: "/Invoices?where=" + encodeURIComponent(where),
-      method: "GET",
-    });
-    const matches = (Array.isArray(search?.Invoices) ? search.Invoices : [])
-      .filter((inv) => String(inv.Reference || "") === reference &&
-        String(inv.Contact?.ContactID || "").toLowerCase() === String(contactId).toLowerCase() &&
-        inv.Type === "ACCREC" && inv.Status !== "VOIDED" && inv.Status !== "DELETED");
-    if (matches.length > 1) throw new Error("Multiple Xero invoices already use this job reference; manual review required");
-    if (matches.length === 1) {
-      await writeJobXeroFields(matches[0]);
-      await completeInvoiceClaim(matches[0]);
-      return {
-        mode: "recovered",
-        invoiceId: String(matches[0].InvoiceID),
-        invoiceNumber: matches[0].InvoiceNumber || null,
-        invoiceStatus: matches[0].Status || null,
-      };
+    // Unique database claim serialises creation attempts.
+    const { error: claimError } = await supabase
+      .from("xero_invoice_creation_locks")
+      .insert({ subscriber_id: subscriberId, job_id: job.id, status: "processing" });
+    if (claimError && claimError.code !== "23505") {
+      throw new Error("Unable to claim Xero invoice creation lock: " + claimError.message);
     }
+
+    if (claimError?.code === "23505") {
+      // Another request owns this job. A previous Xero POST might have succeeded
+      // even if its response was lost. Only reconcile an existing invoice;
+      // NEVER issue a second POST from a duplicate/uncertain claim.
+      const { data: lock, error: lockError } = await supabase
+        .from("xero_invoice_creation_locks")
+        .select("status,xero_invoice_id")
+        .eq("subscriber_id", subscriberId).eq("job_id", job.id).single();
+      if (lockError) throw new Error("Cannot read Xero invoice lock: " + lockError.message);
+      if (lock.status === "completed" && lock.xero_invoice_id) {
+        const inv = await getInvoiceById({ accessToken, tenantId, invoiceId: lock.xero_invoice_id });
+        await writeJobXeroFields(inv);
+        return { mode: "recovered", invoiceId: String(inv.InvoiceID), invoiceNumber: inv.InvoiceNumber || null, invoiceStatus: inv.Status || null };
+      }
+      const existing = await findMatchingXeroInvoice();
+      if (existing) {
+        await writeJobXeroFields(existing);
+        if (lock.status === "processing") await completeInvoiceClaim(existing);
+        return { mode: "recovered", invoiceId: String(existing.InvoiceID), invoiceNumber: existing.InvoiceNumber || null, invoiceStatus: existing.Status || null };
+      }
+      throw new Error("Invoice creation is in progress or unresolved. No matching Xero invoice found; manual reconciliation required. Do not retry creation automatically.");
+    }
+
+    // New claim: check for a previously created invoice before creating one.
+    const existing = await findMatchingXeroInvoice();
+    if (existing) {
+      await writeJobXeroFields(existing);
+      await completeInvoiceClaim(existing);
+      return { mode: "recovered", invoiceId: String(existing.InvoiceID), invoiceNumber: existing.InvoiceNumber || null, invoiceStatus: existing.Status || null };
+    }
+
     const inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
     await writeJobXeroFields(inv);
     await completeInvoiceClaim(inv);
