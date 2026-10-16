@@ -381,6 +381,12 @@ export default async function handler(req, res) {
     const scheduledDate = asText(md.scheduled_date);
 
     if (slug !== metadataSlug) return res.status(400).json({ok:false,error:"Payment belongs to another booking page"});
+    // A paid booking may be retried days later, after cutoffs or prices have changed.
+    // Find it before revalidating the now-stale quote; never block invoice recovery.
+    const existingPaidJob = await findExistingJobBySession(supabase, owner.id, session.id);
+    if (existingPaidJob) {
+      return recoverExistingBooking(supabase, owner.id, existingPaidJob, res);
+    }
     const quote = await buildValidatedQuote({
       supabase,
       slug,
@@ -393,11 +399,6 @@ export default async function handler(req, res) {
 
     const expectedPence=Math.round(quote.pricing.totalToCharge*100);
     if(session.currency!=="gbp"||session.amount_total!==expectedPence)return res.status(409).json({ok:false,error:"Payment amount does not match the booking price; contact support"});
-    const existing = await findExistingJobBySession(supabase, quote.subscriber.id, session.id);
-    if (existing) {
-      return recoverExistingBooking(supabase, quote.subscriber.id, existing, res);
-    }
-
     const customerId = await findOrCreateCustomer(supabase, quote.subscriber.id, md);
 
     const { data: allocatedJobNumber, error: allocErr } = await supabase.rpc("alloc_job_number", {
