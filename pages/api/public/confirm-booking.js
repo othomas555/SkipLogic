@@ -451,7 +451,7 @@ export default async function handler(req, res) {
     if (asText(md.quote_version) === "1") {
       const readPence = (value) => {
         const text = asText(value);
-        if (!/^\\d+$/.test(text)) throw new Error("Invalid paid quote snapshot");
+        if (!/^\d+$/.test(text)) throw new Error("Invalid paid quote snapshot");
         const amount = Number(text);
         if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("Invalid paid quote amount");
         return amount;
@@ -462,7 +462,7 @@ export default async function handler(req, res) {
       if (asText(md.subscriber_id) !== String(owner.id) ||
           skipPence < 50 ||
           skipPence + permitPence !== expectedPence ||
-          !skipTypeId || !/^\\d{4}-\\d{2}-\\d{2}$/.test(scheduledDate) ||
+          !skipTypeId || !/^\d{4}-\d{2}-\d{2}$/.test(scheduledDate) ||
           !["private", "permit"].includes(placementType) ||
           (placementType === "private" && (permitSettingId || permitPence !== 0)) ||
           (placementType === "permit" && !permitSettingId)) {
