@@ -267,6 +267,7 @@ async function ensureInitialDeliveryEvent(supabase, subscriberId, jobId) {
     .eq("subscriber_id", subscriberId)
     .eq("job_id", jobId)
     .eq("event_type", "delivery")
+    .eq("notes", "Initial delivery booked")
     .limit(1);
   if (lookupError) throw new Error("Cannot check delivery event: " + lookupError.message);
   if (events?.length) return;
@@ -426,18 +427,60 @@ export default async function handler(req, res) {
     if (existingPaidJob) {
       return recoverExistingBooking(supabase, owner.id, existingPaidJob, res);
     }
-    const quote = await buildValidatedQuote({
-      supabase,
-      slug,
-      postcode,
-      placementType,
-      permitSettingId,
-      skipTypeId,
-      scheduledDate,
-    });
-
-    const expectedPence=Math.round(quote.pricing.totalToCharge*100);
-    if(session.currency!=="gbp"||session.amount_total!==expectedPence)return res.status(409).json({ok:false,error:"Payment amount does not match the booking price; contact support"});
+    // Checkout validated the date, postcode, permit and price BEFORE payment.
+    // Once paid, honour that immutable snapshot rather than today's prices,
+    // cutoff, holiday rules or an operator's later configuration changes.
+    let quote;
+    let expectedPence;
+    if (asText(md.quote_version) === "1") {
+      const readPence = (value) => {
+        const text = asText(value);
+        if (!/^\\d+$/.test(text)) throw new Error("Invalid paid quote snapshot");
+        const amount = Number(text);
+        if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("Invalid paid quote amount");
+        return amount;
+      };
+      const skipPence = readPence(md.skip_price_pence);
+      const permitPence = readPence(md.permit_price_pence);
+      expectedPence = readPence(md.total_pence);
+      if (asText(md.subscriber_id) !== String(owner.id) ||
+          skipPence < 50 ||
+          skipPence + permitPence !== expectedPence ||
+          !skipTypeId || !/^\\d{4}-\\d{2}-\\d{2}$/.test(scheduledDate) ||
+          !["private", "permit"].includes(placementType) ||
+          (placementType === "private" && (permitSettingId || permitPence !== 0)) ||
+          (placementType === "permit" && !permitSettingId)) {
+        throw new Error("Invalid paid booking snapshot");
+      }
+      const delay = Number(asText(md.permit_delay_business_days));
+      const validity = Number(asText(md.permit_validity_days));
+      if (![delay, validity].every((n) => Number.isSafeInteger(n) && n >= 0)) {
+        throw new Error("Invalid paid permit snapshot");
+      }
+      quote = {
+        subscriber: { id: owner.id },
+        selectedSkip: { skip_type_id: skipTypeId },
+        permit: placementType === "permit"
+          ? { id: permitSettingId, delay_business_days: delay, validity_days: validity }
+          : null,
+        pricing: {
+          skipPriceIncVat: skipPence / 100,
+          permitPriceNoVat: permitPence / 100,
+          totalToCharge: expectedPence / 100,
+        },
+      };
+    } else if (!asText(md.quote_version)) {
+      // Compatibility for sessions issued before quote snapshots were added.
+      quote = await buildValidatedQuote({
+        supabase, slug, postcode, placementType, permitSettingId, skipTypeId, scheduledDate,
+      });
+      expectedPence = Math.round(quote.pricing.totalToCharge * 100);
+    } else {
+      throw new Error("Unsupported checkout quote version");
+    }
+    if (session.currency !== "gbp" || session.amount_total !== expectedPence) {
+      return res.status(409).json({ok:false,error:"Payment amount does not match the checkout quote; contact support"});
+    }
     const customerId = await findOrCreateCustomer(supabase, quote.subscriber.id, md);
 
     const { data: allocatedJobNumber, error: allocErr } = await supabase.rpc("alloc_job_number", {
