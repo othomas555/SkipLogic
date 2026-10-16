@@ -47,6 +47,7 @@ export default async function handler(req,res){
   if(!clean(customer.first_name)||!clean(customer.last_name)||!clean(customer.email)||!clean(customer.phone)||!clean(site.address_line1)||!clean(site.town))return res.status(400).json({ok:false,error:"Please complete customer and delivery address details"});
   const metadata={
    booking_slug:slug,postcode,placement_type:placement,permit_setting_id:permit?.id||"",skip_type_id:String(selected.skip_type_id),scheduled_date:date,
+   quote_version:"1",subscriber_id:sub.id,skip_price_pence:String(Math.round(Number(selected.price_inc_vat)*100)),permit_price_pence:String(Math.round(Number(permit?.price_no_vat||0)*100)),permit_delay_business_days:String(Number(permit?.delay_business_days||0)),permit_validity_days:String(Number(permit?.validity_days||0)),total_pence:String(total),
    customer_first_name:clean(customer.first_name),customer_last_name:clean(customer.last_name),customer_company_name:clean(customer.company_name),customer_email:clean(customer.email),customer_phone:clean(customer.phone),
    site_name:clean(site.site_name),site_address_line1:clean(site.address_line1),site_address_line2:clean(site.address_line2),site_town:clean(site.town),notes:clean(b.notes)
   };
