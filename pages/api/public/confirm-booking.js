@@ -440,6 +440,17 @@ export default async function handler(req, res) {
       .single();
 
     if (insertErr || !job) {
+      // Unique Stripe session index protects against concurrent browser/webhook requests.
+      // The losing request must never create a second invoice.
+      if (insertErr?.code === "23505") {
+        const alreadyCreated = await findExistingJobBySession(supabase, quote.subscriber.id, session.id);
+        if (alreadyCreated) {
+          return res.status(200).json({
+            ok: true, already_confirmed: true,
+            job_id: alreadyCreated.id, job_number: alreadyCreated.job_number,
+          });
+        }
+      }
       throw new Error(insertErr?.message || "Could not create job");
     }
 
