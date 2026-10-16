@@ -556,8 +556,16 @@ export default function EditJobPage() {
             <h1 style={styles.title}>Edit Job #{job.job_number || job.id}</h1>
             <div style={styles.badgeRow}>
               {asText(job.notes).includes("[online_payment:paid_by_stripe]") ? (
-                <span style={{...styles.badge, background:"#dcfce7", color:"#166534", border:"1px solid #86efac"}}>
-                  PAID ONLINE VIA STRIPE — Do not request payment again. Xero invoice awaits bank reconciliation.
+                <span style={{
+                  ...styles.badge,
+                  background: hasInvoice ? "#dcfce7" : "#fef3c7",
+                  color: hasInvoice ? "#166534" : "#92400e",
+                  border: hasInvoice ? "1px solid #86efac" : "1px solid #f59e0b",
+                  whiteSpace: "normal",
+                }}>
+                  {hasInvoice
+                    ? "PAID ONLINE VIA STRIPE — Invoice created. Do not request payment again; reconcile in Xero when Stripe pays out."
+                    : "PAID ONLINE VIA STRIPE — INVOICE PENDING / ACTION REQUIRED. Customer has already paid. Check Xero before attempting another invoice; never charge again."}
                 </span>
               ) : null}
               <span style={styles.badge}>Status: {job.job_status || "booked"}</span>
