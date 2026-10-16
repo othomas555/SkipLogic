@@ -260,7 +260,30 @@ async function findExistingJobBySession(supabase, subscriberId, sessionId) {
   return Array.isArray(data) && data.length ? data[0] : null;
 }
 
+async function ensureInitialDeliveryEvent(supabase, subscriberId, jobId) {
+  const { data: events, error: lookupError } = await supabase
+    .from("job_events")
+    .select("id")
+    .eq("subscriber_id", subscriberId)
+    .eq("job_id", jobId)
+    .eq("event_type", "delivery")
+    .limit(1);
+  if (lookupError) throw new Error("Cannot check delivery event: " + lookupError.message);
+  if (events?.length) return;
+  const { error } = await supabase.rpc("create_job_event", {
+    _subscriber_id: subscriberId,
+    _job_id: jobId,
+    _event_type: "delivery",
+    _scheduled_at: null,
+    _completed_at: null,
+    _notes: "Initial delivery booked",
+  });
+  if (error) throw new Error("Cannot create delivery event: " + error.message);
+}
+
 async function recoverExistingBooking(supabase, subscriberId, job, res) {
+  try { await ensureInitialDeliveryEvent(supabase, subscriberId, job.id); }
+  catch(e) { console.error("Paid job delivery event recovery failed",job.id,String(e?.message||e)); return res.status(503).json({ok:false,booking_created:true,job_id:job.id,error:"Paid booking saved; delivery event recovery pending."}); }
   if (job.xero_invoice_id) return res.status(200).json({ok:true,already_confirmed:true,job_id:job.id,job_number:job.job_number,invoice:{ok:true,mode:"already"}});
   try {
     const invoice=await createInvoiceForJob({subscriberId,jobId:job.id});
@@ -458,18 +481,7 @@ export default async function handler(req, res) {
       throw new Error(insertErr?.message || "Could not create job");
     }
 
-    const { error: eventError } = await supabase.rpc("create_job_event", {
-      _subscriber_id: quote.subscriber.id,
-      _job_id: job.id,
-      _event_type: "delivery",
-      _scheduled_at: null,
-      _completed_at: null,
-      _notes: "Initial delivery booked",
-    });
-
-    if (eventError) {
-      throw new Error(`Job created but delivery event failed: ${eventError.message}`);
-    }
+    await ensureInitialDeliveryEvent(supabase, quote.subscriber.id, job.id);
 
     let invoice = null;
     try {
