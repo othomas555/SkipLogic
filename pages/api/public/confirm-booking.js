@@ -399,9 +399,10 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: "STRIPE_SECRET_KEY is missing" });
     }
 
-    const sessionId = asText(req.body?.session_id);
-    if (!sessionId) {
-      return res.status(400).json({ ok: false, error: "session_id is required" });
+    let sessionId = asText(req.body?.session_id);
+    const paymentIntentId = asText(req.body?.payment_intent);
+    if (!sessionId && !/^pi_[A-Za-z0-9]+$/.test(paymentIntentId)) {
+      return res.status(400).json({ ok: false, error: "A valid session_id or payment_intent is required" });
     }
 
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -416,9 +417,25 @@ export default async function handler(req, res) {
     const {data:owner,error:ownerError}=await supabase.from("subscribers")
       .select("id,stripe_connect_account_id").ilike("public_booking_slug",slug).single();
     if(ownerError||!owner?.stripe_connect_account_id)return res.status(404).json({ok:false,error:"Payment account not found"});
+    if (!sessionId) {
+      // Recover a completed checkout from its payment intent without requiring
+      // customers or operators to locate a Checkout Session in Stripe.
+      const found = await stripe.checkout.sessions.list(
+        { payment_intent: paymentIntentId, limit: 10 },
+        { stripeAccount: owner.stripe_connect_account_id }
+      );
+      const matching = (found.data || []).filter((item) => item.mode === "payment" && item.payment_status === "paid");
+      if (matching.length !== 1) {
+        return res.status(409).json({ok:false,error:"Could not uniquely identify a paid Checkout Session for this payment. No additional payment is required."});
+      }
+      sessionId = matching[0].id;
+    }
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["payment_intent"],
     }, {stripeAccount:owner.stripe_connect_account_id});
+    if (paymentIntentId && String(session.payment_intent?.id || session.payment_intent || "") !== paymentIntentId) {
+      return res.status(409).json({ok:false,error:"Payment does not match Checkout Session"});
+    }
 
     if (!session) {
       return res.status(404).json({ ok: false, error: "Checkout session not found" });
