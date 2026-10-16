@@ -747,6 +747,34 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       LineItems: lineItems,
     };
 
+    // Claim once per job before checking or creating an invoice in Xero.
+    // A conflicting claim is never automatically stolen: an interrupted
+    // request may already have created an invoice remotely.
+    const { error: claimError } = await supabase
+      .from("xero_invoice_creation_locks")
+      .insert({ subscriber_id: subscriberId, job_id: job.id, status: "processing" });
+    if (claimError) {
+      if (claimError.code === "23505") {
+        throw new Error("Xero invoice creation already claimed for this job. Check Xero and reconcile the lock before retrying.");
+      }
+      throw new Error("Unable to claim Xero invoice creation lock: " + claimError.message);
+    }
+
+    async function completeInvoiceClaim(inv) {
+      const { error } = await supabase
+        .from("xero_invoice_creation_locks")
+        .update({
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          xero_invoice_id: String(inv.InvoiceID),
+          last_error: null,
+        })
+        .eq("subscriber_id", subscriberId)
+        .eq("job_id", job.id)
+        .eq("status", "processing");
+      if (error) throw new Error("Xero invoice created but lock completion failed; manual review required: " + error.message);
+    }
+
     // Recover invoices created in Xero when its API response was lost.
     // Reference is the SkipLogic job number; restrict matches to the same contact.
     const reference = String(job.job_number || "");
@@ -764,6 +792,7 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
     if (matches.length > 1) throw new Error("Multiple Xero invoices already use this job reference; manual review required");
     if (matches.length === 1) {
       await writeJobXeroFields(matches[0]);
+      await completeInvoiceClaim(matches[0]);
       return {
         mode: "recovered",
         invoiceId: String(matches[0].InvoiceID),
@@ -773,6 +802,7 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
     }
     const inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
     await writeJobXeroFields(inv);
+    await completeInvoiceClaim(inv);
 
     if (paymentType === "card" && job.paid_at) {
       const totalToPay = skipAmountIncVat + (permitLine ? Number(permitAmountNoVat) : 0);
