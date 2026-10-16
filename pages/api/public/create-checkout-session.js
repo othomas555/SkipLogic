@@ -54,7 +54,13 @@ export default async function handler(req,res){
   const feeBps=Number(sub.public_booking_platform_fee_bps||0);
   if(!Number.isInteger(feeBps)||feeBps<0||feeBps>10000)throw Error("Invalid platform fee configuration");
   const fee=Math.round(total*feeBps/10000);
-  const origin=new URL(process.env.NEXT_PUBLIC_SITE_URL||"https://skip-logic.vercel.app").origin;
+  // Return customers to the deployment that created the Checkout session.
+  // A fixed production URL sends preview test payments to the wrong API.
+  const requestHost=String(req.headers["x-forwarded-host"]||req.headers.host||"").split(",")[0].trim();
+  const configuredHost=new URL(process.env.NEXT_PUBLIC_SITE_URL||"https://skip-logic.vercel.app").host;
+  const allowedHost=requestHost===configuredHost||requestHost==="skip-logic.vercel.app"||/^[a-z0-9-]+\.vercel\.app$/i.test(requestHost);
+  if(!allowedHost)throw Error("Unrecognised booking host");
+  const origin="https://"+requestHost;
   const session=await stripe.checkout.sessions.create({
    mode:"payment",customer_email:clean(customer.email),
    line_items:[{price_data:{currency:"gbp",unit_amount:total,product_data:{name:"Skip hire"+(sub.company_name?" - "+sub.company_name:"")}},quantity:1}],
