@@ -403,7 +403,7 @@ export default async function handler(req, res) {
     }
 
     const sessionToken = `[stripe_session:${session.id}]`;
-    const notes = [asText(md.notes), sessionToken].filter(Boolean).join("\n");
+    const notes = [asText(md.notes), "[online_payment:paid_by_stripe]", sessionToken].filter(Boolean).join("\n");
 
     const insertPayload = {
       subscriber_id: quote.subscriber.id,
