@@ -555,7 +555,7 @@ export default function EditJobPage() {
           <div>
             <h1 style={styles.title}>Edit Job #{job.job_number || job.id}</h1>
             <div style={styles.badgeRow}>
-              {asText(job.notes).includes("[online_payment:paid_by_stripe]") ? (
+              {(asText(job.notes).includes("[online_payment:paid_by_stripe]") || asText(job.notes).includes("[stripe_session:")) ? (
                 <span style={{
                   ...styles.badge,
                   background: hasInvoice ? "#dcfce7" : "#fef3c7",
