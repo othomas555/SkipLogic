@@ -747,6 +747,30 @@ export async function createInvoiceForJob({ subscriberId, jobId }) {
       LineItems: lineItems,
     };
 
+    // Recover invoices created in Xero when its API response was lost.
+    // Reference is the SkipLogic job number; restrict matches to the same contact.
+    const reference = String(job.job_number || "");
+    if (!reference) throw new Error("Job number required for safe Xero invoice retry");
+    const where = 'Reference=="' + reference.replace(/"/g, '\\"') + '"';
+    const search = await xeroRequest({
+      accessToken, tenantId,
+      path: "/Invoices?where=" + encodeURIComponent(where),
+      method: "GET",
+    });
+    const matches = (Array.isArray(search?.Invoices) ? search.Invoices : [])
+      .filter((inv) => String(inv.Reference || "") === reference &&
+        String(inv.Contact?.ContactID || "").toLowerCase() === String(contactId).toLowerCase() &&
+        inv.Type === "ACCREC" && inv.Status !== "VOIDED" && inv.Status !== "DELETED");
+    if (matches.length > 1) throw new Error("Multiple Xero invoices already use this job reference; manual review required");
+    if (matches.length === 1) {
+      await writeJobXeroFields(matches[0]);
+      return {
+        mode: "recovered",
+        invoiceId: String(matches[0].InvoiceID),
+        invoiceNumber: matches[0].InvoiceNumber || null,
+        invoiceStatus: matches[0].Status || null,
+      };
+    }
     const inv = await createInvoiceInXero({ accessToken, tenantId, invoicePayload });
     await writeJobXeroFields(inv);
 
