@@ -14,10 +14,15 @@ export default async function handler(req,res){
   if(error)throw error;
   let accountId=sub.stripe_connect_account_id;
   if(!accountId){
-   const account=await stripe.accounts.create({type:"express",country:"GB",business_type:"company",business_profile:{name:sub.company_name||undefined},metadata:{subscriber_id:sub.id}});
+   const account=await stripe.accounts.create({type:"standard",country:"GB",business_profile:{name:sub.company_name||undefined},metadata:{subscriber_id:sub.id}});
    accountId=account.id;
    const {error:saveError}=await db.from("subscribers").update({stripe_connect_account_id:accountId}).eq("id",sub.id).is("stripe_connect_account_id",null);
    if(saveError)throw saveError;
+  }
+  // Standard accounts are Stripe-managed: confirm we have not linked a platform-liable account.
+  const linkedAccount=await stripe.accounts.retrieve(accountId);
+  if(linkedAccount.controller?.losses?.payments==="application"){
+    return res.status(409).json({ok:false,error:"This account assigns payment losses to SkipLogic. Please contact support before proceeding."});
   }
   const origin=new URL(process.env.NEXT_PUBLIC_SITE_URL||"https://skip-logic.vercel.app").origin;
   const link=await stripe.accountLinks.create({account:accountId,refresh_url:origin+"/app/settings/online-booking?stripe=refresh",return_url:origin+"/app/settings/online-booking?stripe=return",type:"account_onboarding"});
