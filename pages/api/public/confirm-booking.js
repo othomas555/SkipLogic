@@ -362,14 +362,14 @@ export default async function handler(req, res) {
     }
 
     const md = session.metadata || {};
-    const slug = asText(md.booking_slug);
+    const metadataSlug = asText(md.booking_slug);
     const postcode = asText(md.postcode);
     const placementType = asText(md.placement_type) || "private";
     const permitSettingId = asText(md.permit_setting_id);
     const skipTypeId = asText(md.skip_type_id);
     const scheduledDate = asText(md.scheduled_date);
 
-    if (slug !== asText(md.booking_slug)) return res.status(400).json({ok:false,error:"Payment belongs to another booking page"});
+    if (slug !== metadataSlug) return res.status(400).json({ok:false,error:"Payment belongs to another booking page"});
     const quote = await buildValidatedQuote({
       supabase,
       slug,
