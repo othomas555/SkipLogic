@@ -298,6 +298,21 @@ async function ensureInitialDeliveryEvent(supabase, subscriberId, jobId) {
   }
 }
 
+async function flagPaidInvoiceFailure(supabase, subscriberId, jobId, error) {
+  // Preserve existing manual review reasons (e.g. edited/cancelled invoices).
+  const { data: job, error: loadError } = await supabase.from("jobs")
+    .select("invoice_action_required,xero_invoice_id")
+    .eq("subscriber_id", subscriberId).eq("id", jobId).single();
+  if (loadError || !job || job.xero_invoice_id || job.invoice_action_required) return;
+  const { error: updateError } = await supabase.from("jobs").update({
+    invoice_action_required: true,
+    invoice_action_reason: "online_payment_invoice_pending",
+    invoice_action_note: "Stripe payment received. Xero invoice needs reconciliation; do not charge customer again. " +
+      String(error?.message || error || "Unknown error").slice(0, 300),
+  }).eq("subscriber_id", subscriberId).eq("id", jobId).eq("invoice_action_required", false).is("xero_invoice_id", null);
+  if (updateError) console.error("Failed to flag paid invoice for review", jobId, updateError.message);
+}
+
 async function recoverExistingBooking(supabase, subscriberId, job, res) {
   try { await ensureInitialDeliveryEvent(supabase, subscriberId, job.id); }
   catch(e) { console.error("Paid job delivery event recovery failed",job.id,String(e?.message||e)); return res.status(503).json({ok:false,booking_created:true,job_id:job.id,error:"Paid booking saved; delivery event recovery pending."}); }
@@ -307,6 +322,7 @@ async function recoverExistingBooking(supabase, subscriberId, job, res) {
     return res.status(200).json({ok:true,already_confirmed:true,job_id:job.id,job_number:job.job_number,invoice:{ok:true,...invoice}});
   } catch(e) {
     console.error("Xero invoice retry failed for paid job",job.id,String(e?.message||e));
+    await flagPaidInvoiceFailure(supabase, subscriberId, job.id, e);
     return res.status(503).json({ok:false,booking_created:true,job_id:job.id,job_number:job.job_number,error:"Payment received and booking saved. Xero invoice pending; do not pay again."});
   }
 }
@@ -559,6 +575,7 @@ export default async function handler(req, res) {
 
     if (!invoice?.ok) {
       console.error("Xero invoice pending for paid job",job.id,invoice?.details||invoice?.error);
+      await flagPaidInvoiceFailure(supabase, quote.subscriber.id, job.id, invoice?.details||invoice?.error);
       return res.status(503).json({ok:false,booking_created:true,job_id:job.id,job_number:job.job_number,error:"Payment received and booking saved. Xero invoice pending; do not pay again."});
     }
     await sendBookingEmail(req, job, md, quote.pricing.totalToCharge);
