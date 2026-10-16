@@ -251,13 +251,24 @@ async function findExistingJobBySession(supabase, subscriberId, sessionId) {
 
   const { data, error } = await supabase
     .from("jobs")
-    .select("id, job_number")
+    .select("id, job_number, xero_invoice_id")
     .eq("subscriber_id", subscriberId)
     .ilike("notes", `%${token}%`)
     .limit(1);
 
   if (error) throw new Error(error.message || "Failed to check existing booking");
   return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function recoverExistingBooking(supabase, subscriberId, job, res) {
+  if (job.xero_invoice_id) return res.status(200).json({ok:true,already_confirmed:true,job_id:job.id,job_number:job.job_number,invoice:{ok:true,mode:"already"}});
+  try {
+    const invoice=await createInvoiceForJob({subscriberId,jobId:job.id});
+    return res.status(200).json({ok:true,already_confirmed:true,job_id:job.id,job_number:job.job_number,invoice:{ok:true,...invoice}});
+  } catch(e) {
+    console.error("Xero invoice retry failed for paid job",job.id,String(e?.message||e));
+    return res.status(503).json({ok:false,booking_created:true,job_id:job.id,job_number:job.job_number,error:"Payment received and booking saved. Xero invoice pending; do not pay again."});
+  }
 }
 
 async function findOrCreateCustomer(supabase, subscriberId, md) {
@@ -384,12 +395,7 @@ export default async function handler(req, res) {
     if(session.currency!=="gbp"||session.amount_total!==expectedPence)return res.status(409).json({ok:false,error:"Payment amount does not match the booking price; contact support"});
     const existing = await findExistingJobBySession(supabase, quote.subscriber.id, session.id);
     if (existing) {
-      return res.status(200).json({
-        ok: true,
-        already_confirmed: true,
-        job_id: existing.id,
-        job_number: existing.job_number,
-      });
+      return recoverExistingBooking(supabase, quote.subscriber.id, existing, res);
     }
 
     const customerId = await findOrCreateCustomer(supabase, quote.subscriber.id, md);
@@ -445,10 +451,7 @@ export default async function handler(req, res) {
       if (insertErr?.code === "23505") {
         const alreadyCreated = await findExistingJobBySession(supabase, quote.subscriber.id, session.id);
         if (alreadyCreated) {
-          return res.status(200).json({
-            ok: true, already_confirmed: true,
-            job_id: alreadyCreated.id, job_number: alreadyCreated.job_number,
-          });
+          return recoverExistingBooking(supabase, quote.subscriber.id, alreadyCreated, res);
         }
       }
       throw new Error(insertErr?.message || "Could not create job");
@@ -482,6 +485,10 @@ export default async function handler(req, res) {
       };
     }
 
+    if (!invoice?.ok) {
+      console.error("Xero invoice pending for paid job",job.id,invoice?.details||invoice?.error);
+      return res.status(503).json({ok:false,booking_created:true,job_id:job.id,job_number:job.job_number,error:"Payment received and booking saved. Xero invoice pending; do not pay again."});
+    }
     await sendBookingEmail(req, job, md, quote.pricing.totalToCharge);
 
     return res.status(200).json({
