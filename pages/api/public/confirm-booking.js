@@ -278,7 +278,23 @@ async function ensureInitialDeliveryEvent(supabase, subscriberId, jobId) {
     _completed_at: null,
     _notes: "Initial delivery booked",
   });
-  if (error) throw new Error("Cannot create delivery event: " + error.message);
+  if (error) {
+    // Concurrent webhook/browser confirmations can both observe no delivery
+    // event. The partial unique index allows only one initial delivery.
+    // On a uniqueness conflict, verify that the winning request committed.
+    if (error.code === "23505") {
+      const { data: winner, error: recheckError } = await supabase
+        .from("job_events")
+        .select("id")
+        .eq("subscriber_id", subscriberId)
+        .eq("job_id", jobId)
+        .eq("event_type", "delivery")
+        .eq("notes", "Initial delivery booked")
+        .limit(1);
+      if (!recheckError && winner?.length) return;
+    }
+    throw new Error("Cannot create delivery event: " + error.message);
+  }
 }
 
 async function recoverExistingBooking(supabase, subscriberId, job, res) {
