@@ -68,6 +68,18 @@ export default function OnlineBookingSettingsPage() {
     }catch(e){setErrorMsg(e.message);setPaymentBusy(false)}
   }
 
+  async function connectExistingPayments() {
+    try {
+      setPaymentBusy(true);
+      setErrorMsg("");
+      const result = await paymentRequest("/api/stripe/connect-existing", "POST");
+      window.location.href = result.url;
+    } catch (e) {
+      setErrorMsg(e.message);
+      setPaymentBusy(false);
+    }
+  }
+
   const [companyName, setCompanyName] = useState("");
 
   const [publicBookingEnabled, setPublicBookingEnabled] = useState(false);
@@ -325,6 +337,12 @@ export default function OnlineBookingSettingsPage() {
       {successMsg ? <div style={styles.successBanner}>{successMsg}</div> : null}
 
       <SectionCard title="Online Payments" subtitle="Connect your business bank account securely through Stripe. No API keys required.">
+        {!paymentStatus?.connected && <button type="button" disabled={paymentBusy} onClick={connectExistingPayments} style={{marginRight:12,marginBottom:12}}>
+          Connect existing Stripe account
+        </button>}
+        {router.query.stripe === "connected" && <p>Stripe account connected. Check payment status below.</p>}
+        {router.query.stripe === "error" && <p>Stripe connection was not completed. Please try again.</p>}
+
         <p>{paymentStatus?.ready?"Online payments are active.":paymentStatus?.connected?"Stripe setup started; finish verification to receive payments.":paymentStatus?.error?"Payment status unavailable: "+paymentStatus.error:"Activate payments before accepting online card bookings."}</p>
         {!paymentStatus?.ready&&<button type="button" disabled={paymentBusy} onClick={startPayments}>{paymentBusy?"Opening Stripe...":paymentStatus?.connected?"Continue Stripe setup":"Activate Online Payments"}</button>}
       </SectionCard>
