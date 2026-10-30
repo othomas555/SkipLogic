@@ -115,6 +115,26 @@ export default function SubscriptionSettingsPage() {
 
   const currentVariant = subRow?.plan_variant_id ? variantById.get(subRow.plan_variant_id) : null;
 
+  async function syncSubscription() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error("Please sign in again.");
+      const response = await fetch("/api/stripe/sync-subscription", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token },
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || result.error || "Subscription sync failed");
+      await loadAll();
+    } catch (error) {
+      setErr(String(error?.message || error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function startCheckout(plan_variant_id) {
     setBusy(true);
     setErr(null);
@@ -209,6 +229,20 @@ export default function SubscriptionSettingsPage() {
           }}
         >
           Manage billing (Stripe portal)
+        </button>
+
+        <button
+          onClick={syncSubscription}
+          disabled={busy}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: "white",
+            cursor: busy ? "not-allowed" : "pointer",
+          }}
+        >
+          Sync from Stripe
         </button>
 
         <button
