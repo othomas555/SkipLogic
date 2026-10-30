@@ -551,7 +551,7 @@ export default async function handler(req, res) {
         subscription_status: status,
         trial_ends_at: trialEndsAt,
         plan_variant_id: planVariantId || null,
-        locked_at: null,
+        locked_at: ["canceled", "unpaid", "incomplete_expired"].includes(status) ? new Date().toISOString() : null,
       };
 
       const { error: upErr } = await supabase
@@ -591,7 +591,7 @@ export default async function handler(req, res) {
         subscription_status: status,
         trial_ends_at: trialEndsAt,
         plan_variant_id: planVariantId || null,
-        locked_at: null,
+        locked_at: ["canceled", "unpaid", "incomplete_expired"].includes(status) ? new Date().toISOString() : null,
       };
 
       const { error: upErr } = await supabase
@@ -613,7 +613,13 @@ export default async function handler(req, res) {
       const subscriberId = await findSubscriberByStripeCustomerId(supabase, stripeCustomerId);
       if (!subscriberId) return res.status(200).json({ ok: true });
 
-      const grace = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: existing, error: existingError } = await supabase
+        .from("subscribers")
+        .select("grace_ends_at")
+        .eq("id", subscriberId)
+        .single();
+      if (existingError) throw existingError;
+      const grace = existing.grace_ends_at || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
       const { error: upErr } = await supabase
         .from("subscribers")

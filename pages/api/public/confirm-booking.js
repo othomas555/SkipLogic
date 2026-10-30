@@ -1,6 +1,7 @@
 // pages/api/public/confirm-booking.js
 
 import Stripe from "stripe";
+import {earliestDelivery,ukHolidays,londonNow,isValidDeliveryDate} from "../../../lib/publicBookingCalendar";
 import { getSupabaseAdmin } from "../../../lib/supabaseAdmin";
 import { createInvoiceForJob } from "../xero/xero_create_invoice";
 import { getSkipPricesForPostcodeAdmin } from "../../../lib/getSkipPricesForPostcode";
@@ -152,7 +153,9 @@ async function loadSubscriberBySlug(supabase, slug) {
       public_booking_allow_sunday,
       public_booking_max_days_ahead,
       public_booking_cutoff_time,
-      public_booking_use_permit_lead_times
+      public_booking_use_permit_lead_times,
+      public_booking_holiday_region,
+      public_booking_block_bank_holidays
     `)
     .ilike("public_booking_slug", slug)
     .maybeSingle();
@@ -209,20 +212,22 @@ async function buildValidatedQuote({
   const usePermitLeadTimes = !!subscriber.public_booking_use_permit_lead_times;
   const permitRequired = placementType === "permit" && !!permit && usePermitLeadTimes;
 
-  const availability = calculateEarliestBookingDate({
-    now: new Date(),
-    subscriberNoticeDays: Number(subscriber.public_booking_notice_days || 0),
-    subscriberNoticeBusinessDays: !!subscriber.public_booking_notice_working_days,
-    allowSaturday: !!subscriber.public_booking_allow_saturday,
-    allowSunday: !!subscriber.public_booking_allow_sunday,
-    cutoffTime: subscriber.public_booking_cutoff_time || null,
-    permitRequired,
-    permitDelayBusinessDays: Number(permit?.delay_business_days || 0),
-  });
-
-  if (!scheduledDate) throw new Error("Delivery date is required.");
-  if (availability.earliestDate && scheduledDate < availability.earliestDate) {
-    throw new Error(`Earliest available delivery date is ${availability.earliestDate}.`);
+  const {data: periods,error: blackoutError}=await supabase.from("booking_blackouts")
+    .select("start_date,end_date").eq("subscriber_id",subscriber.id);
+  if(blackoutError)throw blackoutError;
+  const holidays=await ukHolidays(subscriber.public_booking_holiday_region||"england-and-wales");
+  const clock=londonNow();
+  const cutoff=String(subscriber.public_booking_cutoff_time||"");
+  const cutoffMinutes=/^\d{2}:\d{2}$/.test(cutoff)?Number(cutoff.slice(0,2))*60+Number(cutoff.slice(3,5)):null;
+  const rules={allowSaturday:!!subscriber.public_booking_allow_saturday,allowSunday:!!subscriber.public_booking_allow_sunday,blockBankHolidays:subscriber.public_booking_block_bank_holidays!==false};
+  const earliest=earliestDelivery({today:clock.today,afterCutoff:cutoffMinutes!==null&&clock.minutes>=cutoffMinutes,noticeDays:Number(subscriber.public_booking_notice_days||0),workingDays:!!subscriber.public_booking_notice_working_days,permitDays:permitRequired?Number(permit?.delay_business_days||0):0,holidays,periods:periods||[],rules});
+  if(!isValidDeliveryDate(scheduledDate,earliest,holidays,periods||[],rules)){
+    throw new Error("Delivery date is unavailable. Earliest available date: "+earliest);
+  }
+  if(subscriber.public_booking_max_days_ahead!=null){
+    const limit=new Date(clock.today+"T12:00:00Z");
+    limit.setUTCDate(limit.getUTCDate()+Number(subscriber.public_booking_max_days_ahead));
+    if(scheduledDate>limit.toISOString().slice(0,10))throw new Error("Delivery date is beyond the advance booking limit.");
   }
 
   const skipPriceIncVat = clampMoney(selectedSkip.price_inc_vat);
@@ -246,13 +251,80 @@ async function findExistingJobBySession(supabase, subscriberId, sessionId) {
 
   const { data, error } = await supabase
     .from("jobs")
-    .select("id, job_number")
+    .select("id, job_number, xero_invoice_id")
     .eq("subscriber_id", subscriberId)
     .ilike("notes", `%${token}%`)
     .limit(1);
 
   if (error) throw new Error(error.message || "Failed to check existing booking");
   return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function ensureInitialDeliveryEvent(supabase, subscriberId, jobId) {
+  const { data: events, error: lookupError } = await supabase
+    .from("job_events")
+    .select("id")
+    .eq("subscriber_id", subscriberId)
+    .eq("job_id", jobId)
+    .eq("event_type", "delivery")
+    .eq("notes", "Initial delivery booked")
+    .limit(1);
+  if (lookupError) throw new Error("Cannot check delivery event: " + lookupError.message);
+  if (events?.length) return;
+  const { error } = await supabase.rpc("create_job_event", {
+    _subscriber_id: subscriberId,
+    _job_id: jobId,
+    _event_type: "delivery",
+    _scheduled_at: null,
+    _completed_at: null,
+    _notes: "Initial delivery booked",
+  });
+  if (error) {
+    // Concurrent webhook/browser confirmations can both observe no delivery
+    // event. The partial unique index allows only one initial delivery.
+    // On a uniqueness conflict, verify that the winning request committed.
+    if (error.code === "23505") {
+      const { data: winner, error: recheckError } = await supabase
+        .from("job_events")
+        .select("id")
+        .eq("subscriber_id", subscriberId)
+        .eq("job_id", jobId)
+        .eq("event_type", "delivery")
+        .eq("notes", "Initial delivery booked")
+        .limit(1);
+      if (!recheckError && winner?.length) return;
+    }
+    throw new Error("Cannot create delivery event: " + error.message);
+  }
+}
+
+async function flagPaidInvoiceFailure(supabase, subscriberId, jobId, error) {
+  // Preserve existing manual review reasons (e.g. edited/cancelled invoices).
+  const { data: job, error: loadError } = await supabase.from("jobs")
+    .select("invoice_action_required,xero_invoice_id")
+    .eq("subscriber_id", subscriberId).eq("id", jobId).single();
+  if (loadError || !job || job.xero_invoice_id || job.invoice_action_required) return;
+  const { error: updateError } = await supabase.from("jobs").update({
+    invoice_action_required: true,
+    invoice_action_reason: "online_payment_invoice_pending",
+    invoice_action_note: "Stripe payment received. Xero invoice needs reconciliation; do not charge customer again. " +
+      String(error?.message || error || "Unknown error").slice(0, 300),
+  }).eq("subscriber_id", subscriberId).eq("id", jobId).eq("invoice_action_required", false).is("xero_invoice_id", null);
+  if (updateError) console.error("Failed to flag paid invoice for review", jobId, updateError.message);
+}
+
+async function recoverExistingBooking(supabase, subscriberId, job, res) {
+  try { await ensureInitialDeliveryEvent(supabase, subscriberId, job.id); }
+  catch(e) { console.error("Paid job delivery event recovery failed",job.id,String(e?.message||e)); return res.status(503).json({ok:false,booking_created:true,job_id:job.id,error:"Paid booking saved; delivery event recovery pending."}); }
+  if (job.xero_invoice_id) return res.status(200).json({ok:true,already_confirmed:true,job_id:job.id,job_number:job.job_number,invoice:{ok:true,mode:"already"}});
+  try {
+    const invoice=await createInvoiceForJob({subscriberId,jobId:job.id});
+    return res.status(200).json({ok:true,already_confirmed:true,job_id:job.id,job_number:job.job_number,invoice:{ok:true,...invoice}});
+  } catch(e) {
+    console.error("Xero invoice retry failed for paid job",job.id,String(e?.message||e));
+    await flagPaidInvoiceFailure(supabase, subscriberId, job.id, e);
+    return res.status(503).json({ok:false,booking_created:true,job_id:job.id,job_number:job.job_number,error:"Payment received and booking saved. Xero invoice pending; do not pay again."});
+  }
 }
 
 async function findOrCreateCustomer(supabase, subscriberId, md) {
@@ -327,18 +399,43 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: "STRIPE_SECRET_KEY is missing" });
     }
 
-    const sessionId = asText(req.body?.session_id);
-    if (!sessionId) {
-      return res.status(400).json({ ok: false, error: "session_id is required" });
+    let sessionId = asText(req.body?.session_id);
+    const paymentIntentId = asText(req.body?.payment_intent);
+    if (!sessionId && !/^pi_[A-Za-z0-9]+$/.test(paymentIntentId)) {
+      return res.status(400).json({ ok: false, error: "A valid session_id or payment_intent is required" });
     }
 
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
       apiVersion: "2025-02-24.acacia",
     });
 
+    const supabase = getSupabaseAdmin();
+    // A Connect direct charge lives on the operator account, not the platform.
+    // Do not trust an arbitrary account ID from the browser.
+    const slug = asText(req.body?.slug);
+    if (!slug) return res.status(400).json({ok:false,error:"Booking slug is required"});
+    const {data:owner,error:ownerError}=await supabase.from("subscribers")
+      .select("id,stripe_connect_account_id").ilike("public_booking_slug",slug).single();
+    if(ownerError||!owner?.stripe_connect_account_id)return res.status(404).json({ok:false,error:"Payment account not found"});
+    if (!sessionId) {
+      // Recover a completed checkout from its payment intent without requiring
+      // customers or operators to locate a Checkout Session in Stripe.
+      const found = await stripe.checkout.sessions.list(
+        { payment_intent: paymentIntentId, limit: 10 },
+        { stripeAccount: owner.stripe_connect_account_id }
+      );
+      const matching = (found.data || []).filter((item) => item.mode === "payment" && item.payment_status === "paid");
+      if (matching.length !== 1) {
+        return res.status(409).json({ok:false,error:"Could not uniquely identify a paid Checkout Session for this payment. No additional payment is required."});
+      }
+      sessionId = matching[0].id;
+    }
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["payment_intent"],
-    });
+    }, {stripeAccount:owner.stripe_connect_account_id});
+    if (paymentIntentId && String(session.payment_intent?.id || session.payment_intent || "") !== paymentIntentId) {
+      return res.status(409).json({ok:false,error:"Payment does not match Checkout Session"});
+    }
 
     if (!session) {
       return res.status(404).json({ ok: false, error: "Checkout session not found" });
@@ -349,35 +446,74 @@ export default async function handler(req, res) {
     }
 
     const md = session.metadata || {};
-    const slug = asText(md.booking_slug);
+    const metadataSlug = asText(md.booking_slug);
     const postcode = asText(md.postcode);
     const placementType = asText(md.placement_type) || "private";
     const permitSettingId = asText(md.permit_setting_id);
     const skipTypeId = asText(md.skip_type_id);
     const scheduledDate = asText(md.scheduled_date);
 
-    const supabase = getSupabaseAdmin();
-
-    const quote = await buildValidatedQuote({
-      supabase,
-      slug,
-      postcode,
-      placementType,
-      permitSettingId,
-      skipTypeId,
-      scheduledDate,
-    });
-
-    const existing = await findExistingJobBySession(supabase, quote.subscriber.id, session.id);
-    if (existing) {
-      return res.status(200).json({
-        ok: true,
-        already_confirmed: true,
-        job_id: existing.id,
-        job_number: existing.job_number,
-      });
+    if (slug !== metadataSlug) return res.status(400).json({ok:false,error:"Payment belongs to another booking page"});
+    // A paid booking may be retried days later, after cutoffs or prices have changed.
+    // Find it before revalidating the now-stale quote; never block invoice recovery.
+    const existingPaidJob = await findExistingJobBySession(supabase, owner.id, session.id);
+    if (existingPaidJob) {
+      return recoverExistingBooking(supabase, owner.id, existingPaidJob, res);
     }
-
+    // Checkout validated the date, postcode, permit and price BEFORE payment.
+    // Once paid, honour that immutable snapshot rather than today's prices,
+    // cutoff, holiday rules or an operator's later configuration changes.
+    let quote;
+    let expectedPence;
+    if (asText(md.quote_version) === "1") {
+      const readPence = (value) => {
+        const text = asText(value);
+        if (!/^\d+$/.test(text)) throw new Error("Invalid paid quote snapshot");
+        const amount = Number(text);
+        if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("Invalid paid quote amount");
+        return amount;
+      };
+      const skipPence = readPence(md.skip_price_pence);
+      const permitPence = readPence(md.permit_price_pence);
+      expectedPence = readPence(md.total_pence);
+      if (asText(md.subscriber_id) !== String(owner.id) ||
+          skipPence < 50 ||
+          skipPence + permitPence !== expectedPence ||
+          !skipTypeId || !/^\d{4}-\d{2}-\d{2}$/.test(scheduledDate) ||
+          !["private", "permit"].includes(placementType) ||
+          (placementType === "private" && (permitSettingId || permitPence !== 0)) ||
+          (placementType === "permit" && !permitSettingId)) {
+        throw new Error("Invalid paid booking snapshot");
+      }
+      const delay = Number(asText(md.permit_delay_business_days));
+      const validity = Number(asText(md.permit_validity_days));
+      if (![delay, validity].every((n) => Number.isSafeInteger(n) && n >= 0)) {
+        throw new Error("Invalid paid permit snapshot");
+      }
+      quote = {
+        subscriber: { id: owner.id },
+        selectedSkip: { skip_type_id: skipTypeId },
+        permit: placementType === "permit"
+          ? { id: permitSettingId, delay_business_days: delay, validity_days: validity }
+          : null,
+        pricing: {
+          skipPriceIncVat: skipPence / 100,
+          permitPriceNoVat: permitPence / 100,
+          totalToCharge: expectedPence / 100,
+        },
+      };
+    } else if (!asText(md.quote_version)) {
+      // Compatibility for sessions issued before quote snapshots were added.
+      quote = await buildValidatedQuote({
+        supabase, slug, postcode, placementType, permitSettingId, skipTypeId, scheduledDate,
+      });
+      expectedPence = Math.round(quote.pricing.totalToCharge * 100);
+    } else {
+      throw new Error("Unsupported checkout quote version");
+    }
+    if (session.currency !== "gbp" || session.amount_total !== expectedPence) {
+      return res.status(409).json({ok:false,error:"Payment amount does not match the checkout quote; contact support"});
+    }
     const customerId = await findOrCreateCustomer(supabase, quote.subscriber.id, md);
 
     const { data: allocatedJobNumber, error: allocErr } = await supabase.rpc("alloc_job_number", {
@@ -389,7 +525,7 @@ export default async function handler(req, res) {
     }
 
     const sessionToken = `[stripe_session:${session.id}]`;
-    const notes = [asText(md.notes), sessionToken].filter(Boolean).join("\n");
+    const notes = [asText(md.notes), "[online_payment:paid_by_stripe]", sessionToken].filter(Boolean).join("\n");
 
     const insertPayload = {
       subscriber_id: quote.subscriber.id,
@@ -426,21 +562,18 @@ export default async function handler(req, res) {
       .single();
 
     if (insertErr || !job) {
+      // Unique Stripe session index protects against concurrent browser/webhook requests.
+      // The losing request must never create a second invoice.
+      if (insertErr?.code === "23505") {
+        const alreadyCreated = await findExistingJobBySession(supabase, quote.subscriber.id, session.id);
+        if (alreadyCreated) {
+          return recoverExistingBooking(supabase, quote.subscriber.id, alreadyCreated, res);
+        }
+      }
       throw new Error(insertErr?.message || "Could not create job");
     }
 
-    const { error: eventError } = await supabase.rpc("create_job_event", {
-      _subscriber_id: quote.subscriber.id,
-      _job_id: job.id,
-      _event_type: "delivery",
-      _scheduled_at: null,
-      _completed_at: null,
-      _notes: "Initial delivery booked",
-    });
-
-    if (eventError) {
-      throw new Error(`Job created but delivery event failed: ${eventError.message}`);
-    }
+    await ensureInitialDeliveryEvent(supabase, quote.subscriber.id, job.id);
 
     let invoice = null;
     try {
@@ -457,6 +590,11 @@ export default async function handler(req, res) {
       };
     }
 
+    if (!invoice?.ok) {
+      console.error("Xero invoice pending for paid job",job.id,invoice?.details||invoice?.error);
+      await flagPaidInvoiceFailure(supabase, quote.subscriber.id, job.id, invoice?.details||invoice?.error);
+      return res.status(503).json({ok:false,booking_created:true,job_id:job.id,job_number:job.job_number,error:"Payment received and booking saved. Xero invoice pending; do not pay again."});
+    }
     await sendBookingEmail(req, job, md, quote.pricing.totalToCharge);
 
     return res.status(200).json({

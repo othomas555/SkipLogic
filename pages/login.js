@@ -71,12 +71,34 @@ export default function Login() {
         return;
       }
 
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
 
       if (error) throw error;
+
+      // First login after email verification: create this company's workspace.
+      const token = data?.session?.access_token;
+      if (!token) throw new Error("No login session returned");
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles").select("subscriber_id").eq("id", data.user.id).maybeSingle();
+      if (profileError) throw profileError;
+      if (!profile?.subscriber_id) {
+        const metadata = data.user.user_metadata || {};
+        if (!metadata.company_name || !metadata.full_name) {
+          throw new Error("Your company setup is incomplete. Please contact SkipLogic support.");
+        }
+        const response = await fetch("/api/auth/bootstrap", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+          body: JSON.stringify({ company_name: metadata.company_name, full_name: metadata.full_name }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || result.error || "Company setup failed");
+        router.push("/subscribe");
+        return;
+      }
 
       router.push("/app");
     } catch (err) {

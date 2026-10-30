@@ -7,13 +7,14 @@ export default function PublicBookingSuccessPage() {
   const router = useRouter();
   const slug = String(router.query.slug || "");
   const sessionId = String(router.query.session_id || "");
+  const paymentIntentId = String(router.query.payment_intent || "");
 
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [result, setResult] = useState(null);
 
   useEffect(() => {
-    if (!router.isReady || !slug || !sessionId) return;
+    if (!router.isReady || !slug || (!sessionId && !paymentIntentId)) return;
 
     let cancelled = false;
 
@@ -25,7 +26,7 @@ export default function PublicBookingSuccessPage() {
         const res = await fetch("/api/public/confirm-booking", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId }),
+          body: JSON.stringify({ session_id: sessionId, payment_intent: paymentIntentId, slug }),
         });
 
         const json = await res.json().catch(() => ({}));
@@ -53,7 +54,7 @@ export default function PublicBookingSuccessPage() {
     return () => {
       cancelled = true;
     };
-  }, [router.isReady, slug, sessionId]);
+  }, [router.isReady, slug, sessionId, paymentIntentId]);
 
   return (
     <main style={styles.page}>

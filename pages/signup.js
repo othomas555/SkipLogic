@@ -76,7 +76,24 @@ export default function Signup() {
       });
 
       // If your Supabase project auto-signs in on signup, session exists:
-      if (data?.session) router.push("/app");
+      if (data?.session?.access_token) {
+        const response = await fetch("/api/auth/bootstrap", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + data.session.access_token,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            company_name: companyName.trim(),
+            full_name: fullName.trim(),
+          }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          throw new Error(result.detail || result.error || "Could not create your company workspace");
+        }
+        router.push("/subscribe");
+      }
     } catch (err) {
       setToast({
         open: true,

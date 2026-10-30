@@ -171,7 +171,7 @@ export default function PublicBookingPage() {
       const earliest = json?.availability?.earliest_date || "";
       if (!preserveDate) {
         setScheduledDate(earliest || "");
-      } else if (scheduledDate && earliest && scheduledDate < earliest) {
+      } else if (scheduledDate && (scheduledDate < earliest || (json?.availability?.available_dates?.length && !json.availability.available_dates.includes(scheduledDate)))) {
         setScheduledDate(earliest);
       }
     } catch (err) {
@@ -202,6 +202,8 @@ export default function PublicBookingPage() {
     }
 
     const earliest = quoteData?.availability?.earliest_date || "";
+    const validDates = quoteData?.availability?.available_dates || [];
+    if(scheduledDate && validDates.length && !validDates.includes(scheduledDate)) errors.scheduledDate = "Choose an available delivery date.";
     if (scheduledDate && earliest && scheduledDate < earliest) {
       errors.scheduledDate = `Earliest available delivery date is ${earliest}.`;
     }
@@ -568,16 +570,20 @@ export default function PublicBookingPage() {
 
                       <div style={styles.fieldBlock}>
                         <label style={styles.label}>Delivery date *</label>
-                        <input
-                          type="date"
+                        <select
                           value={scheduledDate}
-                          min={earliestDate || undefined}
                           onChange={(e) => {
                             setScheduledDate(e.target.value);
                             setFieldErrors((prev) => ({ ...prev, scheduledDate: undefined }));
                           }}
                           style={styles.dateInput}
-                        />
+                        >
+                          <option value="">Select delivery date</option>
+                          {(quoteData?.availability?.available_dates || []).map(date => (
+                            <option key={date} value={date}>{new Date(date+"T12:00:00Z").toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric",timeZone:"UTC"})}</option>
+                          ))}
+                        </select>
+                        {(quoteData?.availability?.shutdowns || []).length > 0 ? <div style={styles.hintText}>Online bookings remain open during shutdowns; deliveries resume after reopening and the notice period.</div> : null}
                         {earliestDate ? (
                           <div style={styles.hintText}>
                             Earliest available delivery date: <b>{earliestDate}</b>

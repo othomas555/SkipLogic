@@ -18,9 +18,11 @@ export default async function handler(req, res) {
 
   try {
     // Auth (office user)
-    const { user, profile } = await requireOfficeUser(req);
-    const subscriberId = profile?.subscriber_id;
-    if (!subscriberId) return res.status(400).json({ error: "No subscriber_id on profile" });
+    const auth = await requireOfficeUser(req);
+    if (!auth.ok) return res.status(401).json({ ok: false, error: auth.error || "Not authenticated" });
+    const { user } = auth;
+    const subscriberId = auth.subscriber_id;
+    if (!subscriberId) return res.status(400).json({ ok: false, error: "No subscriber_id on profile" });
 
     const { plan_variant_id } = req.body || {};
     if (!plan_variant_id) return res.status(400).json({ error: "Missing plan_variant_id" });
@@ -94,6 +96,7 @@ export default async function handler(req, res) {
           plan_variant_id: pv.id,
         },
       },
+      payment_method_collection: "always",
       allow_promotion_codes: true,
       success_url: `${origin}/app/settings/subscription?checkout=success`,
       cancel_url: `${origin}/app/settings/subscription?checkout=cancel`,

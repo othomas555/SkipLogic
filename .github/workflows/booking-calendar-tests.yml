@@ -1,0 +1,19 @@
+name: Booking calendar tests
+on:
+  pull_request:
+    paths:
+      - 'lib/publicBookingCalendar.js'
+      - 'tests/publicBookingCalendar.test.cjs'
+      - '.github/workflows/booking-calendar-tests.yml'
+  push:
+    branches:
+      - feature/booking-holidays-shutdowns
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node --test tests/publicBookingCalendar.test.cjs
